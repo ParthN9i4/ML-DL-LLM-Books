@@ -12,7 +12,7 @@ import os
 import re
 import sys
 
-BOOK = "/home/user/ParthN9i4/ml-book.html"
+BOOK = "/workspace/ml-dl-llm-books/ml-book.html"
 PARTS = "/tmp/claude-0/-home-user-ParthN9i4/8320e92f-b068-5164-8e36-b20b4cf863b1/scratchpad/parts"
 
 # Part number -> (label, title, chapter range, part-desc)
