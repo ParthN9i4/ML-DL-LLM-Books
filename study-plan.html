@@ -1,0 +1,475 @@
+<title>A 42-Week Study Plan</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="author" content="Parth Nagar">
+<meta name="description" content="A paced study schedule for Foundations of Modern Machine Learning, with a weekly homomorphic-encryption-for-LLMs paper analysis track.">
+
+<script>
+MathJax = {
+  tex: {
+    inlineMath: [['$', '$'], ['\\(', '\\)']],
+    displayMath: [['$$', '$$'], ['\\[', '\\]']],
+    processEscapes: true
+  },
+  options: {
+    skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code'],
+    enableMenu: false
+  }
+};
+</script>
+<script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+
+<style>
+:root {
+  --bg: #0d1117;
+  --bg-secondary: #161b22;
+  --bg-tertiary: #1c2128;
+  --text: #e6edf3;
+  --text-secondary: #8b949e;
+  --text-muted: #6e7681;
+  --accent: #58a6ff;
+  --accent-secondary: #7ee787;
+  --accent-warm: #d2a8ff;
+  --border: #30363d;
+  --border-light: #21262d;
+  --code-bg: #161b22;
+  --highlight: #1f6feb33;
+  --warning: #d29922;
+  --success: #3fb950;
+  --encrypted-border: #39c5cf;
+  --part-bg: linear-gradient(135deg, #1f6feb22, #23863622);
+  --font-serif: 'Georgia', 'Times New Roman', serif;
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  --font-mono: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html { scroll-behavior: smooth; font-size: 17px; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-serif);
+  line-height: 1.8;
+  overflow-x: hidden;
+}
+
+.book-container { max-width: 900px; margin: 0 auto; padding: 2rem 2rem 6rem; }
+
+.title-page {
+  min-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+  padding: 4rem 2rem;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 3rem;
+}
+
+.title-page h1 {
+  font-family: var(--font-sans);
+  font-size: 2.6rem;
+  font-weight: 700;
+  line-height: 1.2;
+  margin-bottom: 0.5rem;
+  letter-spacing: -0.02em;
+}
+
+.title-page .subtitle {
+  font-size: 1.2rem;
+  color: var(--text-secondary);
+  font-style: italic;
+  margin-bottom: 2rem;
+}
+
+.title-page .dateline {
+  font-family: var(--font-sans);
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  letter-spacing: 0.05em;
+}
+
+h2 {
+  font-family: var(--font-sans);
+  font-size: 1.7rem;
+  margin: 3rem 0 1rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--border);
+  letter-spacing: -0.01em;
+}
+
+h3 {
+  font-family: var(--font-sans);
+  font-size: 1.25rem;
+  margin: 2rem 0 0.75rem;
+}
+
+h4 {
+  font-family: var(--font-sans);
+  font-size: 1.05rem;
+  margin: 1.5rem 0 0.5rem;
+  color: var(--accent);
+}
+
+p { margin-bottom: 1.2rem; text-align: justify; hyphens: auto; }
+
+ul, ol { padding-left: 1.5rem; margin-bottom: 1.2rem; }
+li { margin-bottom: 0.4rem; }
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1.5rem 0;
+  font-family: var(--font-sans);
+  font-size: 0.85rem;
+  overflow-x: auto;
+  display: block;
+}
+
+th, td { padding: 0.5rem 0.7rem; text-align: left; border: 1px solid var(--border); vertical-align: top; }
+
+th {
+  background: var(--bg-secondary);
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+
+td { color: var(--text-secondary); }
+tr:nth-child(even) { background: var(--bg-secondary); }
+
+code {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  background: var(--bg-tertiary);
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+  color: var(--accent);
+}
+
+pre {
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1.25rem;
+  overflow-x: auto;
+  margin: 1.25rem 0;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  line-height: 1.6;
+  color: var(--text);
+}
+
+pre code { background: none; padding: 0; color: inherit; }
+
+.callout, .template-box, .rhythm-box, .warning-box {
+  margin: 1.5rem 0;
+  padding: 1.25rem 1.5rem;
+  border-radius: 8px;
+  background: var(--bg-tertiary);
+}
+
+.callout { border-left: 4px solid var(--accent); }
+.template-box { border-left: 4px solid var(--encrypted-border); border: 1px dashed var(--encrypted-border); }
+.rhythm-box { border-left: 4px solid var(--accent-secondary); }
+.warning-box { border-left: 4px solid var(--warning); }
+
+.box-title {
+  font-family: var(--font-sans);
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 0.75rem;
+  font-weight: 600;
+}
+
+.callout .box-title { color: var(--accent); }
+.template-box .box-title { color: var(--encrypted-border); }
+.rhythm-box .box-title { color: var(--accent-secondary); }
+.warning-box .box-title { color: var(--warning); }
+
+.phase-header {
+  text-align: center;
+  padding: 1.5rem;
+  margin: 2.5rem 0 1rem;
+  background: var(--part-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-family: var(--font-sans);
+}
+
+.phase-header .phase-label {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  color: var(--accent);
+}
+
+.phase-header .phase-title { font-size: 1.3rem; margin-top: 0.25rem; }
+.phase-header .phase-weeks { font-size: 0.85rem; color: var(--text-muted); margin-top: 0.25rem; }
+
+.back-to-top {
+  position: fixed;
+  bottom: 2rem;
+  right: 2rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  color: var(--accent);
+  width: 40px; height: 40px;
+  border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 1.2rem;
+  opacity: 0;
+  transition: opacity 0.3s;
+  z-index: 100;
+}
+
+.back-to-top.visible { opacity: 1; }
+
+@media (max-width: 768px) {
+  html { font-size: 15px; }
+  .book-container { padding: 1rem 1rem 4rem; }
+  .title-page h1 { font-size: 1.9rem; }
+  table { font-size: 0.75rem; }
+}
+
+@media print {
+  body { background: #fff; color: #000; font-size: 10pt; }
+  .back-to-top { display: none; }
+}
+</style>
+
+<div class="book-container">
+
+<div class="title-page" id="top">
+<h1>A 42-Week Study Plan</h1>
+<div class="subtitle">Foundations of Modern Machine Learning, paced &mdash; with a weekly encrypted-LLM paper track</div>
+<div class="dateline">10&ndash;15 hours per week &middot; ~10 months &middot; August 2026</div>
+</div>
+
+<h2>What this is</h2>
+
+<p>This schedule paces <em>Foundations of Modern Machine Learning</em> (<code>ml-book.html</code>) and its exercise ladder (<code>ml-foundations/</code>) at one chapter per week, and runs a second, independent track alongside it: one paper per week on homomorphic encryption applied to transformers and large language models, worked through a fixed analysis template.</p>
+
+<p>The two tracks are deliberately not synchronised. The book track builds from linear algebra upward and only reaches encrypted machine learning in Part VIII, around week 38. The paper track starts in week 1. That is intentional: you already work in this area, and the point of the paper track is not to teach you FHE &mdash; it is to build a comparison table across forty papers that does not exist anywhere in the literature. By the time the book track arrives at Part VIII, you will have read the primary sources it cites, and you should be reading those chapters critically rather than receptively.</p>
+
+<div class="warning-box">
+<div class="box-title">The honest risk with a plan this long</div>
+<p>Ten-month schedules fail in month two, and they fail for a specific reason: a missed week becomes a two-week debt, the debt becomes shame, and the shame becomes abandonment. Build the recovery in now. <strong>Weeks 11, 22, 33, and 42 are deliberately empty.</strong> They are not rest weeks to be reallocated when you feel behind &mdash; they are the slack that makes the other 38 weeks survivable. If you arrive at a buffer week on schedule, use it to re-derive something you faked your way past. You will know which one.</p>
+</div>
+
+<h2>The weekly rhythm</h2>
+
+<div class="rhythm-box">
+<div class="box-title">~12 hours, three blocks</div>
+<table>
+<tr><th>Block</th><th>Hours</th><th>What</th></tr>
+<tr><td><strong>Chapter</strong></td><td>~5</td><td>Read the week's chapter. Read the same material in at least one crosswalk source (Appendix E). Then implement the chapter's Artifact from scratch <em>without looking at the listing</em>, and only afterwards diff yours against the book's.</td></tr>
+<tr><td><strong>Ladder</strong></td><td>~3</td><td>The matching exercises in <code>ml-foundations/</code>. Delete the function bodies, re-read the docstring and the <code>check()</code> assertions, reimplement until they pass.</td></tr>
+<tr><td><strong>Paper</strong></td><td>~4</td><td>One paper from the queue, worked through the nine-point template below. Output goes into your running comparison table, not into a folder of PDFs.</td></tr>
+</table>
+</div>
+
+<h3>The daily shape</h3>
+
+<p>Five weekdays at roughly two hours, plus one weekend session for the paper. The structure that matters more than the hours:</p>
+
+<ul>
+<li><strong>One 90-minute deep block per day</strong>, doing exactly one of reading or implementation &mdash; never both in the same block. Switching between them feels productive and is the most reliable way to finish a week having understood nothing.</li>
+<li><strong>One 30-minute review block</strong>, in which you re-derive a single result from the previous day on a blank page, without notes. This is the entire retention mechanism of the plan. If you skip one thing, do not skip this.</li>
+<li><strong>Write down what you could not derive.</strong> Keep one running file. It is the highest-value artifact this plan produces, because it is the only honest record of where your foundations are thin.</li>
+</ul>
+
+<div class="callout">
+<div class="box-title">The implementation rule</div>
+<p>Reading an implementation and writing one are different skills, and only the second one transfers. Every chapter's Artifact is designed to be reconstructible from its specification alone. Read the spec, close the book, write it, run it, and only then compare. When your version differs, the interesting question is never "which is right" &mdash; it is <em>why you made the choice you made</em>. That is where the learning is.</p>
+</div>
+
+<h2>The paper-analysis template</h2>
+
+<p>Papers in this area are individually impressive and collectively incomparable. They differ in threat model, in encryption scheme, in what they count as preprocessing, in sequence length, in hardware, and in whether the reported latency includes key generation. A summary of each paper is nearly worthless; a table with the same nine columns for forty papers is a literature review.</p>
+
+<p>Extract exactly these, every time, in this order. Where a paper does not report something, <strong>write "not reported" rather than omitting the row</strong> &mdash; the gaps are themselves a finding, and they cluster in revealing places.</p>
+
+<div class="template-box">
+<div class="box-title">The nine points</div>
+<ol>
+<li><strong>Threat model.</strong> What is hidden, and from whom? Client input only? Model weights? Both? Is the server semi-honest or malicious? How many rounds of interaction, and is the client required to be online throughout? A "private inference" claim means nothing until this row is filled in.</li>
+<li><strong>Scheme and parameters.</strong> CKKS, BFV/BGV, TFHE/CGGI, or a hybrid with secret sharing or a TEE. Ring dimension $N$, coefficient modulus chain, scale factor, claimed security level in bits, and which standard that claim is against.</li>
+<li><strong>Multiplicative depth.</strong> How much depth does one transformer layer consume? Where is bootstrapping invoked, if at all &mdash; and if the answer is "never", what bounds the number of layers?</li>
+<li><strong>The non-polynomial core.</strong> How is softmax handled? Normalization (LayerNorm or RMSNorm, and the inverse square root inside it)? The activation (GELU, SiLU, ReLU)? Polynomial approximation, lookup, protocol switch, or client-side round trip &mdash; and at what degree and over what input domain.</li>
+<li><strong>Packing and slot utilisation.</strong> What goes in a ciphertext slot, how are rotations used for the matmuls, and what fraction of slots is actually doing work? This is where most of the real engineering lives and where papers are least forthcoming.</li>
+<li><strong>Benchmark conditions.</strong> Model and size, sequence length, batch size, hardware (and how many cores or GPUs), and &mdash; the row that matters most &mdash; <em>what was excluded from the reported time.</em> Key generation, weight encoding, and setup are excluded startlingly often.</li>
+<li><strong>Accuracy delta.</strong> Against the plaintext model, on which task, at what sequence length. A sub-1% delta on one GLUE task is not evidence about a 7B generative model.</li>
+<li><strong>The claim you would attack.</strong> Pick one, and name the experiment that would settle it. This is the row that turns reading into research training, and it is the one you will be tempted to skip.</li>
+<li><strong>Consequence for your pipeline.</strong> Specifically: does this change anything about how you would build CKKS encrypted inference in OpenFHE? A technique you could adopt, a dead end now ruled out, or nothing at all &mdash; and "nothing at all" is a legitimate and common answer.</li>
+</ol>
+</div>
+
+<h3>The comparison table is the deliverable</h3>
+
+<p>Keep one table, one row per paper, columns 1&ndash;7 above. After roughly ten papers it starts answering questions no individual paper does: which depth budgets are actually achievable without bootstrapping, whether anyone has an honest softmax, how much of the reported speedup across five years is scheme improvement versus hardware, and how many "non-interactive" claims survive reading the threat model carefully. Those are survey-paper questions, and a survey is a legitimate first publication.</p>
+
+<h2>The paper queue</h2>
+
+<p>Ordered deliberately: surveys first to build the map, then the foundational systems in rough chronological order so you see the techniques accumulate, then the 2026 frontier, then hardware and hybrids. Citations verified as of August 2026; where a paper exists as both a preprint and a proceedings version, read the proceedings version and note any differences.</p>
+
+<table>
+<tr><th>#</th><th>Paper</th><th>Venue / ID</th><th>Why this one, here</th></tr>
+<tr><td>1</td><td><em>A Survey on Private Transformer Inference</em></td><td>arXiv 2412.08145</td><td>Build the map before the territory. Read for the taxonomy, not the numbers.</td></tr>
+<tr><td>2</td><td><em>Private LLM Inference with Homomorphic Encryption</em> (Lim)</td><td>EDBT 2026</td><td>The most recent framing of the problem; note what it thinks is still open.</td></tr>
+<tr><td>3</td><td><em>Towards Efficient Privacy-Preserving ML: a Systematic Review</em></td><td>arXiv 2507.14519</td><td>Protocol/model/system framing. Cross-check its taxonomy against #1 &mdash; they disagree.</td></tr>
+<tr><td>4</td><td>Primer</td><td>arXiv 2303.13679</td><td>Early, readable, and the baseline several later papers beat. Establishes the shape of the problem.</td></tr>
+<tr><td>5</td><td>Iron / CrypTen-era 2PC transformer baselines</td><td>from #1's bibliography</td><td>The pre-BOLT state of the art. Read one; you need the baseline to feel the later gains.</td></tr>
+<tr><td>6</td><td><strong>BOLT</strong></td><td>IEEE S&amp;P 2024 &middot; eprint 2023/1893</td><td>The packing-strategy paper. Section on piecewise-linear approximation of nonlinearities is the core.</td></tr>
+<tr><td>7</td><td><strong>BumbleBee</strong></td><td>NDSS 2025</td><td>Communication-optimised 2PC. Compare its threat model to BOLT's carefully &mdash; they are not the same.</td></tr>
+<tr><td>8</td><td><strong>NEXUS</strong> (<em>Secure Transformer Inference Made Non-interactive</em>)</td><td>NDSS 2025</td><td>The single most important entry. One round of client communication; SIMD compression, slot folding, secure argmax.</td></tr>
+<tr><td>9</td><td>SHAFT</td><td>NDSS 2025</td><td>Read directly after NEXUS. Same year, different bet.</td></tr>
+<tr><td>10</td><td><em>Remodeling Private Transformer Inference with Hybrid Protocols</em></td><td>USENIX Security 2025</td><td>Where the hybrid argument gets made properly.</td></tr>
+<tr><td>&mdash;</td><td colspan="3"><em>Buffer week 11 &mdash; no new paper. Build the comparison table from papers 1&ndash;10 and see what the columns reveal.</em></td></tr>
+<tr><td>11</td><td>THOR</td><td>2025</td><td>Pure-HE transformer inference. Contrast with the 2PC line above.</td></tr>
+<tr><td>12</td><td>Powerformer</td><td>2025</td><td>Accuracy-focused. Interrogate the accuracy claim against the threat model.</td></tr>
+<tr><td>13</td><td>Nimbus</td><td>arXiv 2411.15707</td><td>Two-party, efficiency-focused; good foil for NEXUS.</td></tr>
+<tr><td>14</td><td>HE-LRM</td><td>arXiv 2506.18150</td><td>Private embedding lookups &mdash; the part of the pipeline most papers quietly skip.</td></tr>
+<tr><td>15</td><td>EncFormer</td><td>arXiv 2604.09975</td><td>2026 frontier.</td></tr>
+<tr><td>16</td><td>ATLAS</td><td>arXiv 2607.23478</td><td>Automated approximation. Composes on top of THOR/NEXUS rather than competing.</td></tr>
+<tr><td>17</td><td>Bifrost</td><td>arXiv 2606.17421</td><td>TEE&ndash;FHE hybrid. The threat-model row will be the interesting one.</td></tr>
+<tr><td>18</td><td>CryptoGen</td><td>arXiv 2602.08798</td><td>Encrypted KV-cache reuse &mdash; the generative-decoding problem, not just one forward pass.</td></tr>
+<tr><td>19</td><td><em>FHE on Llama 3 for privacy-preserving LLM inference</em></td><td>arXiv 2604.12168</td><td>A real modern model. Check what was actually encrypted.</td></tr>
+<tr><td>20</td><td>Jaguar</td><td>arXiv 2606.11827</td><td>Power-of-two homomorphic arithmetic; CNN-focused but the arithmetic idea generalises.</td></tr>
+<tr><td>&mdash;</td><td colspan="3"><em>Buffer week 22 &mdash; write the comparison table up as a draft survey section. If it reads well, you have the skeleton of a paper.</em></td></tr>
+<tr><td>21&ndash;30</td><td colspan="3"><strong>Thematic blocks.</strong> Pull from the living bibliography at <a href="https://github.com/BUAA-CI-LAB/Literatures-on-Homomorphic-Encryption">BUAA-CI-LAB/Literatures-on-Homomorphic-Encryption</a>, two papers per theme: (a) softmax and normalization approximation; (b) GPU and hardware acceleration of CKKS; (c) bootstrapping cost and depth budgeting; (d) encrypted fine-tuning and LoRA under HE; (e) the MPC/DP/FL boundary &mdash; what HE should <em>not</em> be used for.</td></tr>
+<tr><td>31&ndash;38</td><td colspan="3"><strong>Frontier and adjacent.</strong> Whatever has appeared since this plan was written &mdash; check IACR ePrint, NDSS/S&amp;P/USENIX/CCS accepted lists, and the FHE.org calendar. By this point you should be choosing your own papers; the queue has done its job.</td></tr>
+<tr><td>39&ndash;41</td><td colspan="3"><strong>Re-read three papers from weeks 1&ndash;10</strong> with everything you now know. This is not revision. The gap between what you extracted in week 4 and what you extract in week 40 is the most direct measure of progress this plan offers.</td></tr>
+<tr><td>&mdash;</td><td colspan="3"><em>Buffer week 42 &mdash; finalise the comparison table and decide what it is: an internal reference, a survey, or the motivation section of your own paper.</em></td></tr>
+</table>
+
+<div class="warning-box">
+<div class="box-title">On the 2026 arXiv identifiers</div>
+<p>Several entries above (EncFormer, ATLAS, Bifrost, CryptoGen, Jaguar, and the Llama 3 paper) carry 2026 identifiers and were surfaced by search rather than read end to end during planning. Treat the identifier as a pointer, not a citation: confirm the title, authors, and venue yourself before either reading or citing them. Numbers 1, 6, 7, 8, 9, 10, 13, and 14 have been checked against their proceedings or preprint pages.</p>
+</div>
+
+<h2>The 42-week schedule</h2>
+
+<p>The book track. Chapter numbers refer to <code>ml-book.html</code>; tiers refer to <code>ml-foundations/</code>.</p>
+
+<div class="phase-header">
+<div class="phase-label">Phase 1</div>
+<div class="phase-title">Foundations</div>
+<div class="phase-weeks">Weeks 1&ndash;10 &middot; Chapters 1&ndash;9 &middot; Ladder tiers 0&ndash;1</div>
+</div>
+
+<table>
+<tr><th>Week</th><th>Chapter</th><th>Ladder</th><th>Focus</th></tr>
+<tr><td>1</td><td>1 &mdash; Linear Algebra as Computation</td><td><code>ex01</code></td><td>Arithmetic intensity. If you take one idea from Phase 1, take this one.</td></tr>
+<tr><td>2</td><td>2 &mdash; Probability, Information, Cross-Entropy</td><td><code>ex02</code></td><td>Compression equals prediction. Do the entropy-coder artifact properly.</td></tr>
+<tr><td>3</td><td>3 &mdash; Generalization and Its Failure</td><td>&mdash;</td><td>Reproduce double descent yourself. Seeing the spike matters.</td></tr>
+<tr><td>4</td><td>4 &mdash; Optimization and Convergence Rates</td><td><code>ex03</code></td><td>Condition number as the explanatory variable.</td></tr>
+<tr><td>5</td><td>5 &mdash; Numerics</td><td><code>ex04</code></td><td>Underrated. Everything in Part VI depends on it.</td></tr>
+<tr><td>6</td><td>6 &mdash; Linear and Logistic Regression</td><td><code>ex05</code></td><td>The gradient form here reappears in every classifier in the book.</td></tr>
+<tr><td>7</td><td>7 &mdash; Kernels and the NTK Bridge</td><td>&mdash;</td><td>Hard chapter. The NTK section is the point.</td></tr>
+<tr><td>8</td><td>8 &mdash; Trees, Bagging, Boosting</td><td>&mdash;</td><td>Read for the inductive-bias argument, not the algorithms.</td></tr>
+<tr><td>9</td><td>9 &mdash; Unsupervised Learning</td><td>&mdash;</td><td>Note which objectives return in Chapter 20 as self-supervision.</td></tr>
+<tr><td>10</td><td>Consolidation</td><td>tier 0 complete</td><td>Re-derive backprop-free results. Fix what your can't-derive file lists.</td></tr>
+</table>
+
+<div class="phase-header">
+<div class="phase-label">Phase 2</div>
+<div class="phase-title">Networks and Architectures</div>
+<div class="phase-weeks">Weeks 12&ndash;21 &middot; Chapters 10&ndash;21 &middot; Ladder tiers 1&ndash;3</div>
+</div>
+
+<table>
+<tr><th>Week</th><th>Chapter</th><th>Ladder</th><th>Focus</th></tr>
+<tr><td>12</td><td>10 &mdash; The MLP and What Depth Buys</td><td>&mdash;</td><td>Universal approximation explains nothing. Linear regions explain something.</td></tr>
+<tr><td>13</td><td><strong>11 &mdash; Automatic Differentiation</strong></td><td><code>ex06</code>, <code>ex07</code></td><td>The keystone. Every later artifact imports this engine. Do not rush it.</td></tr>
+<tr><td>14</td><td>12 &mdash; Initialization and Normalization</td><td><code>ex08</code></td><td>Signal propagation as one problem with two solutions.</td></tr>
+<tr><td>15</td><td>13 &mdash; Optimizers: SGD to Muon</td><td><code>ex09</code></td><td>Adam as sign descent. Muon is now production, not exotic.</td></tr>
+<tr><td>16</td><td>14 &mdash; Regularization</td><td><code>ex10</code></td><td>Short chapter. Use the spare hours on the paper track.</td></tr>
+<tr><td>17</td><td>15 &mdash; muP and Hyperparameter Transfer</td><td><code>ex11</code></td><td>The coordinate check is the practical takeaway.</td></tr>
+<tr><td>18</td><td>16 &mdash; Convolutional Networks<br>17 &mdash; Recurrence and the Gradient Pathology</td><td><code>ex12</code>, <code>ex13</code></td><td>Two chapters, both largely historical. Read fast; Chapter 17 sets up Chapter 21.</td></tr>
+<tr><td>19</td><td><strong>18 &mdash; Attention and the Transformer</strong></td><td><code>ex14</code>, <code>ex15</code></td><td>The hinge of the book. Budget the full week.</td></tr>
+<tr><td>20</td><td>19 &mdash; Positional Information and Long Context</td><td><code>ex16</code></td><td>RoPE properly derived, then the context-extension family.</td></tr>
+<tr><td>21</td><td>20 &mdash; Vision Transformers<br>21 &mdash; State Space Models</td><td><code>ex17</code>, <code>ex18</code></td><td>Heavy week. Chapter 21's SSD duality is the hardest idea in Part IV.</td></tr>
+</table>
+
+<div class="phase-header">
+<div class="phase-label">Phase 3</div>
+<div class="phase-title">Large Language Models</div>
+<div class="phase-weeks">Weeks 23&ndash;32 &middot; Chapters 22&ndash;29 &middot; Ladder tiers 3&ndash;4</div>
+</div>
+
+<table>
+<tr><th>Week</th><th>Chapter</th><th>Ladder</th><th>Focus</th></tr>
+<tr><td>23</td><td>22 &mdash; Mixture of Experts</td><td><code>ex19</code></td><td>Routing is the whole difficulty; the experts are ordinary MLPs.</td></tr>
+<tr><td>24</td><td>23 &mdash; Tokenization</td><td><code>ex20</code></td><td>Bits-per-byte versus perplexity. The literature still gets this wrong.</td></tr>
+<tr><td>25</td><td>24 &mdash; Scaling Laws</td><td><code>ex22</code></td><td>Read Kaplan, Chinchilla, and the replication in that order.</td></tr>
+<tr><td>26</td><td>25 &mdash; The Pretraining Pipeline</td><td>&mdash;</td><td>Where model quality actually comes from since 2023.</td></tr>
+<tr><td>27&ndash;28</td><td>&mdash; (train a small LM)</td><td><code>ex21</code></td><td>Two weeks. Train a small GPT end to end on your own hardware. Non-negotiable.</td></tr>
+<tr><td>29</td><td>26 &mdash; SFT and PEFT</td><td><code>ex23</code></td><td>LoRA merge-equivalence is the assertion that teaches the most.</td></tr>
+<tr><td>30</td><td>27 &mdash; Preference Optimization</td><td><code>ex24</code></td><td>Derive DPO from the RLHF optimum yourself.</td></tr>
+<tr><td>31</td><td>28 &mdash; Reasoning and Test-Time Compute</td><td>&mdash;</td><td>The pass@1 versus pass@k distinction. Most contested chapter in the book.</td></tr>
+<tr><td>32</td><td>29 &mdash; Evaluation and the Measurement Crisis</td><td>&mdash;</td><td>Read before you next cite a benchmark number.</td></tr>
+</table>
+
+<div class="phase-header">
+<div class="phase-label">Phase 4</div>
+<div class="phase-title">Systems, Frontier, and Encryption</div>
+<div class="phase-weeks">Weeks 34&ndash;41 &middot; Chapters 30&ndash;42 &middot; Ladder tiers 5&ndash;6</div>
+</div>
+
+<table>
+<tr><th>Week</th><th>Chapter</th><th>Ladder</th><th>Focus</th></tr>
+<tr><td>34</td><td>30 &mdash; The GPU Execution Model<br>31 &mdash; FlashAttention</td><td><code>ex25</code></td><td>Roofline first, then FlashAttention as its consequence. They are one idea.</td></tr>
+<tr><td>35</td><td>32 &mdash; Distributed Training<br>33 &mdash; Inference and Serving</td><td><code>ex26</code>, <code>ex28</code></td><td>Communication volume as the design constraint.</td></tr>
+<tr><td>36</td><td>34 &mdash; Quantization and Compression</td><td><code>ex27</code></td><td>Direct relevance to Part VIII: quantization is what makes TFHE-style inference viable.</td></tr>
+<tr><td>37</td><td>35 &mdash; Diffusion and Flow Matching<br>36 &mdash; Agents<br>37 &mdash; Interpretability</td><td><code>ex29</code>&ndash;<code>ex31</code></td><td>Skim to taste. None of Part VII is load-bearing for Part VIII.</td></tr>
+<tr><td>38</td><td>38 &mdash; What Breaks When You Encrypt a Transformer</td><td><code>tier6</code></td><td>The depth arithmetic of one attention block. Do this by hand.</td></tr>
+<tr><td>39</td><td>39 &mdash; Approximating the Non-Polynomial Core</td><td><code>tier6</code></td><td>You will have read most of the primary sources by now. Read critically.</td></tr>
+<tr><td>40</td><td>40 &mdash; Private Transformer Inference Systems</td><td><code>tier6</code></td><td>Compare the chapter's account against your own comparison table. Trust yours.</td></tr>
+<tr><td>41</td><td>41 &mdash; Encrypted LLM Serving at Scale<br>42 &mdash; Where a Contribution Fits</td><td><code>tier6</code></td><td>Chapter 42 is a working session, not a reading: leave with three candidate problems.</td></tr>
+</table>
+
+<h2>The weekly automation</h2>
+
+<p>A recurring Routine fires once a week, takes the next paper off the queue, fetches it, drafts the nine-point analysis, and diffs it against the previous week's entry on depth, packing, and threat model. The output is a growing comparison table rather than forty isolated summaries.</p>
+
+<div class="callout">
+<div class="box-title">What the draft is for, and what it is not</div>
+<p>The draft exists so that you start from a filled-in table you disagree with rather than a blank one you have to fill. That is a real saving and a real risk. A machine-written analysis is confident in exactly the places a careful reader should not be &mdash; it will state a depth budget the paper never gives, and it will accept a latency number without checking what was excluded from it.</p>
+<p>So the rule is: <strong>the draft is a hypothesis, and your reading is the test.</strong> Point 8 &mdash; the claim you would attack &mdash; is yours alone; do not accept a generated answer for it. If in a given week you only have time either to read the paper or to review the draft, read the paper. The automation is scaffolding for a habit, and scaffolding that replaces the building is worse than none.</p>
+</div>
+
+<h2>If you fall behind</h2>
+
+<p>You will. The order of what to cut, when a week compresses:</p>
+
+<ol>
+<li><strong>Cut the crosswalk reading first.</strong> One good source beats two skimmed ones.</li>
+<li><strong>Then cut the ladder exercises</strong>, but never the chapter Artifact. The Artifact is the smallest unit that still forces understanding.</li>
+<li><strong>Then drop the paper to a two-week cadence.</strong> Half the papers analysed properly beats all of them skimmed &mdash; and the comparison table is only as good as its worst row.</li>
+<li><strong>Never cut the 30-minute review block.</strong> It is 4% of the week and most of the retention.</li>
+</ol>
+
+<p>If you are more than three weeks behind at week 20, the plan is wrong for your life rather than the other way around. Re-pace it to 15 months instead of abandoning it; the schedule is a tool, and a tool that is making you feel bad has stopped working.</p>
+
+</div><!-- .book-container -->
+
+<a href="#top" class="back-to-top" id="backToTop">&uarr;</a>
+
+<script>
+window.addEventListener('scroll', function() {
+  var btn = document.getElementById('backToTop');
+  if (window.scrollY > 500) { btn.classList.add('visible'); }
+  else { btn.classList.remove('visible'); }
+});
+</script>
