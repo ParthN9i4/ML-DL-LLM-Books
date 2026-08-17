@@ -68,8 +68,8 @@ def rtn(Wm, bits, granularity="channel", group=32):
 
 # ----------------------------------------------------------------------
 # GPTQ, Cholesky form.  H = 2 X X^T + damping.  Let T = chol(H^{-1})
-# (upper).  Quantize columns left to right; after fixing column j, add
-# (w_j - q_j)/T_jj * T_{j,j+1:} to the not-yet-quantized columns -- the
+# (upper).  Quantize columns left to right; after fixing column j, subtract
+# (w_j - q_j)/T_jj * T_{j,j+1:} from the not-yet-quantized columns -- the
 # exact OBQ update, batched via the Cholesky factor.
 # `propagate=False` uses the identical grid but skips the update:
 # that is column-wise RTN on the same grid (ablation (b)).

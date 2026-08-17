@@ -10,7 +10,7 @@ Three experiments, pure NumPy (torch appears only as an autograd cross-check):
   (3) A causal steering test: clamping a recovered latent moves the
       reconstruction along the planted direction; a control feature does not.
 Also prints the L0-vs-reconstruction-error frontier (the sparsity-fidelity
-trade-off of Section 37.3.1). Runs CPU-only in ~15 s.
+trade-off of Section 37.3.1). Runs CPU-only in ~20 s.
 """
 import numpy as np
 
@@ -98,12 +98,12 @@ if __name__ == "__main__":
     Wd_, rel_d = train_toy(p_active=1.00)         # dense regime
     nf = lambda W: int((np.linalg.norm(W, axis=0) > 0.5).sum())
     ns, nd = nf(Ws), nf(Wd_)
-    # any model representing only d of the m features pays at least the
-    # importance mass of the m-d dropped features (E[x_i^2] equal across i):
+    # a model keeping d features and reconstructing 0 for the rest pays at
+    # least the importance mass of the m-d dropped features (E[x_i^2] equal):
     I = 0.9 ** np.arange(m)
     bound_d_feats = I[d:].sum() / I.sum()
     print(f"[toy] sparse p=0.05: {ns}/{m} features in {d} dims, rel-loss {rel_s:.4f}")
-    print(f"[toy]   (best possible d-feature model on sparse data: {bound_d_feats:.4f})")
+    print(f"[toy]   (floor for d kept features, zero on the rest: {bound_d_feats:.4f})")
     print(f"[toy] dense  p=1.00: {nd}/{m} features in {d} dims, rel-loss {rel_d:.4f}")
     assert ns >= 2 * d, f"superposition failed: only {ns} features packed"
     assert nd <= d + 1, f"dense model kept {nd} > d+1 features"

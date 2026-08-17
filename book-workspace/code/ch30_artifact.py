@@ -15,7 +15,7 @@ import numpy as np
 
 rng = np.random.default_rng(0)
 
-def tmin(f, reps=3, budget=0.35, cap=150):
+def tmin(f, reps=3, budget=0.35, cap=600):
     """Best-of-many wall clock. Warm up twice first (page faults, BLAS
     thread-pool spin-up, caches), then sample until we have both `reps`
     samples and `budget` seconds of measurement, capped at `cap` calls.
@@ -31,9 +31,11 @@ def tmin(f, reps=3, budget=0.35, cap=150):
 
 # ---------------------------------------------------------------- ceilings
 def measure_bandwidth():
-    """STREAM-style copy, 256 MiB arrays (this VM has a 33 MiB L3, so the
-    512 MiB working set streams from DRAM). Convention:
-    count bytes read + bytes written, so a copy moves 2x the array size."""
+    """STREAM-style copy, 256 MiB arrays: the 512 MiB read+write working
+    set exceeds the L3 (260 MiB reported by lscpu on this VM), so the
+    copy streams from DRAM -- the measured rate is DRAM-class, an order
+    of magnitude under cache rates. Convention: count bytes read + bytes
+    written, so a copy moves 2x the array size."""
     x = rng.random(2**26, dtype=np.float32); y = np.empty_like(x)
     t = tmin(lambda: np.copyto(y, x), reps=7)
     return 2 * x.nbytes / t                      # bytes/s
@@ -55,7 +57,7 @@ PEAK = measure_peak_flops()                      # provisional; see below
 # Each op: (name, callable-on-prealloc-buffers, flops, bytes moved by the
 # implementation as written).  exp counted as 1 FLOP (roofline convention;
 # its true cost shows up as memory-bound ops running above prediction).
-R, C = 8192, 8192                                 # 256 MiB: larger than L3
+R, C = 8192, 8192                                 # X,T,OUT: 3 x 256 MiB, past L3
 X  = rng.random((R, C), dtype=np.float32)   # uniform: cheap to generate
 T  = np.empty_like(X); OUT = np.empty_like(X)
 n1 = 2**26                                        # 256 MiB per fp32 array

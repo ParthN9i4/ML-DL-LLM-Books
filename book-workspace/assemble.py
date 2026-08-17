@@ -229,6 +229,34 @@ def verify():
     return 0
 
 
+def insert_appendices():
+    """Splice appendix fragments (parts/appendix_[a-f].html) between the
+    APPENDICES markers, in letter order. Idempotent like part insertion."""
+    letters = "abcdef"
+    chunks = []
+    missing = []
+    for ch in letters:
+        path = os.path.join(PARTS, f"appendix_{ch}.html")
+        if not os.path.exists(path):
+            missing.append(ch)
+            continue
+        with open(path) as f:
+            chunks.append(f.read().strip() + "\n")
+    if missing:
+        print(f"  ! missing appendix fragments: {missing}")
+    with open(BOOK) as f:
+        book = f.read()
+    start, end = "<!-- APPENDICES_START -->", "<!-- APPENDICES_END -->"
+    if start not in book or end not in book:
+        sys.exit("appendix markers not found")
+    i = book.index(start) + len(start)
+    j = book.index(end)
+    body = "\n".join(chunks)
+    with open(BOOK, "w") as f:
+        f.write(book[:i] + "\n" + body + book[j:])
+    print(f"  inserted {len(chunks)} appendices, {len(body):,} bytes")
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         sys.exit(__doc__)
@@ -237,6 +265,9 @@ if __name__ == "__main__":
         for p in (sys.argv[2:] or ORDER):
             if p in PART_META:
                 insert(p)
+        sys.exit(0)
+    elif cmd == "appendices":
+        insert_appendices()
         sys.exit(0)
     elif cmd == "verify":
         sys.exit(verify())

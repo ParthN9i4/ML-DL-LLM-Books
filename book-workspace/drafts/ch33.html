@@ -33,18 +33,18 @@
 
 <p>$$\text{KV bytes} \;=\; \underbrace{2}_{\text{K and V}} \;\times\; L \;\times\; n_{\text{kv}} \;\times\; d_h \;\times\; T \;\times\; b,$$</p>
 
-<p>where $L$ is layer count, $n_{\text{kv}}$ the number of KV heads (equal to attention heads for vanilla multi-head attention; smaller under GQA/MQA, Chapter 19), $d_h$ the head dimension, $T$ the current sequence length, and $b$ bytes per element.</p>
+<p>where $L$ is layer count, $n_{\text{kv}}$ the number of KV heads (equal to attention heads for vanilla multi-head attention; smaller under GQA/MQA, Chapter 18), $d_h$ the head dimension, $T$ the current sequence length, and $b$ bytes per element.</p>
 
 <div class="example"><div class="box-title">Example 33.2 (KV cache for a Llama-3-8B-class model)</div>
-<p>Take $L=32$, $n_{\text{kv}}=8$ (GQA), $d_h=128$, fp16 ($b=2$) <span class="tag tag-verify">Verify</span>. Per token: $2 \times 32 \times 8 \times 128 \times 2 = 131{,}072$ bytes $= 128$ KiB. At $T = 8192$: $128\ \text{KiB} \times 8192 = 1$ GiB per sequence. On an 80 GB card holding 16 GB of weights, the remaining $\sim$60 GB caps concurrency at about 60 such sequences &mdash; and without GQA ($n_{\text{kv}}=32$) at about 15. The KV cache, not the weights, is what limits batch size, and Section 33.1 showed batch size is what buys throughput.</p></div>
+<p>Take $L=32$, $n_{\text{kv}}=8$ (GQA), $d_h=128$, fp16 ($b=2$) <span class="tag tag-verify">Verify</span>. Per token: $2 \times 32 \times 8 \times 128 \times 2 = 131{,}072$ bytes $= 128$ KiB. At $T = 8192$: $128\ \text{KiB} \times 8192 = 1$ GiB per sequence. On an 80 GB card holding 16 GB of weights, the remaining $\sim$60 GiB caps concurrency at about 60 such sequences &mdash; and without GQA ($n_{\text{kv}}=32$) at about 15. The KV cache, not the weights, is what limits batch size, and Section 33.1 showed batch size is what buys throughput.</p></div>
 
 <p>Every factor in the formula is a lever, and they compose multiplicatively:</p>
 <table>
-<tr><th>Layout ($L=32$, $d_h=128$)</th><th>$n_{\text{kv}}$</th><th>$b$</th><th>Bytes/token</th><th>Sequences at 8K in 60 GB</th></tr>
+<tr><th>Layout ($L=32$, $d_h=128$)</th><th>$n_{\text{kv}}$</th><th>$b$</th><th>Bytes/token</th><th>Sequences at 8K in 60 GiB</th></tr>
 <tr><td>MHA, fp16</td><td>32</td><td>2</td><td>524,288</td><td>15</td></tr>
-<tr><td>GQA, fp16</td><td>8</td><td>2</td><td>131,072</td><td>61</td></tr>
-<tr><td>GQA, int8 cache</td><td>8</td><td>1</td><td>65,536</td><td>122</td></tr>
-<tr><td>MQA, int8 cache</td><td>1</td><td>1</td><td>8,192</td><td>983</td></tr>
+<tr><td>GQA, fp16</td><td>8</td><td>2</td><td>131,072</td><td>60</td></tr>
+<tr><td>GQA, int8 cache</td><td>8</td><td>1</td><td>65,536</td><td>120</td></tr>
+<tr><td>MQA, int8 cache</td><td>1</td><td>1</td><td>8,192</td><td>960</td></tr>
 </table>
 <p>This is why GQA and MQA exist, why KV-cache quantization to 8 or 4 bits is standard practice (Chapter 34 covers its accuracy cost), and why long-context serving (Chapter 19) is primarily a memory problem. Note also that the cache grows <em>during</em> generation: a request's memory footprint at admission time is unknown, because you do not know how long its output will be. That uncertainty is the subject of the next section.</p>
 
@@ -107,7 +107,7 @@ tokens (and $\gamma+1$ exactly when $\alpha = 1$).</p>
 
 <h4>33.7 Prefix Caching</h4>
 
-<p>Chatbots and agents (Chapter 36) resend nearly identical context every turn: system prompt, tool definitions, conversation so far. Since keys and values at position $i$ depend only on tokens $\le i$ (with the positional caveats of Chapter 19), the KV cache of a shared prefix is <em>identical</em> across requests and reusable. Paged storage makes this cheap: hash each full block of tokens (chained with its prefix's hash) and look up incoming requests' prefixes block by block, or keep a radix tree over cached token sequences as SGLang does; matched blocks are reference-counted and shared, and prefill runs only on the unmatched suffix. TTFT for a hit drops roughly in proportion to the cached fraction &mdash; for a 4,000-token system prompt ahead of a 100-token question, about $40\times$ less prefill compute. Commercial APIs expose the same mechanism as discounted &ldquo;cached input token&rdquo; pricing, typically $5$&ndash;$10\times$ cheaper than uncached input <span class="tag tag-verify">Verify</span>. The eviction policy is LRU over blocks; the capacity spent on cache is capacity taken from batch, so the knob is workload-dependent.</p>
+<p>Chatbots and agents (Chapter 36) resend nearly identical context every turn: system prompt, tool definitions, conversation so far. Since keys and values at position $i$ depend only on tokens $\le i$ (with the positional caveats of Chapter 19), the KV cache of a shared prefix is <em>identical</em> across requests and reusable. Paged storage makes this cheap: hash each full block of tokens (chained with its prefix's hash) and look up incoming requests' prefixes block by block, or keep a radix tree over cached token sequences as SGLang does; matched blocks are reference-counted and shared, and prefill runs only on the unmatched suffix. TTFT for a hit drops roughly in proportion to the cached fraction &mdash; for a 4,000-token system prompt ahead of a 100-token question, about $40\times$ less prefill compute. Commercial APIs expose the same mechanism as discounted &ldquo;cached input token&rdquo; pricing, roughly $2$&ndash;$10\times$ cheaper than uncached input depending on provider <span class="tag tag-verify">Verify</span>. The eviction policy is LRU over blocks; the capacity spent on cache is capacity taken from batch, so the knob is workload-dependent.</p>
 
 <h4>33.8 Cost per Token</h4>
 
@@ -277,7 +277,7 @@ if __name__ == "__main__":
 
     print("All assertions passed.")
 </code></pre>
-<p>Running it (2.4 s on CPU) prints, for 375,567 emitted tokens: total variation from the target $0.00343$ against $0.00271$ for direct sampling from $p$ at the same sample size &mdash; statistically indistinguishable, confirmed by chi-square $34.3$ on 31 degrees of freedom ($p = 0.314$). Measured acceptance is $0.48116$ against the analytic $\alpha = 0.48208$; measured tokens/cycle $1.8778$ against the analytic $1.8805$. The allocator experiment reports contiguous fragmentation $48.36\%$ versus $0.694\%$ paged, with the allocator's block count matching the closed form $\lceil T/B\rceil B$ exactly.</p>
+<p>Running it (2.6 s on CPU) prints, for 375,567 emitted tokens: total variation from the target $0.00343$ against $0.00271$ for direct sampling from $p$ at the same sample size &mdash; statistically indistinguishable, confirmed by chi-square $34.3$ on 31 degrees of freedom ($p = 0.314$). Measured acceptance is $0.48116$ against the analytic $\alpha = 0.48208$; measured tokens/cycle $1.8778$ against the analytic $1.8805$. The allocator experiment reports contiguous fragmentation $48.36\%$ versus $0.694\%$ paged, with the allocator's block count matching the closed form $\lceil T/B\rceil B$ exactly.</p>
 </div>
 
 <div class="encrypted-note"><div class="box-title">Under Encryption</div>
@@ -288,7 +288,7 @@ if __name__ == "__main__":
 <li>Prefill is compute-bound (arithmetic intensity $\approx T$ FLOPs per weight byte); batch-1 decode is bandwidth-bound at $\approx 1$, leaving well over 99% of peak FLOP/s idle &mdash; the surplus every serving technique spends. <span class="tag tag-certain">Certain</span></li>
 <li>KV cache size is $2 L\, n_{\text{kv}} d_h T b$ bytes &mdash; 128 KiB/token, 1 GiB at 8K context for an 8B GQA model &mdash; and it, not the weights, usually caps batch size and hence throughput. <span class="tag tag-certain">Certain</span></li>
 <li>Paged allocation with 16-token blocks cut measured KV fragmentation from 48.36% (contiguous max-length reservation) to 0.694% on uniform random lengths, and its block indirection is what enables prefix sharing and copy-on-write. <span class="tag tag-certain">Certain</span></li>
-<li>Speculative decoding is exactly distribution-preserving for any draft (Theorem 33.1), with acceptance rate $1 - D_{\mathrm{TV}}(p,q)$ and expected $(1-\alpha^{\gamma+1})/(1-\alpha)$ tokens per target pass &mdash; verified empirically to three decimal places in Artifact 33.1. <span class="tag tag-certain">Certain</span></li>
+<li>Speculative decoding is exactly distribution-preserving for any draft (Theorem 33.1), with acceptance rate $1 - D_{\mathrm{TV}}(p,q)$ and expected $(1-\alpha^{\gamma+1})/(1-\alpha)$ tokens per target pass &mdash; both verified empirically in Artifact 33.1 to within $3\times 10^{-3}$. <span class="tag tag-certain">Certain</span></li>
 <li>Continuous batching plus chunked prefill trades a small TTFT increase for smooth TPOT and multiple-times higher throughput; speculation helps latency at small batch but can cost throughput near the compute roofline, so schedulers should gate it on load. <span class="tag tag-likely">Likely</span></li>
 </ul>
 </div>
