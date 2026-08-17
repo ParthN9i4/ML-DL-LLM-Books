@@ -1,0 +1,269 @@
+<div class="chapter" id="ch41">
+<div class="chapter-header"><div class="ch-label">Chapter 41</div><h3>Encrypted LLM Serving at Scale</h3></div>
+
+<div class="learning-objectives">
+<div class="lo-title">Learning Objectives</div>
+<ul>
+<li>Compute the ciphertext count and memory footprint of an encrypted KV cache as a function of sequence position $t$, packing density, and RNS precision.</li>
+<li>Derive the rotation and repacking cost of appending one generation step to a packed cache, and the cost of attending over it.</li>
+<li>Place bootstrapping inside the generation loop and derive tokens-per-bootstrap $B/d_{\text{tok}}$ for a given level budget $B$.</li>
+<li>Compare the effective precision of a CKKS pipeline against fp16's 11-bit significand at matched settings, and state what accuracy evidence exists beyond single-pass classification.</li>
+<li>Implement an encrypted-generation cost model &mdash; op counts, bootstrap accounting, and a bootstrap-dominance crossover &mdash; in working code.</li>
+</ul>
+</div>
+
+<div class="read-alongside"><strong>Read alongside</strong> &mdash; <strong>Raschka</strong>, <em>Build a Large Language Model (From Scratch)</em>, for the plaintext KV cache implemented line by line: you need the plaintext loop cold before encrypting it. Stanford <strong>CS336</strong> for the serving-side framing (prefill versus decode, cache economics) that this chapter re-derives under encryption.</div>
+
+<p>Chapter 40 surveyed private transformer inference systems and Chapter 39 built their polynomial cores; nearly every number in those chapters describes <em>one forward pass</em>. This chapter asks what those systems have mostly not: what happens when you decode autoregressively, so that the KV cache of Chapter 33 becomes a growing set of ciphertexts. Three costs that a single-pass benchmark never exercises &mdash; cache memory blow-up, per-step repacking, and bootstrapping in a loop whose depth grows without bound &mdash; turn out to dominate. We derive each, verify the closed forms against a counting model in Artifact 41.1, and end with the number the field least likes to print: an honest end-to-end accounting of one generated token. Chapter 42 uses the gaps identified here as a map of where a research contribution fits.</p>
+
+<h4>41.1 One Forward Pass Is Not Generation</h4>
+
+<p>The CKKS facts this chapter consumes, stated once (a dedicated FHE text, e.g. the CKKS chapters of Lauter, Dai &amp; Laine's <em>Protecting Privacy through Homomorphic Encryption</em>, covers the constructions): a ciphertext over ring degree $N$ carries $N/2$ complex slots; each ciphertext&ndash;ciphertext or masking multiplication consumes one level from a finite ladder, with a rescaling after each; slot permutations are rotations, each costing a key-switch comparable to a multiplication; and when levels run out, bootstrapping refreshes them at a cost two to three orders of magnitude above a multiplication, itself consuming part of the ladder and capping output precision. <span class="tag tag-certain">Certain</span></p>
+
+<p>The benchmark culture of Chapter 40 is single-pass: encrypt an input, run the circuit once, decrypt one output. NEXUS (Zhang et al., NDSS 2025) reports BERT-base inference in 37.3&nbsp;s on GPU with 164&nbsp;MB of bandwidth in its non-interactive CKKS setting; THOR (CCS 2025) and MOAI (ePrint 2025/991) report CKKS transformer inference in the same single-pass shape, with MOAI's paper reporting an extension of its pipeline to a Llama-3-8B forward pass. These are classification- or prefill-shaped workloads: depth is fixed at compile time, every ciphertext's level schedule is known in advance, and the circuit runs once.</p>
+
+<p>Generation breaks all three properties. Decoding $T$ tokens is $T$ <em>sequential</em> forward passes: total multiplicative depth grows linearly in $T$, so no fixed ladder survives and bootstrapping is not an occasional refresh but a metronome. The cache that makes plaintext decoding cheap &mdash; $O(td)$ attention per step instead of $O(t^2 d)$ recompute &mdash; must itself live in ciphertext, and its slot layout is frozen at encryption time. And the argmax/sampling step between passes is a comparison, the operation CKKS does worst (Chapter 39); NEXUS's secure argmax exists precisely because the output of one pass must become the input of the next without decryption.</p>
+
+<p>How thin is the actual generation literature? As of this writing: PUMA (Dong et al., 2023) reports generating one token of LLaMA-7B in around five minutes &mdash; under three-party MPC, a different threat model from FHE, with per-token cost roughly flat because MPC has no depth budget. On the FHE side, the first systems to integrate a genuinely encrypted KV cache appear in 2026 preprints: Cachemir (arXiv 2602.11470) reports FHE packing algorithms designed around the cache, an "augmented bootstrapping placement" strategy, speedups of 48.83&times; over MOAI and 67.16&times; over THOR on CPU when those single-pass systems are re-run in decoding mode, and under 100&nbsp;s per generated token for Llama-3-8B on GPU; CryptoGen (arXiv 2602.08798) reports a hybrid HE/secret-sharing design with persistent encrypted KV-cache reuse, near-linear per-token scaling, and 4.4&ndash;7.6&times; lower per-token latency than discriminative secure-inference systems adapted to decoding, evaluated on small transformers trained on WikiText-2, PTB, and LAMBADA. <span class="tag tag-verify">Verify</span> What has <em>not</em> been demonstrated, in any published system we could find: multi-hundred-token generations from a modern LLM under FHE with reported output quality; interactive (sub-second) per-token latency under any encrypted threat model at LLM scale; or batch-one decode economics that close within even two orders of magnitude of plaintext. That absence is the subject of this chapter, not an aside. <span class="tag tag-likely">Likely</span></p>
+
+<h4>41.2 The Encrypted KV Cache</h4>
+
+<p>Plaintext first (Chapter 33): after $t$ steps, the cache holds $2Ltd$ scalars &mdash; keys and values, per layer &mdash; and at fp16 costs $4Ltd$ bytes. Under CKKS the unit of storage is the ciphertext, and the accounting changes twice: once because slots quantize storage, and again because each slot costs far more than two bytes.</p>
+
+<div class="definition"><div class="box-title">Definition 41.1 (Packing density of a cached step)</div>
+<p>Fix ring degree $N$ with $s = N/2$ slots. A packing assigns the $d$-dimensional key (or value) vector of each cached step to slots. Its <em>density</em> $g$ is the number of steps stored per ciphertext, $1 \le g \le \lfloor s/d \rfloor$. The <em>compact</em> packing takes $g = \lfloor s/d \rfloor$; the <em>one-ciphertext-per-step</em> packing takes $g = 1$. After $t$ steps a layer's key cache occupies $m(t) = \lceil t/g \rceil$ ciphertexts, and the full cache $2L\,m(t)$.</p></div>
+
+<p>Memory per ciphertext is set by the RNS representation: two polynomials of $N$ coefficients over $\ell$ limbs of $w$ bytes each, i.e. $2N\ell w$ bytes at level $\ell$. The bytes-per-cached-scalar of a compact packing is therefore $2N\ell w / (gd) \approx 2N\ell w/s = 4\ell w$, independent of the model: at $\ell = 12$ limbs and $w = 8$ bytes, 384 bytes per scalar against fp16's two &mdash; a $\sim$192&times; expansion <em>before</em> any slack from $\lceil\cdot\rceil$ effects. <span class="tag tag-certain">Certain</span></p>
+
+<div class="example"><div class="box-title">Example 41.1 (Cache memory at $t=1024$, GPT-2-small geometry)</div>
+<p>Take $L=12$, $d=768$, $N=2^{16}$ (so $s=32{,}768$, $g=\lfloor 32768/768\rfloor = 42$), cache held at $\ell=12$ limbs. One ciphertext: $2 \times 65536 \times 12 \times 8 = 12{,}582{,}912$ bytes $= 12.0$ MiB. At $t=1024$: $m = \lceil 1024/42 \rceil = 25$, so $2 \times 12 \times 25 = 600$ ciphertexts $= 7.03$ GB. The fp16 plaintext cache is $4 \times 12 \times 1024 \times 768 = 36$ MiB &mdash; a 200&times; blow-up. The $g=1$ packing needs $2 \times 12 \times 1024 = 24{,}576$ ciphertexts $= 288$ GB, 8192&times; fp16. Both figures are printed by Artifact 41.1.</p></div>
+
+<p>So a <em>single stream's</em> encrypted cache at modest length occupies what a plaintext server spends on the weights of a 3B-parameter model. Two consequences follow. First, the batching that makes plaintext serving economical (Chapter 33) is nearly foreclosed: CKKS batching packs many <em>independent</em> inputs into slots, but a compact cache already spends its slots on cache steps, and every client's cache is encrypted under a different key. Second, the choice of $g$ is a genuine trade, not an optimization detail: $g=1$ makes appending free (the new step simply becomes a fresh ciphertext) but makes memory and attention cost scale with $t$ ciphertexts; compact packing divides both by $g$ but makes appending a slot-surgery problem &mdash; the subject of the next section.</p>
+
+<h4>41.3 Appending, Attending, Repacking</h4>
+
+<p>Slots are positional and immutable-in-place: to write step $t$'s key vector into slot block $(t \bmod g)$ of the current cache ciphertext, the server must (i) rotate the freshly computed key ciphertext by $(t \bmod g)\,d$ slots, (ii) multiply by a 0/1 mask plaintext to zero everything else, and (iii) add into the cache ciphertext. Step (ii) is a real multiplication: <em>it consumes a level</em>. Appending is never free under compact packing &mdash; per token it costs, across $K$ and $V$ and all layers, $2L$ rotations, $2L$ masking multiplications, and one level of depth on the cache lane. This is the repacking tax, and it recurs every token for the life of the stream.</p>
+
+<h5>41.3.1 Attending over the packed cache</h5>
+
+<p>With head dimension $d_k$ and heads interleaved in slots, computing scores $q \cdot k_i$ for the $g$ steps inside one cache ciphertext costs one ciphertext&ndash;ciphertext multiplication (the replicated query against the packed keys) plus $\lceil \log_2 d_k \rceil$ rotations for the rotate-and-sum inner product; the weighted-value accumulation costs one more multiplication plus $\lceil \log_2 g \rceil$ rotations per value ciphertext. Cross-ciphertext combination is slot-aligned addition, which is free in this accounting. Per token, the cache-dependent cost is therefore</p>
+<p>$$A(t) = L\, m(t)\,\big(2\,c_{\times} + (\lceil \log_2 d_k \rceil + \lceil \log_2 g \rceil)\, c_{\mathrm{rot}}\big), \qquad m(t) = \lceil t/g \rceil,$$</p>
+<p>which is a staircase, flat within a ciphertext and jumping by $b = L(2 + \lceil \log_2 d_k\rceil + \lceil \log_2 g \rceil)$ multiplication-equivalents every $g$ tokens (weighting rotations and ct-mults equally at $c_\times = c_{\mathrm{rot}} = 1$, key-switch-dominated ops being comparable). For the Example 41.1 geometry, $b = 12(2+6+6) = 168$; Artifact 41.1's least-squares fit of its simulated staircase recovers slope $168.000000$ with maximum residual $1.8\times 10^{-12}$. Under $g=1$ the same derivation gives per-token cost linear in $t$ with a $42\times$ steeper effective slope &mdash; the two packings trade append cost against attend cost, and neither escapes growth in $t$. The assertion the artifact enforces is the chapter's first claim in executable form: <em>per-token cost grows with cache length under any fixed packing</em>. <span class="tag tag-certain">Certain</span></p>
+
+<p>Cachemir's contribution is essentially a better point on this trade surface: the paper reports an "interleaved replicated" packing for the vector&ndash;matrix products that decode-time attention produces, chosen so that the append and attend rotations share structure. <span class="tag tag-verify">Verify</span> It does not repeal the staircase; it lowers $b$.</p>
+
+<div class="warning-box"><div class="box-title">Common Pitfall</div>
+<p><strong>Level misalignment in the cache.</strong> The key written at step 10 has consumed a different number of levels than the key written at step 400 &mdash; each passed through a different number of bootstrap cycles before being cached. CKKS addition requires operands at the same level, so a naive implementation either crashes at the add-into-cache step or silently mod-switches the <em>entire cache ciphertext</em> down to the newest entry's level, ratcheting the whole cache toward level zero and forcing a full-cache bootstrap. The fix is a write-time contract: mod-switch every fresh $K$/$V$ to a fixed <em>resident level</em> $\ell_{\text{cache}}$ chosen at compile time, and budget the masking multiplication below it. Every FHE KV-cache design must state $\ell_{\text{cache}}$ somewhere; if a paper doesn't, its memory numbers are not reproducible, because $\ell$ is a factor in every byte count.</p></div>
+
+<h4>41.4 Bootstrapping Placement</h4>
+
+<p>Each decoded token consumes a fixed depth $d_{\text{tok}} = L\, d_{\text{layer}}$: attention scores, the softmax polynomial, the value mix, projections, LayerNorm inverse-square-root and activation polynomials, plus the append mask (&sect;41.3). Depth per token is <em>constant in $t$</em> &mdash; longer caches add rotations and multiplications, not levels &mdash; but it accrues across tokens without bound, so bootstrapping enters the loop as a fixed per-token toll rather than a rare event.</p>
+
+<div class="theorem"><div class="box-title">Theorem 41.1 (Greedy bootstrap count)</div>
+<p>Model the residual stream as one serial lane consuming $D$ levels in total, starting with a fresh budget of $B$ usable levels and bootstrapping (restoring $B$) exactly when the budget is exhausted and more depth is needed. The number of bootstraps is $\lceil D/B \rceil - 1$, and no schedule that only bootstraps (never wastes levels) does better.</p>
+<p><strong>Proof.</strong> After $k$ bootstraps the total usable depth supplied is $(k+1)B$; the run completes when $(k+1)B \ge D$, i.e. $k \ge D/B - 1$, so the greedy count is the least integer $k$ with $k \ge \lceil D/B \rceil - 1$. Optimality: any valid schedule with $k$ bootstraps supplies at most $(k+1)B$ levels, so $k \ge D/B - 1$ for every schedule. $\blacksquare$</p></div>
+
+<p>The serial-lane model is the honest simplification to state loudly: a real circuit has parallel lanes at different levels, and production placement (as in the FHE compilers of Chapter 40, and the "augmented" cache-aware placement Cachemir's paper reports) exploits that slack. But it changes constants, not the structure: steady-state <em>tokens per bootstrap</em> is $B / d_{\text{tok}}$, and for every realistic transformer this is far below one &mdash; you bootstrap many times per token, not the reverse.</p>
+
+<div class="example"><div class="box-title">Example 41.2 (Tokens per bootstrap)</div>
+<p>With $d_{\text{layer}} = 21$ levels (1 QKV, 1 append mask, 1 scores, 6 softmax, 1 value mix, 1 output projection, $2\times 2$ LayerNorm, 1+4+1 MLP with activation) and $L = 12$: $d_{\text{tok}} = 252$. With $B = 18$ usable levels: $252/18 = 14$ bootstraps per token, i.e. $0.0714$ tokens per bootstrap. Over $T = 1024$ tokens, $D = 258{,}048$ and Theorem 41.1 gives $\lceil 258048/18\rceil - 1 = 14{,}335$; Artifact 41.1's step-by-step level simulation counts exactly $14{,}335$ (13 for the first token, whose fresh budget is free, then 14 every token thereafter).</p></div>
+
+<p>Placement freedom that generation adds and single-pass circuits lack: the cache itself. Cache ciphertexts sit at the fixed resident level and lose one level per append-mask; refreshing them can be batched (bootstrap $2L$ cache lanes together, amortizing key-switch keys and memory traffic) and scheduled off the token's critical path, since step $t{+}1$ needs the cache only at its attention layer. Overlapping cache refresh with the MLP of the previous layer is the FHE analogue of the prefetching tricks of Chapter 33 &mdash; reported as a design element in the 2026 cache papers, not yet standard. <span class="tag tag-likely">Likely</span></p>
+
+<h4>41.5 Effective Precision: CKKS versus fp16</h4>
+
+<p>fp16 carries an 11-bit significand (10 stored, one implicit). A CKKS slot's effective precision is $\log_2(\Delta / \lVert e \rVert)$: scale over noise. Fresh encryptions at $\Delta = 2^{40}$ typically start near 30 bits; each level consumed costs a model-dependent fraction of a bit (rescaling rounding plus approximation error); and bootstrapping does not restore fresh precision &mdash; it caps it, with reported CKKS bootstrapping output precision in the high-teens to low-20s of bits at practical parameters. <span class="tag tag-verify">Verify</span> The steady-state pipeline therefore lives on a sawtooth: precision $p_{\text{boot}}$ after each bootstrap, decaying by $\lambda$ bits per level for $B$ levels. The floor is $p_{\text{boot}} - \lambda B$, and it &mdash; not the fresh-encryption headline &mdash; is the number to compare against fp16. At Artifact 41.1's stated parameters ($p_{\text{boot}} = 20$, $\lambda = 0.5$, $B = 18$) the floor is exactly $11.0$ bits: fp16 parity with zero margin, and the model's implied maximum budget for fp16 parity is $B_{\max} = \lfloor (p_{\text{boot}} - 11)/\lambda \rfloor = 18$. This is a parameterized model, not a measurement &mdash; but it exposes the real coupling: <em>raising $B$ to bootstrap less often lowers worst-case precision</em>. Depth budget and precision budget are the same budget spent twice.</p>
+
+<p>What accuracy evidence exists beyond single-pass classification? Very little. The single-pass systems of Chapter 40 report small degradations on GLUE-style classification &mdash; a task family where a half-bit of logit error rarely flips an argmax. Generation is harsher in one way and gentler in another, and the field genuinely disagrees on which wins. <span class="tag tag-contested">Contested</span> The pessimistic position: approximation error compounds across $T$ sequential passes &mdash; each token is sampled from perturbed logits and then <em>conditions all later steps</em>, so quality should degrade with length, and perplexity-style evaluation under encryption over long horizons has not been published for any modern LLM. The optimistic position: greedy decoding snaps to a discrete token, which is an error-erasing nonlinearity &mdash; if the perturbation doesn't flip the argmax, the emitted prefix is <em>exactly</em> the plaintext one and nothing compounds. Both are right in their regimes (peaked versus flat next-token distributions). What would settle it is cheap to state and expensive to run: token-level agreement curves between encrypted and plaintext decoding versus generation length, at matched sampling settings, on a model people care about. CryptoGen's reported evaluations (small models, WikiText-2/PTB/LAMBADA) are the closest published step; no result at Llama scale exists as of this writing. <span class="tag tag-verify">Verify</span></p>
+
+<h4>41.6 GPU-Accelerated FHE</h4>
+
+<p>Everything above counts operations; GPUs change the constant per operation. CKKS's inner loops &mdash; NTTs and base conversions over $N=2^{16}$ rings &mdash; are memory-bandwidth-bound, which is exactly the regime GPUs win (Chapter 30). The landmark is Jung et al. (TCHES 2021), the first GPU CKKS bootstrapping: the paper reports 0.423&nbsp;&mu;s amortized bootstrapping time per bit and a 257&times; speedup over a single-threaded CPU baseline, achieved by memory-centric kernel fusion rather than FLOP tricks. Since then:</p>
+
+<table>
+<tr><th>System</th><th>What the paper/repo reports</th><th>Bootstrapping?</th></tr>
+<tr><td>Jung et al. (TCHES 2021)</td><td>0.423&nbsp;&mu;s/bit amortized bootstrap; 257&times; vs 1-thread CPU</td><td>Yes (first on GPU)</td></tr>
+<tr><td>Phantom (ePrint 2023/049)</td><td>CUDA BFV/BGV/CKKS library</td><td>No</td></tr>
+<tr><td>HEonGPU (ePrint 2024/1543)</td><td>Repo reports slim bootstrapping, $N=2^{16}$, in 99.12&nbsp;ms on an RTX 4090 <span class="tag tag-verify">Verify</span></td><td>Yes (CKKS, BFV, TFHE)</td></tr>
+<tr><td>FIDESlib (2025)</td><td>Reports 227.8&times; over OpenFHE for bootstrapping</td><td>Yes</td></tr>
+<tr><td>Cheddar (ASPLOS)</td><td>Reports 2.9&ndash;25.6&times; over prior GPU libraries</td><td>Yes</td></tr>
+<tr><td>NEXUS-GPU (NDSS 2025)</td><td>Reports 42.3&times; over its own CPU version</td><td>Yes (via FHE-MP-CNN port)</td></tr>
+</table>
+
+<p>These rows are <em>not</em> mutually comparable: they differ in GPU generation, ring degree, bootstrapping variant (slim versus full-slot), target precision, and what is excluded from timing (key generation, host&ndash;device transfer), so read each as a claim about one system, never as a ranking. For the practitioner in OpenFHE, the relevant deltas are that FIDESlib and HEonGPU both position themselves against OpenFHE's CPU baseline, and that a $\sim$100&nbsp;ms-class GPU bootstrap moves the bootstrap-to-multiplication ratio $R$ from the $10^2$&ndash;$10^3$ of CPU pipelines toward $10^2$ &mdash; which matters because, as &sect;41.7 shows, $R$ is the single knob that decides whether the generation loop is bootstrap-bound. What GPU acceleration does <em>not</em> change: the staircase in $t$, the tokens-per-bootstrap arithmetic, and the 200&times; cache memory expansion &mdash; 7&nbsp;GB per stream at $t=1024$ now competes with model weights for HBM. <span class="tag tag-certain">Certain</span></p>
+
+<h4>41.7 An Honest Cost of One Token</h4>
+
+<p>Assemble the pieces at the Example 41.1 geometry, from Artifact 41.1's run. Decoding one token at $t=1$ costs 19,149.6 multiplication-equivalents in the counting model; at $t=1024$, 23,181.6, with the cache-attention share growing from 0.9% to 18.1%. Bootstrapping adds $14 \times R$ equivalents per token; at the [Verify]-tagged $R=100$ that is 1,400 &mdash; 6.8% of modeled time at $t=1$, diluting to 5.7% at $t=1024$. The crossover where the growing attention staircase overtakes the fixed bootstrap toll has the closed form $t^{*} = \lfloor d_{\text{tok}} R / (B\,b) \rfloor \cdot g + 1 = 337$, and the simulation's op-by-op scan finds exactly $t=337$. On a CPU pipeline with $R \sim 10^3$, the same closed form pushes $t^{*}$ past 3,000: bootstrap-bound for any realistic chat turn. That inversion is worth stating plainly: <em>GPU bootstrapping does not remove the bootstrap problem; it relocates the bottleneck to cache traffic</em>, which is the harder one to fix because it is bandwidth, not compute. <span class="tag tag-likely">Likely</span></p>
+
+<p>To anchor against published wall-clock: Cachemir's paper reports under 100&nbsp;s per generated token for Llama-3-8B on GPU; PUMA's paper reports about five minutes per LLaMA-7B token under three-party MPC. These two numbers come from different threat models, hardware, and timing boundaries and must not be compared to each other or to plaintext serving numbers; they jointly bound the state of the art at minutes-to-two-minutes per token for 7&ndash;8B models under cryptographic protection. <span class="tag tag-verify">Verify</span> A plaintext A100 serves the same model at tens of milliseconds per token &mdash; three to four orders of magnitude. The honest sentence, then: encrypted generation exists as a demonstrated capability at the scale of single tokens and short sequences, and does not yet exist as a demonstrated <em>service</em>. The distance is measured in exactly the three quantities this chapter derived &mdash; bytes per cached scalar ($4\ell w$), the staircase slope $b$, and tokens per bootstrap ($B/d_{\text{tok}}$) &mdash; and Chapter 42 treats each as an open problem with a research surface attached.</p>
+
+<div class="artifact-box"><div class="box-title">Artifact 41.1 &mdash; An Encrypted-Generation Cost Model</div>
+<p>This module extends Artifact 38.1's op counter to autoregressive decoding: it simulates $T=1024$ tokens with a growing KV cache under the compact packing of Definition 41.1, counting rotations, ciphertext multiplications, masking multiplications, and bootstraps under greedy level accounting. It is a counting model &mdash; no FHE library runs, and the only wall-clock-flavored input is the [Verify]-tagged ratio $R$. It asserts the chapter's three closed forms against the simulation: staircase growth with fitted slope equal to $b$, Theorem 41.1's bootstrap count, and the crossover $t^{*}$; it also evaluates the parameterized precision model of &sect;41.5.</p>
+<pre><code>"""Artifact 41.1 -- Encrypted-generation cost model (extends Artifact 38.1's op counter).
+
+COUNTING MODEL ONLY. No FHE library is invoked; nothing here is a measurement.
+We count homomorphic operations (rotations, ct-ct multiplies, pt-ct multiplies,
+fresh ciphertexts, bootstraps) for autoregressive decoding with a growing
+encrypted KV cache under one explicitly stated packing.  Wall-clock enters only
+through a single [Verify]-tagged ratio R_BOOT = bootstrap cost / ct-ct-mult
+cost; effective precision is a parameterized model, not a measurement.
+"""
+import math
+import numpy as np
+
+# ---------------- model geometry (GPT-2-small-like; all stated, not measured) --
+L, d, H, dk, dff = 12, 768, 12, 64, 3072   # layers, width, heads, head dim, FF
+N = 1 &lt;&lt; 16                                 # CKKS ring degree
+SLOTS = N // 2                              # 32768 complex slots
+G = SLOTS // d                              # cache steps packed per ciphertext (compact packing)
+LIMB_BYTES = 8                              # one RNS limb coefficient = 8 bytes
+ELL_CACHE = 12                              # limbs at which cache ciphertexts are held (stated)
+
+# unit costs, in "ct-ct multiply equivalents" (keyswitch-bearing ops ~ 1)
+W_ROT, W_CTMULT, W_PTMULT = 1.0, 1.0, 0.1
+
+# depth (levels consumed) per layer per generated token -- stated component model:
+# qkv proj 1, cache append masks 1, scores 1, softmax poly 6, AV 1, out proj 1,
+# LN approx 2+2, MLP in 1, activation poly 4, MLP out 1  =&gt; 21
+D_LAYER = 21
+D_TOK = L * D_LAYER          # levels consumed per generated token (residual stream)
+B_LEVELS = 18                # usable multiplicative budget between bootstraps
+R_BOOT = 100.0               # [Verify] bootstrap / ct-mult cost ratio; HEonGPU's README
+                             # reports ~99 ms slim bootstrapping (N=2^16, RTX 4090) vs
+                             # ~1 ms-scale GPU ct-mults =&gt; order 1e2. Re-check per system.
+
+
+def per_token_cost(t):
+    """Op counts to decode ONE token when the cache already holds t-1 steps
+    (so it holds t after the append).  Explicit loops over cache ciphertexts --
+    the closed forms in the chapter are checked AGAINST this, not derived from it."""
+    rot = ctm = ptm = 0.0
+    m = math.ceil(t / G)                     # live cache ciphertexts per layer per K (and V)
+    for _ in range(L):
+        # -- cache-independent core (Halevi-Shoup/BSGS matvecs on one token vector)
+        rot += 4 * 2 * math.ceil(math.sqrt(d));   ptm += 4 * d        # Wq,Wk,Wv,Wo
+        rot += 2 * 2 * math.ceil(math.sqrt(dff)); ptm += 2 * dff     # MLP up/down
+        ctm += H * (6 + 8)                       # softmax: exp poly + inverse poly, per head
+        ctm += 6                                 # activation polynomial on FF ciphertext
+        ctm += 2 * 8; rot += 2 * math.ceil(math.log2(d))  # 2 LayerNorm inv-sqrt approx
+        # -- appending this step's K,V into the packed cache: rotate into slot + mask
+        rot += 2; ptm += 2                       # one rotation + one mask mult, for K and V
+        # -- attending over the packed cache: per cache ciphertext,
+        #    scores: 1 ct-mult + log2(dk) rotations; AV: 1 ct-mult + log2(G) rotations
+        for _ in range(m):
+            ctm += 1; rot += math.ceil(math.log2(dk))
+            ctm += 1; rot += math.ceil(math.log2(G))
+    total = W_ROT * rot + W_CTMULT * ctm + W_PTMULT * ptm
+    attend = L * m * (2 * W_CTMULT + W_ROT * (math.ceil(math.log2(dk)) + math.ceil(math.log2(G))))
+    return dict(rot=rot, ctmult=ctm, ptmul=ptm, total=total, attend=attend, m=m)
+
+
+def simulate(T):
+    """Decode T tokens from an empty cache; greedy level accounting on the
+    residual stream: bootstrap exactly when the budget is exhausted."""
+    per_tok = np.zeros(T); attend = np.zeros(T); boots = np.zeros(T, dtype=int)
+    levels, nboot = B_LEVELS, 0
+    for i in range(T):
+        c = per_token_cost(i + 1)
+        per_tok[i], attend[i] = c["total"], c["attend"]
+        b0 = nboot
+        for _ in range(D_TOK):                # consume one level per depth unit
+            if levels == 0:
+                nboot += 1; levels = B_LEVELS  # bootstrap refreshes the budget
+            levels -= 1
+        boots[i] = nboot - b0
+    return per_tok, attend, boots, nboot
+
+
+if __name__ == "__main__":
+    T = 1024
+    per_tok, attend, boots, nboot = simulate(T)
+    base = per_tok - attend                    # cache-independent share
+
+    print("=== Artifact 41.1: encrypted-generation cost model (counting model) ===")
+    print(f"geometry: L={L} d={d} H={H} dk={dk} | slots={SLOTS} G={G} steps/ct "
+          f"| depth/token={D_TOK} budget={B_LEVELS} R_BOOT={R_BOOT} [Verify]")
+
+    # ---- (1) per-token cost grows with cache length under this packing --------
+    print("\n[1] per-token cost curve (ct-mult equivalents):")
+    for t in [1, 64, 128, 256, 512, 1024]:
+        print(f"    t={t:5d}  total={per_tok[t-1]:9.1f}  attend={attend[t-1]:7.1f} "
+              f"({100*attend[t-1]/per_tok[t-1]:4.1f}%)  cache cts m={math.ceil(t/G)}")
+    diffs = np.diff(per_tok)
+    assert (diffs &gt;= -1e-9).all() and per_tok[-1] &gt; per_tok[0], "cost must grow with t"
+    # cross-check: attend cost is exactly linear in m; fit and print the residual
+    ms = np.array([math.ceil(t / G) for t in range(1, T + 1)], float)
+    slope, icept = np.polyfit(ms, attend, 1)
+    resid = float(np.abs(np.polyval([slope, icept], ms) - attend).max())
+    b_analytic = L * (2 + math.ceil(math.log2(dk)) + math.ceil(math.log2(G)))
+    print(f"    fitted slope/cache-ct = {slope:.6f} vs analytic b = {b_analytic} "
+          f"(max fit residual {resid:.2e})")
+    assert abs(slope - b_analytic) &lt; 1e-6 and resid &lt; 1e-6
+
+    # ---- (2) bootstraps match the analytic ceil accounting --------------------
+    total_depth = T * D_TOK
+    analytic = math.ceil(total_depth / B_LEVELS) - 1   # start fresh; none after last op
+    nb_tok = D_TOK / B_LEVELS
+    print(f"\n[2] bootstraps over T={T} tokens: simulated={nboot}  "
+          f"analytic ceil({total_depth}/{B_LEVELS})-1={analytic}  "
+          f"(={nb_tok:.1f}/token; tokens/bootstrap={1/nb_tok:.4f})")
+    assert nboot == analytic, (nboot, analytic)
+    # steady state is exactly D_TOK/B per token (B | D_TOK); token 1 gets the
+    # fresh budget for free and needs one fewer
+    assert (boots[1:] == int(nb_tok)).all() and boots[0] == int(nb_tok) - 1
+
+    # ---- (3) crossover: growing attention cost overtakes bootstrap cost -------
+    boot_cost = nb_tok * R_BOOT                 # per-token, constant in t (depth is)
+    scan = next(t for t in range(1, T + 1) if attend[t - 1] &gt; boot_cost)
+    m_star = math.floor(boot_cost / b_analytic) + 1
+    closed = (m_star - 1) * G + 1
+    print(f"\n[3] per-token bootstrap cost = {boot_cost:.0f} mult-equivs; "
+          f"attention overtakes it at t={scan} (closed form: m*={m_star}, t*={closed})")
+    assert scan == closed, (scan, closed)
+    print(f"    below t={closed}: bootstrapping outweighs cache attention; above: cache wins")
+    print(f"    bootstrap share of total modeled time at t=1: "
+          f"{100*boot_cost/(per_tok[0]+boot_cost):.1f}%  at t={T}: "
+          f"{100*boot_cost/(per_tok[-1]+boot_cost):.1f}%")
+
+    # ---- (4) encrypted KV-cache memory at t=1024 (both packings) --------------
+    ct_mb = 2 * N * ELL_CACHE * LIMB_BYTES / 2**20
+    m = math.ceil(T / G)
+    compact_cts, naive_cts = 2 * L * m, 2 * L * T
+    plain_mb = 2 * L * T * d * 2 / 2**20       # fp16 plaintext KV cache
+    print(f"\n[4] KV cache at t={T} ({ELL_CACHE} limbs, {ct_mb:.1f} MB/ct):")
+    print(f"    compact packing : {compact_cts:6d} cts = {compact_cts*ct_mb/1024:8.2f} GB "
+          f"({compact_cts*ct_mb/plain_mb:7.0f}x fp16)")
+    print(f"    one-ct-per-step : {naive_cts:6d} cts = {naive_cts*ct_mb/1024:8.2f} GB "
+          f"({naive_cts*ct_mb/plain_mb:7.0f}x fp16)   [fp16 plaintext: {plain_mb:.1f} MB]")
+
+    # ---- (5) CKKS effective precision vs fp16 (parameterized model, NOT measured)
+    P_FRESH, LOSS, P_BOOT, FP16 = 30.0, 0.5, 20.0, 11  # bits; P_BOOT is [Verify]
+    prec = P_BOOT                                       # steady state: post-bootstrap
+    seg = [prec := prec - LOSS for _ in range(B_LEVELS)]  # one inter-bootstrap segment
+    floor_sim, floor_closed = min(seg), P_BOOT - LOSS * B_LEVELS
+    b_max = math.floor((P_BOOT - FP16) / LOSS)
+    print(f"\n[5] precision model: fresh {P_FRESH} bits, {LOSS} bit/level loss, "
+          f"bootstrap output {P_BOOT} bits [Verify]")
+    print(f"    worst-case bits in a {B_LEVELS}-level segment: simulated={floor_sim:.1f} "
+          f"closed form={floor_closed:.1f}  | fp16 significand = {FP16} bits")
+    print(f"    largest budget keeping &gt;= fp16 precision: {b_max} levels "
+          f"(chosen B_LEVELS={B_LEVELS})")
+    assert abs(floor_sim - floor_closed) &lt; 1e-12
+    assert floor_closed &gt;= FP16 - 1e-9, "budget exceeds the fp16-parity envelope"
+    print("\nAll assertions passed. Counting model only -- no FHE library was run.")
+</code></pre>
+<p>Running it takes 0.15&nbsp;s and prints the staircase (19,149.6 &rarr; 23,181.6 mult-equivalents per token from $t{=}1$ to $t{=}1024$, attention share 0.9% &rarr; 18.1%), the fitted slope 168.000000 against the analytic $b=168$ with residual $1.8\times 10^{-12}$, the bootstrap count 14,335 matching $\lceil 258048/18 \rceil - 1$ exactly, the crossover at $t=337$ matching the closed form ($m^{*}=9$), the 7.03&nbsp;GB versus 288&nbsp;GB cache footprints (200&times; and 8192&times; fp16), and the precision floor of 11.0 bits against fp16's 11 &mdash; then <code>All assertions passed</code>. Change one geometry constant and every downstream number moves consistently; that, not the specific values, is what the artifact is for.</p>
+</div>
+
+<div class="key-takeaways">
+<div class="kt-title">Key Takeaways</div>
+<ul>
+<li>Single-pass benchmarks structurally understate encrypted serving: decoding $T$ tokens multiplies depth by $T$, forces a ciphertext-resident KV cache, and inserts a secure argmax between every pair of passes. <span class="tag tag-certain">Certain</span></li>
+<li>An encrypted KV cache costs $\approx 4\ell w$ bytes per cached scalar &mdash; a $\sim$200&times; expansion over fp16 at typical parameters &mdash; and appending under compact packing burns rotations, masks, and one level every token. <span class="tag tag-certain">Certain</span></li>
+<li>Tokens per bootstrap is $B/d_{\text{tok}}$, which is $\ll 1$ for any realistic transformer (0.07 at the chapter's geometry); Theorem 41.1's $\lceil D/B\rceil - 1$ accounting matches the artifact's simulation exactly. <span class="tag tag-certain">Certain</span></li>
+<li>The bootstrap-versus-cache crossover $t^{*} = \lfloor d_{\text{tok}}R/(Bb)\rfloor g + 1$ says GPU bootstrapping ($R\sim 10^2$) relocates the bottleneck to cache traffic rather than eliminating it; the constituent cost ratios drift with every library release. <span class="tag tag-verify">Verify</span></li>
+<li>Published encrypted <em>generation</em> results are one-token-scale (PUMA's paper reports ~5 min/token for LLaMA-7B under MPC; Cachemir's reports &lt;100 s/token for Llama-3-8B under FHE on GPU &mdash; different threat models, not comparable); long-horizon output quality under encryption is undemonstrated, and whether approximation error compounds across steps or is erased by argmax snapping remains genuinely unsettled. <span class="tag tag-contested">Contested</span></li>
+</ul>
+</div>
+</div>

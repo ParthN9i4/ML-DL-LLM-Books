@@ -1,0 +1,320 @@
+<div class="chapter" id="ch40">
+<div class="chapter-header"><div class="ch-label">Chapter 40</div><h3>Private Transformer Inference Systems</h3></div>
+
+<div class="learning-objectives">
+<div class="lo-title">Learning Objectives</div>
+<ul>
+<li>Classify the published private-inference systems by protocol family &mdash; pure FHE, 2PC with HE subprotocols, TEE hybrids &mdash; and by the threat model each actually defends.</li>
+<li>Extract and compare the softmax, normalization, and activation strategies across systems, and identify which are protocol innovations and which are model surgery.</li>
+<li>Explain the packing-and-communication trade that separates interactive from non-interactive designs, and why bandwidth and multiplicative depth are the two currencies being exchanged.</li>
+<li>State what each headline latency number actually measured &mdash; model, sequence length, hardware, network emulation &mdash; and what it excluded.</li>
+<li>Implement a structured system-comparison database with hard consistency checks in working code.</li>
+</ul>
+</div>
+
+<div class="read-alongside"><strong>Read alongside</strong> &mdash; No textbook covers this chapter; the primary papers are the only sources, and every record in Artifact 40.1 names its paper. Two surveys are useful as maps, never as sources of numbers: <em>A Survey on Private Transformer Inference</em> (arXiv 2412.08145) and <em>Private Transformer Inference in MLaaS: A Survey</em> (arXiv 2505.10315). For deployment ground truth, Apple's Security Research blog posts on Private Cloud Compute are primary sources in their own right.</div>
+
+<p>Chapter 38 established what breaks when a transformer meets ciphertext; Chapter 39 built the polynomial machinery that repairs the non-polynomial core. This chapter reads the systems literature that assembles those pieces into end-to-end private inference &mdash; and its central claim is methodological: the published systems are mutually incomparable answers to different questions. An interactive 2PC system, a non-interactive FHE system, and a TEE hybrid differ in threat model, in who computes, in what travels over the network, and in what their evaluation sections chose to time. Reading this literature well is an extraction exercise &mdash; threat model, depth budget, packing, exclusions &mdash; performed before believing any latency number. We trace the interactive line (Iron to Nimbus), the non-interactive line (NEXUS to Powerformer), automation and hybrids (ATLAS, Bifrost), then close with what is actually deployed. Chapter 41 takes up serving at scale; Chapter 42 maps where a contribution fits.</p>
+
+<h4>40.1 The Taxonomy: FHE, 2PC, Hybrid</h4>
+
+<p>One paragraph of CKKS facts, used throughout and not re-derived (Chapter 38 has the details; for the cryptography itself see a dedicated FHE text such as the OpenFHE documentation's references). A CKKS ciphertext holds a vector of $N/2$ complex slots (typically $2^{15}$&ndash;$2^{16}$ ring dimension); plaintext-ciphertext and ciphertext-ciphertext multiplications consume levels from a finite budget, with a rescaling after each; moving data between slots costs rotations (key switchings, each roughly as expensive as a multiplication); and when the level budget is exhausted, bootstrapping refreshes it at a cost of tens of levels' worth of work and depth. Every design decision in this chapter is an arrangement of these five facts.</p>
+
+<div class="definition"><div class="box-title">Definition 40.1 (Protocol families for private transformer inference)</div>
+<p>A <em>2PC-with-HE</em> system splits the computation between client and server holding additive secret shares; linear layers use RLWE homomorphic encryption as a subprotocol, non-linear layers use secret sharing and oblivious transfer, and the client participates in rounds of interaction throughout inference. A <em>non-interactive FHE</em> system has the client send one encrypted input and receive one encrypted output; the server evaluates the entire network homomorphically, paying multiplicative depth (and usually bootstrapping) instead of communication. A <em>TEE hybrid</em> places some of the computation in attested trusted hardware, shifting part of the trust from cryptographic assumptions to a hardware vendor. A complete threat-model statement must specify: who is trusted (semi-honest vs. malicious parties, hardware vendors), what is hidden (inputs, outputs, weights, architecture, sequence length), and who must stay online.</p></div>
+
+<p>The three families answer three different questions. 2PC answers: two mutually distrusting parties with a fast network want joint inference where the server's weights and the client's input both stay private &mdash; the client works and communicates throughout. Non-interactive FHE answers: a weak client wants to hand off encrypted input to a powerful server and disconnect &mdash; no per-layer rounds, but the server pays the full depth of the network in homomorphic work. TEE hybrids answer: you will trust Intel, AMD, NVIDIA, or Apple's silicon attestation, in exchange for near-plaintext speed on whatever runs inside the enclave. <span class="tag tag-certain">Certain</span> None of these dominates another; they occupy different points in a space whose axes are trust, bandwidth, latency, and client effort.</p>
+
+<h5>40.1.1 The two currencies</h5>
+
+<p>The trade separating the first two families is concrete. In 2PC, each non-linear operator (every GELU, every softmax) triggers interaction: comparisons and piecewise evaluations become oblivious-transfer executions whose cost is measured in gigabytes and round trips. Multiplicative depth is nearly free &mdash; each multiplication is a cheap local operation on shares plus a small exchange &mdash; so 2PC systems approximate non-linearities with high-fidelity piecewise polynomials and pay in bandwidth. In non-interactive FHE the ledger inverts: bandwidth collapses to two ciphertext transfers, but every multiplication in every approximation consumes depth, and depth beyond the budget means bootstrapping. This is why Chapter 39's low-degree approximation results matter asymmetrically: shaving polynomial degree helps a 2PC system modestly and a FHE system enormously. Packing sits underneath both: interactive systems pack to minimize ciphertext <em>traffic</em> per matrix multiplication, while non-interactive systems pack to minimize <em>rotations and levels</em> per layer, and a packing optimal for one objective is generally not optimal for the other. <span class="tag tag-likely">Likely</span></p>
+
+<h4>40.2 The Interactive Line: Iron to BOLT to BumbleBee to Nimbus</h4>
+
+<p>Iron (NeurIPS 2022) initiated serious study of transformer 2PC in the client-server setting. Its contributions set the template every successor follows: a customized HE matrix-multiplication protocol with a compact packing the paper credits with $\sqrt{m}\times$ less communication than prior work ($m$ the output rows), plus dedicated protocols for softmax, GELU, and LayerNorm that the paper reports cut roughly half the communication and computation of general-purpose protocols. The absolute costs were still enormous &mdash; hundreds of gigabytes per BERT-class inference &mdash; which defined the next three years' agenda: shrink linear-layer HE traffic and non-linear protocol traffic <em>simultaneously</em>, because Amdahl's law governs a pipeline where both halves are expensive. <span class="tag tag-certain">Certain</span></p>
+
+<p>BOLT (IEEE S&amp;P 2024, ePrint 2023/1893) attacked both halves and added a third front: machine-learning-side surgery. Its HE matrix multiplication uses tighter packing; its GELU and softmax use piecewise-polynomial protocols; and its "word elimination" prunes redundant tokens before they enter the expensive pipeline &mdash; an early instance of the now-standard observation that the cheapest ciphertext operation is the one you delete from the graph. The paper reports 10.91&times; communication reduction and 4.8&ndash;9.5&times; faster inference than the prior state of the art (Iron) across network settings. In absolute terms BOLT still moves tens of gigabytes per BERT-base inference at sequence length 128 &mdash; the NEXUS paper's cross-comparison places it near 61 GB, a number to attribute to NEXUS's measurement conventions, not BOLT's own tables. <span class="tag tag-verify">Verify</span></p>
+
+<p>BumbleBee (NDSS 2025, ePrint 2023/1678, built on the SecretFlow SPU stack) is the first of the line to reach a 7B-parameter model. Its two contributions mirror the two halves: RLWE ciphertext compression for matrix multiplication that the paper reports cuts 80&ndash;90% of communication versus prior techniques, and activation protocols for GELU/SiLU and the exponentials inside softmax reported to cut 80&ndash;95% versus two prior methods. The headline: the paper reports generating one token of LLaMA-7B in about 8 minutes on CPUs (8-token prompt, per its Table IV), and claims 3&times; the speed of BOLT at one-tenth the communication. Note what the headline is: one token, eight input tokens, CPUs, LAN &mdash; a feasibility statement, not a serving benchmark. <span class="tag tag-certain">Certain</span></p>
+
+<p>Nimbus (NeurIPS 2024, arXiv 2411.15707) shows the linear-layer half was still not done: it replaces the input-multiplied-by-weights view with an outer-product, row-wise encoding that removes expensive number-theoretic transforms and rotations from the online path, and pairs it with low-degree polynomial approximations of GELU and softmax whose accuracy is recovered by adapting the model itself &mdash; a move imported from the Chapter 39 playbook. The paper reports 2.7&ndash;4.7&times; end-to-end BERT-base speedup over the prior state of the art across LAN and WAN settings. The trend across the four systems is monotone and instructive: each generation's gains come roughly equally from better cryptographic packing and from making the workload more approximation-tolerant &mdash; the protocol literature and the model-surgery literature converged. <span class="tag tag-likely">Likely</span></p>
+
+<h4>40.3 The Non-Interactive Line: NEXUS, SHAFT, THOR, Powerformer</h4>
+
+<p>NEXUS (NDSS 2025, ePrint 2024/136) is the reference point for the pure-FHE answer: the client encrypts under RNS-CKKS, sends once, receives once, and can go offline. Everything in between &mdash; matrix multiplications against plaintext server-side weights, GELU, softmax, LayerNorm, even a final secure Argmax built from sign polynomials &mdash; happens on ciphertext, with bootstrapping (via the FHE-MP-CNN toolchain over SEAL) refreshing the level budget. Its enabling primitives are packing tricks: SIMD ciphertext compression/decompression and slot folding to keep the slot utilization high through shape-changing operations. The paper reports 37.3 seconds for a BERT-based inference on GPU (a 42.3&times; speedup over its own CPU version) at 164 MB of bandwidth &mdash; which it reports as 372.5&times; less bandwidth than BOLT and 53.6&times; less than BumbleBee. Bandwidth is the point: two ciphertext transfers replace per-layer gigabytes, which is exactly what the weak-client threat model buys. <span class="tag tag-certain">Certain</span></p>
+
+<p>SHAFT (NDSS 2025, ePrint 2025/2324, Distinguished Artifact Award) is deliberately placed in this section as a classification exercise: it ships in the same NDSS 2025 cohort, and it is <em>not</em> non-interactive. SHAFT is a secret-sharing 2PC framework integrated with CrypTen's PyTorch interface; its contribution is making the interaction <em>constant-round</em> rather than eliminating it &mdash; the paper reports the first constant-round softmax protocol, combining input clipping with an iteration derived from an ordinary-differential-equation characterization of the exponential, plus a Fourier-series GELU. Constant rounds attack WAN latency, where round trips, not bytes, dominate; the paper reports 4.6&ndash;5.3&times; speedups over BumbleBee on LANs and 2.9&ndash;4.4&times; on WANs, matching the FSS-based SIGMA's runtime with 25&ndash;41% less communication. If your database's consistency check flags SHAFT when someone records it as non-interactive, the check is doing its job. <span class="tag tag-certain">Certain</span></p>
+
+<p>THOR (ACM CCS 2025, ePrint 2024/1881) stays fully non-interactive and pushes on the linear algebra: diagonal-major encodings and compact packing for plaintext-ciphertext matrix multiplication, and a baby-step&ndash;giant-step ciphertext-ciphertext multiplication for the attention score and value products, which are ciphertext-by-ciphertext because activations meet activations there (Chapter 38's observation that attention is the only place a served model multiplies two encrypted tensors). The paper reports kernel-level speedups of 5.3&times; over BOLT's plaintext-ciphertext product and 9.7&times; over Powerformer's ciphertext-ciphertext product, and end-to-end BERT-base inference at sequence length 128 in about 10 minutes on a single GPU. Softmax, LayerNorm, GELU, and tanh are handled by approximation plus adaptive iterative methods &mdash; Chapter 39's Newton/Goldschmidt machinery tuned per operator. <span class="tag tag-certain">Certain</span></p>
+
+<p>Powerformer (ACL 2025, pp. 11090&ndash;11111; ePrint 2024/1429) represents the opposite philosophy within the same family: change the model, not just the evaluator. It distills BERT into an architecture where softmax is <em>replaced</em> by a "Batch Rectifier-Power max" &mdash; a power function requiring no exponential and no max &mdash; and LayerNorm is distilled into a linear function, leaving only GELU/tanh to approximate (by a pseudo-sign composite method). The paper reports a 45% computation-time reduction against the state-of-the-art HE-based private language model with no accuracy loss. The philosophical split &mdash; approximate the standard network faithfully (NEXUS, THOR) versus train an FHE-friendly network (Powerformer, and Chapter 39's polynomial-architecture line) &mdash; is the live axis of the non-interactive literature, and venue is a tell: the former publishes at security conferences, the latter at ACL/NeurIPS. <span class="tag tag-likely">Likely</span></p>
+
+<h4>40.4 Automation and Hybrids: ATLAS and TEE&ndash;FHE Designs</h4>
+
+<p>Every system in Section 40.3 hand-tunes its approximations: iteration counts, polynomial degrees, clipping ranges, chosen once and applied uniformly to all layers. ATLAS (arXiv 2607.23478) automates this. It formulates per-layer approximation configuration as multi-objective optimization over latency and accuracy &mdash; 120 decision variables for BERT/ViT, 320 for LLaMA-3 8B by the paper's count &mdash; and searches under real constraints the paper is unusually candid about: each candidate takes 70&ndash;1,000 seconds to evaluate even in cleartext, and 35&ndash;50% of candidates are numerically invalid (a diverging Newton iteration anywhere kills the whole forward pass). The "one hour" of the title is the automated search budget replacing expert weeks. The interesting claim is the premise: layers tolerate different approximation error, so uniform configurations leave latency on the table &mdash; the same per-layer-sensitivity observation that drives mixed-precision quantization in Chapter 34. <span class="tag tag-likely">Likely</span></p>
+
+<p>Bifrost (arXiv 2606.17421) is the hybrid answer, and its threat model deserves the careful read. Secrets are provisioned only to an attested <em>CPU</em> TEE; the GPU, its device memory, the driver/runtime stack, and the host software are all outside the trusted computing base. Linear layers (projections, FFN matrices) are delegated to the untrusted accelerator under CKKS; non-linear operators, attention-side control logic, and KV-state transitions execute in cleartext inside the TEE; and &mdash; the structurally important move &mdash; a decrypt-then-re-encrypt refresh inside the TEE replaces bootstrapping entirely. The TEE becomes a trusted bootstrapping oracle, deleting the single most expensive FHE operation at the price of hardware trust. The paper reports <em>projected</em> latency reductions of 9.25&times; on GPT-2 1.5B and 9.91&times; on LLaMA-3 8B, and for its Bifrost+ prefill/decode split, time-to-first-token reductions of 14.6&ndash;45.8&times; (GPT-2 124M) and 15.3&ndash;53.4&times; (Qwen3 0.6B) against direct CKKS deployments &mdash; the word "projected" meaning a cost model, not end-to-end wall clock, which is exactly the distinction Section 40.5 exists to teach. <span class="tag tag-verify">Verify</span></p>
+
+<h4>40.5 Reading a Latency Claim</h4>
+
+<p>A latency number from this literature is meaningful only as the tuple (threat model, model, sequence length, hardware, network emulation, exclusions, accuracy cost). The extraction checklist, in the order that catches the most errors: <em>First</em>, the threat model &mdash; a 2PC number includes network time under an emulated LAN/WAN and client compute; a FHE number includes neither, and a TEE number includes almost nothing cryptographic. <em>Second</em>, model and sequence length &mdash; attention cost under encryption grows quadratically in sequence length like everything else in Chapter 18, but rotation counts also grow with how sequence length interacts with slot packing, so a 128-token number does not extrapolate linearly. <em>Third</em>, hardware &mdash; CPU versus GPU is a 40&times; swing in NEXUS's own reporting. <em>Fourth</em>, exclusions: key generation, weight encoding or encryption, model loading, the amortization convention (per-input versus per-batch-of-slots), and whether the number is measured or projected. <em>Fifth</em>, the accuracy bill: a system that distilled the model (Powerformer, Nimbus) is not evaluating the same function as one that approximated it faithfully. The table below juxtaposes four headline numbers; per the rule this book applies everywhere, the adjacent sentence is part of the table: <strong>these numbers are not comparable with each other</strong> &mdash; they measure different models, sequence lengths, hardware, threat models, and exclusions, and no ranking may be read from the column. <span class="tag tag-certain">Certain</span></p>
+
+<table>
+<tr><th>System</th><th>The paper reports</th><th>What it is</th></tr>
+<tr><td>BumbleBee</td><td>&asymp;8 min / 1 token, LLaMA-7B, 8-token prompt, CPUs</td><td>2PC online time incl. network, LAN</td></tr>
+<tr><td>NEXUS</td><td>37.3 s, BERT-based model, GPU, 164 MB bandwidth</td><td>non-interactive FHE, GPU figure</td></tr>
+<tr><td>THOR</td><td>&asymp;10 min, BERT-base, 128 tokens, single GPU</td><td>non-interactive FHE, single input</td></tr>
+<tr><td>Bifrost</td><td>9.25&ndash;9.91&times; latency cut vs. direct CKKS</td><td>TEE+FHE, projected from a cost model</td></tr>
+</table>
+
+<div class="example"><div class="box-title">Example 40.1 (Cross-paper numbers do not reconcile, by arithmetic)</div>
+<p>NEXUS reports 164 MB of bandwidth, described as 372.5&times; less than BOLT and 53.6&times; less than BumbleBee. Take the claims at face value and reconstruct: BOLT $\approx 0.164 \times 372.5 = 61.09$ GB; BumbleBee $\approx 0.164 \times 53.6 = 8.79$ GB. The implied BOLT-to-BumbleBee ratio is $372.5 / 53.6 = 6.95$. But BumbleBee's own abstract claims one-tenth of BOLT's communication &mdash; a ratio of 10. Both papers are reporting honestly; $6.95 \neq 10$ because the two comparisons were run at different configurations (models, token counts, protocol variants). The discrepancy factor $10/6.95 \approx 1.44$ is the measurement-convention noise floor of this literature: any cross-system difference smaller than roughly 1.5&times; is not evidence of anything. <span class="tag tag-likely">Likely</span></p></div>
+
+<div class="warning-box"><div class="box-title">Common Pitfall</div>
+<p>Building a comparison table by pasting each paper's headline number from its own abstract into a single latency column &mdash; the standard slide in this area &mdash; silently compares a 2PC LAN wall-clock (BumbleBee, CPUs, includes network) against a GPU FHE figure (NEXUS, excludes any client cost) against a cost-model projection (Bifrost, no wall clock at all). The concrete failure: a reader concludes NEXUS is "16&times; faster than BumbleBee" when the two numbers share no model, no hardware, no threat model, and no timing convention. Artifact 40.1 makes this bug structurally impossible: a latency field cannot exist without an exclusions field, and the printed table carries the incomparability warning in the output itself.</p></div>
+
+<h4>40.6 What Is Actually Deployed</h4>
+
+<p>Nothing from Sections 40.2&ndash;40.4 serves production LLM traffic. What is deployed, at fleet scale, is the trusted-hardware end of the spectrum: Apple's Private Cloud Compute (announced and deployed 2024) runs Apple Intelligence's server-side inference on custom Apple silicon with a hardened OS, cryptographic attestation against a public transparency log, and no persistent storage &mdash; client devices release request keys only to nodes whose attested software measurements match the log. In June 2026 Apple announced PCC expanding beyond its own data centers onto Google Cloud infrastructure with NVIDIA GPUs and Intel CPUs. <span class="tag tag-verify">Verify</span> The industry default for "private" hosted inference &mdash; confidential-computing GPU modes, enclave-based serving products &mdash; is likewise hardware trust, not cryptography.</p>
+
+<p>Homomorphic encryption <em>is</em> in production &mdash; but for retrieval, not transformers. Apple ships BFV-based HE (its open-source Swift Homomorphic Encryption library) in Live Caller ID Lookup, which queries a server about a phone number without revealing it, and in Enhanced Visual Search in Photos, where the device sends an encrypted image embedding and the server computes the nearest matches homomorphically, with differential-privacy and anonymization layers on top. The deployed pattern is precise: HE for shallow, embedding-level computations with tiny depth budgets; TEEs for the transformer forward pass; FHE transformers nowhere. <span class="tag tag-certain">Certain</span> Whether that gap closes is genuinely contested: one position holds that bootstrapping-inclusive costs (minutes per BERT-inference-equivalent on a GPU, per Section 40.3) sit 3&ndash;4 orders of magnitude from serving viability and hardware trust will keep winning; the other holds that the 2022&ndash;2026 trajectory &mdash; roughly $10^3\times$ aggregate improvement from packing, approximation, and GPU acceleration &mdash; plus FHE ASICs will make narrow high-value deployments (regulated-data inference) viable first. <span class="tag tag-contested">Contested</span> The evidence that would settle it: a production FHE deployment of any transformer-class model with paying users, or five more years without one. This author's position: the hybrid designs of Section 40.4 ship first, because they buy the largest cost reduction for the smallest change in trust story &mdash; and Chapter 42 treats the remaining gaps as a research map.</p>
+
+<div class="artifact-box"><div class="box-title">Artifact 40.1 &mdash; A System-Comparison Database with Sourcing Discipline</div>
+<p>The artifact is data-as-code: ten systems, each a frozen record with seventeen fields (protocol family, threat model, scheme, softmax/norm/activation strategies, benchmark model, sequence length, hardware, reported latency, exclusions, venue, provenance), every field either sourced from the named paper or the literal string <code>"n/r"</code>. The hard assertions enforce reading discipline rather than numerics: no record may claim non-interactivity while charging per-protocol client rounds (the SHAFT trap); no latency claim may exist without an explicit exclusions note; every record must carry venue and provenance; and coverage must include BOLT, BumbleBee, NEXUS, and SHAFT. It then prints the strategy table grouped by family and a second table demonstrating why the latency column cannot be read as a ranking, closing with the Example 40.1 arithmetic.</p>
+<pre><code>"""Artifact 40.1 -- A system-comparison database for private transformer inference.
+
+Data-as-code: each published system is a record whose every field is either sourced
+(with a provenance string naming the paper section/table or abstract) or the literal
+string "n/r" (not reported / not verified by this author).  The HARD ASSERTIONS at the
+bottom enforce sourcing discipline, not numerics: no record may claim to be
+non-interactive while also charging per-layer client rounds; no latency claim may
+appear without an explicit exclusions note; every record must carry venue+provenance.
+Latency strings are the papers' own claims, quoted -- they are NOT comparable across
+rows, and the second printed table shows why (different models, sequence lengths,
+hardware, threat models).  No FHE library is used or needed: this is a reading tool.
+"""
+from dataclasses import dataclass, asdict
+
+NR = "n/r"  # the only permitted marker for an unsourced field
+
+@dataclass(frozen=True)
+class System:
+    name: str
+    family: str          # "2PC+HE (interactive)" | "FHE (non-interactive)" | "TEE+FHE hybrid"
+    interactive: bool
+    client_rounds: str   # "per-protocol rounds" vs "one round" vs TEE-mediated
+    threat_model: str
+    scheme: str
+    softmax: str
+    norm: str
+    activation: str
+    model: str
+    seq_len: str
+    hardware: str
+    latency: str         # the paper's own claim, quoted; NR if none verified
+    comm: str
+    exclusions: str      # what the latency claim does not cover; NR only if latency is NR
+    venue: str
+    provenance: str      # where each nontrivial field above was read
+
+DB = [
+    System("Iron", "2PC+HE (interactive)", True, "per-protocol rounds throughout inference",
+        "semi-honest client+server 2PC; client learns architecture",
+        "RLWE HE (compact packing) for matmul + secret sharing/OT for non-linear",
+        "custom 2PC softmax protocol", "custom 2PC LayerNorm protocol",
+        "custom 2PC GELU protocol (~2x cheaper than prior general protocols)",
+        "BERT-family (basis of later head-to-head comparisons, e.g. BOLT)", NR, "CPU",
+        NR, NR, NR, "NeurIPS 2022",
+        "Iron abstract (Hao,Li,Chen,Xing,Xu,Zhang); packing gives sqrt(m)-less comm"),
+    System("BOLT", "2PC+HE (interactive)", True, "per-protocol rounds throughout inference",
+        "semi-honest client+server 2PC",
+        "RLWE HE for matmul + secret sharing/OT for non-linear",
+        "piecewise-polynomial 2PC protocol", "2PC LayerNorm protocol",
+        "piecewise-polynomial GELU; ML-side 'word elimination' prunes tokens",
+        "BERT-base", "128", "CPU, LAN/WAN network settings",
+        "paper claims 4.8-9.5x faster than Iron across network settings",
+        "~10.91x less than Iron (own claim); ~61 GB/inference per NEXUS's cross-table",
+        "relative to Iron only; absolute seconds vary with emulated network; "
+        "cross-paper absolute GB comes from NEXUS's comparison, not BOLT's table",
+        "IEEE S&amp;P 2024 (ePrint 2023/1893)",
+        "BOLT abstract (Pang,Zhu,Moellering,Zheng,Schneider); NEXUS NDSS'25 comparison"),
+    System("BumbleBee", "2PC+HE (interactive)", True, "per-protocol rounds throughout inference",
+        "semi-honest client+server 2PC (SPU/SecretFlow stack)",
+        "RLWE HE with ciphertext compression for matmul + OT-based non-linear",
+        "segmented low-degree polynomial protocol (exp/div)",
+        "2PC normalization protocol",
+        "GELU/SiLU protocols; 80-95% comm cut vs two prior methods (own claim)",
+        "BERT-base/large, GPT2-base, ViT-base, LLaMA-7B", "128 (GPT2); 8 (LLaMA-7B)",
+        "CPUs", "paper reports ~8 min to generate 1 token of LLaMA-7B on CPUs; "
+        "3x faster than BOLT at 1/10 the communication; &gt;10x faster than Iron",
+        "matmul comm cut 80-90% vs prior (own claim)",
+        "LLaMA-7B figure is for 8 input tokens generating 1 token; "
+        "network setting and setup cost conventions per paper Table IV",
+        "NDSS 2025 (ePrint 2023/1678)",
+        "BumbleBee abstract + eval (Lu,Huang,Gu,Li,Liu,Hong,Ren,Wei,Chen); Table IV"),
+    System("Nimbus", "2PC+HE (interactive)", True, "per-protocol rounds throughout inference",
+        "semi-honest client+server 2PC",
+        "RLWE HE, outer-product/row-wise encoding for linear layers + SS for non-linear",
+        "low-degree polynomial approx + model adaptation",
+        "handled within adapted-model protocols",
+        "low-degree polynomial GELU + fine-tuning to recover accuracy",
+        "BERT-base", NR, "LAN 3Gbps/1ms and WAN 400Mbps/10ms (as retrieved)",
+        "paper reports 2.7x-4.7x end-to-end BERT-base speedup vs prior SOTA 2PC",
+        NR, "relative speedups only; split of gains between linear-layer paradigm "
+        "and polynomial approximations is per-component in the paper",
+        "NeurIPS 2024 (arXiv 2411.15707)",
+        "Nimbus abstract (Li et al.); NeurIPS 2024 proceedings page"),
+    System("SHAFT", "2PC (secret sharing, interactive)", True,
+        "constant-round protocols, but still interactive per operator",
+        "semi-honest 2PC; CrypTen/PyTorch integration ('handy')",
+        "additive secret sharing (CrypTen backend); no HE in the online path",
+        "first constant-round softmax: input clipping + ODE-derived iteration",
+        "CrypTen-style normalization protocols",
+        "Fourier-series GELU characterization",
+        "BERT-base/large, GPT-2, ViT-base", NR, NR,
+        "paper reports 4.6-5.3x faster than BumbleBee (LAN), 2.9-4.4x (WAN); "
+        "matches SIGMA runtime with 25-41% less communication",
+        "25-41% less than SIGMA/BumbleBee (own claim)",
+        "relative numbers; note SHAFT is NOT non-interactive despite NDSS'25 cohort",
+        "NDSS 2025, Distinguished Artifact Award (ePrint 2025/2324)",
+        "SHAFT abstract (Kei, Chow); NDSS'25 paper page; Zenodo artifact"),
+    System("NEXUS", "FHE (non-interactive)", False, "one round: send ct, receive ct",
+        "semi-honest server; client offline during inference; weights plaintext server-side",
+        "RNS-CKKS with bootstrapping (SEAL+FHE-MP-CNN; HEXL CPU, Phantom GPU)",
+        "polynomial/iterative approx under CKKS; secure Argmax via sign polynomials",
+        "LayerNorm approximated under CKKS",
+        "GELU approximated under CKKS; SIMD compression/slot folding",
+        "BERT-based model", NR, "GPU (42.3x over its CPU version, own claim)",
+        "paper reports 37.3 s per BERT-based inference (GPU) at 164 MB bandwidth",
+        "164 MB; 372.5x less than BOLT, 53.6x less than BumbleBee (own claims)",
+        "GPU figure; sequence length and amortization conventions live in the "
+        "evaluation section -- verify before quoting as single-input CPU latency",
+        "NDSS 2025 (ePrint 2024/136)",
+        "NEXUS abstract (Zhang,Liu et al.); zju-abclab/NEXUS README"),
+    System("THOR", "FHE (non-interactive)", False, "one round: send ct, receive ct",
+        "semi-honest server; client offline during inference",
+        "CKKS; diagonal-major encoding, compact packing; PC-MM + BSGS CC-MM",
+        "approximation + adaptive iterative methods",
+        "LayerNorm via approximation + adaptive iteration",
+        "GELU/Tanh via approximation + adaptive iteration",
+        "BERT-base", "128", "single GPU",
+        "paper reports BERT-base/128-token secure inference in ~10 minutes on one GPU",
+        NR, "single-input latency; PC-MM speedup 5.3x vs BOLT and CC-MM 9.7x vs "
+        "Powerformer are kernel-level, not end-to-end",
+        "ACM CCS 2025 (ePrint 2024/1881)",
+        "THOR abstract (Moon,Yoo,Jiang,Kim); ACM DL page"),
+    System("Powerformer", "FHE (non-interactive)", False, "one round: send ct, receive ct",
+        "semi-honest server; client offline during inference",
+        "CKKS; Transformer-optimized homomorphic matmul",
+        "REPLACED: Batch Rectifier-Power max via distillation (no exp, no max)",
+        "REPLACED: LayerNorm distilled into linear function",
+        "pseudo-sign composite approximation for GELU/tanh",
+        "BERT-base", NR, NR,
+        "paper reports 45% computation-time reduction vs the SOTA HE-based "
+        "private language model, at no accuracy loss",
+        NR, "relative to a single HE baseline; hardware not stated in abstract",
+        "ACL 2025 long paper, pp. 11090-11111 (ePrint 2024/1429)",
+        "Powerformer abstract (Park,Lee,Lee); ACL Anthology 2025.acl-long.543"),
+    System("ATLAS", "FHE (non-interactive) automation layer", False,
+        "one round (inherits CKKS pipeline it configures)",
+        "semi-honest server (inherited); ATLAS itself is an offline search",
+        "CKKS (configures approximation hyperparameters per layer)",
+        "per-layer approx budgets found by multi-objective search",
+        "per-layer approx budgets found by multi-objective search",
+        "per-layer approx budgets found by multi-objective search",
+        "BERT, LLaMA3-8B, ViT (120 or 320 decision variables)", NR,
+        "search runs in cleartext; 70-1000 s per candidate config (own claim)",
+        NR, NR, NR,
+        "arXiv 2607.23478 (preprint, 2026)",
+        "ATLAS abstract/HTML (Xie,Tan,Boddeti,Lu); 'in one hour' = search budget"),
+    System("Bifrost", "TEE+FHE hybrid", False,
+        "client talks to attested CPU TEE; no per-layer client rounds",
+        "trusts attested CPU TEE; GPU, device memory, driver/host all untrusted",
+        "accelerator-backed CKKS for projection/FFN linear layers; secrets only in TEE",
+        "computed in cleartext inside CPU TEE",
+        "computed in cleartext inside CPU TEE",
+        "computed in cleartext inside CPU TEE; TEE decrypt-recrypt refresh "
+        "replaces bootstrapping",
+        "GPT-2 (124M/1.5B), LLaMA-3 8B, Qwen3 0.6B", NR, "CPU TEE + GPU (untrusted)",
+        "paper reports PROJECTED 9.25x (GPT-2 1.5B) / 9.91x (LLaMA-3 8B) latency "
+        "cuts; Bifrost+ TTFT 14.6-45.8x (GPT-2 124M), 15.3-53.4x (Qwen3 0.6B) vs "
+        "direct CKKS",
+        NR, "PROJECTED from a cost model, not end-to-end wall clock; baselines are "
+        "direct-CKKS deployments", "arXiv 2606.17421 (preprint, 2026)",
+        "Bifrost abstract (SJTU); arXiv listing June 2026"),
+]
+
+# ---------------- HARD ASSERTIONS: sourcing discipline ----------------
+def check(db):
+    names = {s.name for s in db}
+    assert len(db) &gt;= 7 and {"BOLT", "BumbleBee", "NEXUS", "SHAFT"} &lt;= names, \
+        "coverage: need &gt;=7 systems incl. BOLT/BumbleBee/NEXUS/SHAFT"
+    for s in db:
+        # 1. non-interactive claims must not carry per-layer client rounds
+        assert not (not s.interactive and "per-protocol" in s.client_rounds), \
+            f"{s.name}: non-interactive yet charges per-protocol client rounds"
+        assert not (("non-interactive" in s.family) and s.interactive), \
+            f"{s.name}: family/interactive flag contradiction"
+        # 2. any latency claim must state exclusions (even 'none stated')
+        if s.latency != NR:
+            assert s.exclusions not in ("", NR), f"{s.name}: latency without exclusions"
+        # 3. every record is sourced
+        assert s.venue not in ("", NR) and s.provenance not in ("", NR), \
+            f"{s.name}: missing venue/provenance"
+        # 4. no empty fields: every field is a claim or an explicit n/r
+        for k, v in asdict(s).items():
+            assert v != "" and v is not None, f"{s.name}.{k}: empty field"
+    return len(db)
+
+def row(cols, widths):
+    return " | ".join(str(c)[:w].ljust(w) for c, w in zip(cols, widths))
+
+if __name__ == "__main__":
+    n = check(DB)
+    fams = []
+    for s in DB:
+        if s.family not in fams:
+            fams.append(s.family)
+    print(f"ALL ASSERTIONS PASSED: {n} systems, {len(fams)} protocol families, "
+          f"{sum(1 for s in DB if s.latency != NR)} latency claims each with an "
+          f"exclusions note, {sum(asdict(s)[k] == NR for s in DB for k in asdict(s))} "
+          f"fields honestly marked n/r\n")
+    W1 = (11, 34, 38, 40)
+    print("TABLE 1 -- strategies, grouped by protocol family")
+    print(row(("system", "softmax strategy", "activation strategy", "venue"), W1))
+    print("-" * (sum(W1) + 9))
+    for f in fams:
+        print(f"[{f}]")
+        for s in DB:
+            if s.family == f:
+                print(row((s.name, s.softmax, s.activation, s.venue), W1))
+    W2 = (11, 26, 12, 24, 48)
+    print("\nTABLE 2 -- why the latency column is NOT comparable")
+    print(row(("system", "benchmark model", "seq len", "hardware", "reported latency"), W2))
+    print("-" * (sum(W2) + 12))
+    for s in DB:
+        if s.latency != NR:
+            print(row((s.name, s.model, s.seq_len, s.hardware, s.latency), W2))
+    print("\nEvery row above measures a DIFFERENT model, sequence length, hardware "
+          "platform,\nand threat model, and each excludes different setup costs; "
+          "the column must never\nbe read as a ranking. Consistency spot-check from "
+          "the papers' own claims:")
+    bolt_over_bb_via_nexus = 372.5 / 53.6   # NEXUS: bandwidth vs BOLT / vs BumbleBee
+    print(f"  NEXUS implies BOLT uses {bolt_over_bb_via_nexus:.2f}x BumbleBee's "
+          f"bandwidth; BumbleBee itself claims 10x --")
+    print("  both are 'true' because they measured different configurations. QED.")
+</code></pre>
+<p>Running it prints <code>ALL ASSERTIONS PASSED: 10 systems, 5 protocol families, 8 latency claims each with an exclusions note, 19 fields honestly marked n/r</code>, then the two tables. Table 1 groups four interactive 2PC+HE systems, SHAFT alone in the secret-sharing family, three non-interactive FHE systems plus the ATLAS automation layer, and Bifrost as the TEE+FHE hybrid. Table 2 lists the eight sourced latency claims side by side &mdash; BumbleBee's &asymp;8 min/token on CPUs against NEXUS's 37.3 s on GPU against Bifrost's projected ratios &mdash; and closes with the printed spot-check: <code>NEXUS implies BOLT uses 6.95x BumbleBee's bandwidth; BumbleBee itself claims 10x</code>, the Example 40.1 arithmetic reproduced from code.</p>
+</div>
+
+<div class="key-takeaways">
+<div class="kt-title">Key Takeaways</div>
+<ul>
+<li>The literature splits into three protocol families &mdash; 2PC with HE subprotocols, non-interactive FHE, and TEE hybrids &mdash; that answer different questions under different threat models; no family dominates, and cross-family comparison of headline numbers is a category error. <span class="tag tag-certain">Certain</span></li>
+<li>Every system's innovation budget goes to the same three operators &mdash; softmax, normalization, activation &mdash; and the strategies form a spectrum from faithful protocol-level approximation (Iron, BOLT, NEXUS, THOR) to model surgery that trains the non-linearity away (Powerformer, Nimbus). <span class="tag tag-certain">Certain</span></li>
+<li>Interactive designs pay in bandwidth and rounds to keep multiplicative depth nearly free; non-interactive designs pay in depth and bootstrapping to collapse communication to two ciphertexts &mdash; packing is optimized against opposite objectives in the two families. <span class="tag tag-certain">Certain</span></li>
+<li>A latency claim is only meaningful as the tuple (threat model, model, sequence length, hardware, network emulation, exclusions, accuracy cost); cross-paper reconstructions disagree by ~1.5&times; even between honest papers, which is the measurement noise floor of the field. <span class="tag tag-likely">Likely</span></li>
+<li>What is deployed today is trusted hardware for transformer inference (Apple's Private Cloud Compute) and homomorphic encryption only for shallow retrieval workloads (Live Caller ID Lookup, Enhanced Visual Search); no FHE transformer serves production traffic as of this writing. <span class="tag tag-verify">Verify</span></li>
+</ul>
+</div>
+</div>
