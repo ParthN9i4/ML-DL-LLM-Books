@@ -1,0 +1,244 @@
+<div class="chapter" id="ch39">
+<div class="chapter-header"><div class="ch-label">Chapter 39</div><h3>Approximating the Non-Polynomial Core</h3></div>
+
+<div class="learning-objectives">
+<div class="lo-title">Learning Objectives</div>
+<ul>
+<li>Construct Chebyshev and minimax (Remez) approximations of a function on a chosen interval, and quantify the equioscillation advantage of minimax at equal degree.</li>
+<li>Derive iterative alternatives &mdash; Newton and Goldschmidt for inverses and inverse square roots &mdash; and account for their multiplicative depth per digit of accuracy.</li>
+<li>Explain comparison and sign via composite polynomial iteration, and why comparison remains the most expensive primitive on CKKS ciphertexts.</li>
+<li>Survey the softmax strategies used by published systems &mdash; BOLT, NEXUS, Powerformer, THOR &mdash; including how each handles the max-subtraction problem.</li>
+<li>Implement a minimax-versus-Chebyshev comparison, a composite sign iteration, and a softmax accuracy&ndash;depth Pareto table in working code.</li>
+</ul>
+</div>
+
+<div class="read-alongside"><strong>Read alongside</strong> &mdash; Trefethen, <em>Approximation Theory and Approximation Practice</em>, for Chebyshev interpolation, equioscillation, and the Remez algorithm done properly; the Cheon&ndash;Kim&ndash;Kim ASIACRYPT 2019 and 2020 papers on homomorphic comparison, which are short and readable and define the composite-sign machinery every CKKS system now ships; Raschka, <em>Build a Large Language Model (From Scratch)</em>, to keep the plaintext softmax and LayerNorm you are approximating concretely in view.</div>
+
+<p>Chapter 38 established what breaks when a transformer meets CKKS: additions and multiplications survive, and everything else &mdash; $e^x$ in softmax, $1/x$ in its normalization, $1/\sqrt{x}$ in LayerNorm, the comparisons inside max and argmax &mdash; must be rebuilt from polynomials. This chapter is the toolbox for that rebuild, and its organizing claim is blunt: the governing trade is not degree against accuracy, which is textbook material, but <em>domain control against everything else</em>, because every tool below is fitted to an interval and fails &mdash; often doubly exponentially fast &mdash; the moment its input drifts outside it. We assume the CKKS facts from Chapter 38: a ciphertext carries a finite ladder of levels, each ciphertext&ndash;ciphertext multiplication plus rescaling consumes one, slots give SIMD parallelism with rotations for cross-slot sums, and bootstrapping refreshes the ladder at a cost that dominates everything else; for the scheme itself see a dedicated FHE text. Chapter 40 assembles these tools into complete systems.</p>
+
+<h4>39.1 The Three Problems</h4>
+<p>Strip any encrypted-transformer paper to its approximation core and three problems remain. <strong>Exponential:</strong> softmax needs $e^{x}$ on whatever interval the attention logits occupy. <strong>Inverse and inverse square root:</strong> softmax normalization needs $1/\sum_j e^{x_j}$ and LayerNorm needs $1/\sqrt{\mathrm{Var}+\epsilon}$. <strong>Comparison:</strong> the sign function $\mathrm{sgn}(x)$, from which max, ReLU-exact, and argmax are built. Smooth bounded activations &mdash; GELU, tanh, sigmoid &mdash; are comparatively easy: one minimax fit on a calibrated interval and done. The three core problems are hard for three different reasons: $e^x$ has unbounded range, so its <em>output</em> scale is the problem; $1/x$ and $1/\sqrt{x}$ have a pole, so accuracy collapses as the input approaches zero; and $\mathrm{sgn}$ is discontinuous, so no single polynomial of practical degree can be uniformly close to it near the origin at all.</p>
+<p>Each problem admits two solution styles, and the chapter covers both. A <em>one-shot fit</em> evaluates a single polynomial chosen in advance (Sections 39.2&ndash;39.3). An <em>iteration</em> composes a cheap map with itself so that error contracts per round &mdash; Newton and Goldschmidt for inverses (Section 39.4), composite sign polynomials for comparison (Section 39.5). Iterations trade a fixed polynomial's degree for depth spent in rounds, and their fixed points confer a robustness one-shot fits lack; but both styles are interval-fitted, and both are governed by the same failure mode (Section 39.7).</p>
+
+<h4>39.2 Chebyshev and the Interval</h4>
+<p>Fix an interval $[a,b]$ and map it to $[-1,1]$ by $x = \frac{a+b}{2} + \frac{b-a}{2}t$. The Chebyshev polynomials $T_k(t) = \cos(k\arccos t)$ are the right basis for everything that follows: they are bounded by 1 on the interval, numerically stable to evaluate by the Clenshaw recurrence, and interpolation at the Chebyshev nodes $t_j = \cos\!\big(\tfrac{(2j+1)\pi}{2d+2}\big)$ avoids the Runge catastrophe of equispaced nodes. For an $f$ with $d{+}1$ derivatives, Chebyshev-node interpolation of degree $d$ satisfies</p>
+<p>$$\max_{x\in[a,b]} |f(x) - p_d(x)| \;\le\; \frac{(b-a)^{d+1}}{2^{2d+1}\,(d+1)!}\,\max_{\xi\in[a,b]}|f^{(d+1)}(\xi)|,$$</p>
+<p>and for $f$ analytic in a neighborhood of the interval the error decays geometrically, like $\rho^{-d}$ where $\rho$ measures the size of the largest Bernstein ellipse in which $f$ is analytic <span class="tag tag-certain">Certain</span>. Two consequences drive everything in this chapter. First, the $(b-a)^{d+1}$ factor: <em>halving the interval buys roughly $d{+}1$ bits of accuracy for free</em>, which is why every system fights so hard to control input ranges. For $e^x$ on $[-4,0]$ at degree 7 the bound gives $4^8/(2^{15}\cdot 8!) \approx 5.0\times 10^{-5}$; the measured interpolation error in Artifact 39.1 is $9.3\times 10^{-6}$. Second, the depth cost: a degree-$d$ polynomial evaluates in non-scalar depth $\lceil\log_2 d\rceil$, with the number of ciphertext multiplications reduced to $O(\sqrt{d})$ by Paterson&ndash;Stockmeyer-style baby-step/giant-step evaluation &mdash; this is exactly the machinery CKKS bootstrapping itself uses for its polynomial of the modular-reduction function, so any CKKS library already contains it <span class="tag tag-certain">Certain</span>. Degree is cheap in depth (logarithmic) and moderate in multiplications; what degree cannot buy is behavior off the interval.</p>
+
+<div class="definition"><div class="box-title">Definition 39.1 (Minimax approximation)</div><p>For $f$ continuous on $[a,b]$ and degree bound $d$, the minimax (best uniform) approximation is $p^\star = \arg\min_{\deg p \le d} \max_{x\in[a,b]} |f(x)-p(x)|$, and its error $E_d(f)$ is the smallest uniform error any degree-$d$ polynomial can achieve on that interval. It exists and is unique.</p></div>
+
+<div class="theorem"><div class="box-title">Theorem 39.1 (Chebyshev Equioscillation Theorem)</div><p>$p$ of degree $\le d$ is the minimax approximation to $f$ on $[a,b]$ if and only if the error $f - p$ attains its maximum magnitude $E$ at $d+2$ or more points $x_0 &lt; x_1 &lt; \cdots &lt; x_{d+1}$ with alternating signs: $f(x_i) - p(x_i) = \pm(-1)^i E$.</p>
+<p><strong>Proof sketch.</strong> (Sufficiency, the direction Remez uses.) Suppose $f-p$ equioscillates at $d+2$ points but some $q$ of degree $\le d$ has uniform error $&lt; E$. Then $p - q = (f-q) - (f-p)$ takes the sign of $-(f-p)$ at each of the $d+2$ alternation points, hence alternates in sign $d+2$ times, hence has $d+1$ zeros &mdash; impossible for a nonzero polynomial of degree $\le d$, and $p=q$ contradicts the strict inequality. Necessity follows from a perturbation argument: fewer than $d+2$ alternations leave room to shift $p$ by a low-degree correction that reduces the maximum. $\blacksquare$</p></div>
+
+<div class="example"><div class="box-title">Example 39.1 (Degree-1 minimax for $e^x$ on $[0,1]$)</div><p>Seek $p(x) = a + bx$ with three equioscillation points. The interior extremum $x^\star$ of $e^x - p$ satisfies $e^{x^\star} = b$, and alternation at $\{0, x^\star, 1\}$ forces the endpoint errors to be equal: $1 - a = e - a - b$, so $b = e - 1 \approx 1.71828$ and $x^\star = \ln(e-1) \approx 0.54132$. Averaging the endpoint and interior conditions gives $a = \tfrac{1}{2}\big(e - (e-1)\ln(e-1)\big) \approx \tfrac{1}{2}(2.71828 - 1.71828 \times 0.54132) \approx 0.89405$. Check the three errors: at $x=0$: $1 - 0.89405 = +0.10595$; at $x^\star$: $1.71828 - (0.89405 + 0.93018) = -0.10595$; at $x=1$: $2.71828 - 2.61233 = +0.10595$. Equal magnitudes, alternating signs, $E \approx 0.10595$: no straight line does better.</p></div>
+
+<h4>39.3 Minimax and Equioscillation</h4>
+<p>The Remez exchange algorithm turns Theorem 39.1 into a solver. Maintain $d+2$ reference points; solve the linear system $p(x_i) + (-1)^i E = f(x_i)$ for the $d+1$ coefficients and the levelled error $E$ jointly; compute the true error on a dense grid; move each reference to the extremum of the error in its sign-segment; repeat. On smooth functions it converges in a handful of iterations. Artifact 39.1 runs this for $e^x$ on $[-4,0]$ at degree 7: Chebyshev interpolation achieves $9.325\times 10^{-6}$, Remez achieves $7.589\times 10^{-6}$ &mdash; a factor 1.229 &mdash; and the final error curve shows exactly $9$ alternating extrema whose magnitudes agree to a measured ratio of $1.000000$: equioscillation, observed numerically.</p>
+<p>A factor of 1.23 looks modest, and the theory says it cannot be large: interpolation at Chebyshev nodes is within a factor $1 + \Lambda_d$ of minimax, where the Lebesgue constant $\Lambda_d \approx \tfrac{2}{\pi}\ln(d+1) + 0.96$ is about $2.3$ at degree 7 <span class="tag tag-certain">Certain</span>. Why do serious systems bother with Remez? Because under encryption the comparison is run at <em>fixed depth</em>: the minimax fit delivers strictly more accuracy for identical level consumption, the fit is computed once offline in plaintext, and in regimes where the polynomial is squared or composed afterwards (Sections 39.4&ndash;39.6) fractional-bit improvements compound. The production evidence: NEXUS's public repository ships a full Remez implementation inside its bootstrapping stack, inherited from the Lee et al. FHE-MP-CNN line of work, and uses minimax fits for the modular-reduction step of bootstrapping itself <span class="tag tag-certain">Certain</span>.</p>
+
+<h4>39.4 Iterative Methods: Newton, Goldschmidt</h4>
+<p>For $1/v$ no polynomial fit survives near the pole, but iteration does. Newton's method on $g(y) = 1/y - v$ gives</p>
+<p>$$y_{t+1} = y_t(2 - v\,y_t),$$</p>
+<p>two ciphertext multiplications and hence depth 2 per round.</p>
+
+<div class="theorem"><div class="box-title">Theorem 39.2 (Quadratic convergence of Newton reciprocal)</div><p>Let $e_t = 1 - v\,y_t$ be the relative error. Then $e_{t+1} = 1 - v\,y_t(2 - v y_t) = (1 - v y_t)^2 = e_t^2$, so $e_t = e_0^{2^t}$ exactly, converging for $|e_0| &lt; 1$, i.e. for $v y_0 \in (0,2)$. $\blacksquare$</p></div>
+
+<p>The accounting is the point: accuracy $\varepsilon$ costs $t = \log_2\big(\log \varepsilon / \log e_0\big)$ rounds &mdash; depth buys <em>squared</em> error per two levels, far better than the one-shot fit's geometric decay per level, which is why every division in every CKKS transformer system is iterative. The catch is $e_0$: the iteration only converges from a good start, so the initial guess is itself an interval-fitted approximation &mdash; domain control again. If $v$ is guaranteed to lie in $[m, M]$, the best affine initialization $y_0 = \alpha + \beta v$ minimizes $\max_v |1 - v(\alpha+\beta v)|$; the quadratic $q(v) = 1 - \alpha v - \beta v^2$ equioscillates at $\{m, \tfrac{m+M}{2}, M\}$ (a three-point Remez problem solvable by hand, exactly as in Example 39.1), giving $e_0 = (M-m)^2/(M^2 + 6mM + m^2)$. For $[1/8, 1]$ this is $e_0 = 0.4336$, and four rounds deliver $e_0^{16} \approx 1.6\times 10^{-6}$ &mdash; both numbers reproduced in Artifact 39.1's Pareto table.</p>
+<p>Goldschmidt's division is the multiplicative twin: with $y = 1 - v$, $\;1/v = \prod_{i\ge 0} (1 + y^{2^i})$, truncated after $t$ factors, again with error $|y|^{2^{t+1}}$-type decay and depth 2 per factor (square the running $y$, multiply the running product). It is not an idle alternative: NEXUS's <code>inverse</code> routine in its public CKKS evaluator is precisely this product form with a default of 4 iterations, following the inverse algorithm of Cheon et al.'s ASIACRYPT 2019 comparison paper <span class="tag tag-certain">Certain</span>. For LayerNorm's $1/\sqrt{v}$ the same logic applies to Newton on $y^{-2} - v$: $y_{t+1} = \tfrac{1}{2}y_t(3 - v\,y_t^2)$, depth 3 per round, quadratic convergence, initialization from an affine or piecewise-affine fit of $v^{-1/2}$ on the calibrated variance range &mdash; NEXUS's evaluator carries exactly such a two-segment linear initializer for its LayerNorm path <span class="tag tag-certain">Certain</span>.</p>
+
+<h4>39.5 Comparison and Sign: Composite Iterations</h4>
+<p>Sign is the hardest case: $\mathrm{sgn}$ jumps at 0, so any polynomial uniformly $\varepsilon$-close to it on $[-1,-\delta]\cup[\delta,1]$ must climb from $-1$ to $+1$ inside a width-$2\delta$ window, forcing degree $\Omega(1/\delta)$ &mdash; depth $\log(1/\delta)$ and an unmanageable multiplication count as a single fit. The line of work that fixed this is due to Cheon, Kim, and Kim: iterate a <em>fixed low-degree odd polynomial</em> whose attracting fixed points are $\pm 1$ (ASIACRYPT 2019), then choose that polynomial optimally (ASIACRYPT 2020). The 2020 paper's family $f_n$ is defined by $f_n(x) = \sum_{i=0}^{n} \frac{1}{4^i}\binom{2i}{i}\, x(1-x^2)^i$; for $n=4$,</p>
+<p>$$f_4(x) = \tfrac{1}{2^7}\left(35x^9 - 180x^7 + 378x^5 - 420x^3 + 315x\right),$$</p>
+<p>an odd degree-9 map with $f_4(\pm 1) = \pm 1$ that contracts $[-1,1]$ toward the fixed points on every application. The composition $f_4^{(k)}$ approaches $\mathrm{sgn}$ as $k$ grows, with the paper proving compositions $\Theta(\log(1/\varepsilon)) + \Theta(\log \alpha)$ suffice for $2^{-\alpha}$-accurate comparison of inputs separated by $\varepsilon$ &mdash; asymptotically optimal &mdash; and reporting amortized comparison of encrypted 20-bit integers in 1.43&nbsp;ms, about 30&times; faster than the prior state of the art <span class="tag tag-certain">Certain</span>. The companion family $g_n$ sacrifices closeness to $\mathrm{sgn}$ to contract the origin region faster; the schedule $g\circ\cdots\circ g$ then $f\circ\cdots\circ f$ beats pure $f$ at equal depth. Lee, Lee, No, and Kim (IEEE TDSC 2022) pushed further, choosing each stage of the composition as a minimax polynomial in its own right &mdash; Remez inside every layer of the composition <span class="tag tag-certain">Certain</span>.</p>
+<p>Artifact 39.1 measures the contraction. One round of $f_4$ (depth 4, since a degree-9 polynomial needs 4 levels) leaves a transition half-width of $0.708$ at tolerance $10^{-2}$; five rounds (depth 20) leave $0.0229$ &mdash; a steady factor of roughly $2.4$ per round, the promised $\log(1/\delta)$ scaling in the flesh. The exact coefficients above, and the schedule $g_4, g_4, f_4, f_4$, are what NEXUS ships in production for its encrypted argmax; the measured mixed schedule reaches width $0.0104$ at depth 16, where pure $f_4^{(4)}$ manages only $0.0564$ &mdash; a 5.4&times; sharper transition for identical depth <span class="tag tag-certain">Certain</span>. Max then comes from sign via $\max(a,b) = \tfrac{a+b}{2} + \tfrac{a-b}{2}\,\mathrm{sgn}(a-b)$, and argmax by a rotation tournament of such maxes &mdash; which is why NEXUS bootstraps inside its argmax loop, and why comparison remains the most expensive primitive in any CKKS pipeline: it is the only one whose depth is set by a <em>discontinuity</em> rather than by smooth curvature, so no calibration trick removes the composite iteration <span class="tag tag-likely">Likely</span>.</p>
+
+<div class="warning-box"><div class="box-title">Common Pitfall</div><p>Composite sign diverges &mdash; doubly exponentially &mdash; on inputs outside $[-1,1]$. The polynomial $f_4$ contracts toward $\pm 1$ only on its design interval; beyond it, the $35x^9/128$ term takes over. Measured in Artifact 39.1: $f_4(1.5) = 1.527$ (already growing), and two rounds on $x=2.0$ give $f_4(f_4(2.0)) = 1.324\times 10^{13}$. The classic bug is feeding raw attention-score differences $a-b$ to a sign iteration without first scaling by a proven bound on $|a-b|$: everything works on the test batch whose logits are tame, then one out-of-distribution input pushes a difference to 1.3, the iterate escapes, and the ciphertext comes back as saturated noise with no error message &mdash; encrypted execution cannot warn you. Scale into $[-1,1]$ by a <em>guaranteed</em> bound, not an observed one.</p></div>
+
+<h4>39.6 Softmax Strategies in the Wild</h4>
+<p>Plaintext softmax is computed as $\mathrm{softmax}(z)_i = e^{z_i - \max_j z_j}/\sum_k e^{z_k - \max_j z_j}$; the max-subtraction costs nothing and buys overflow-freedom, since every exponent becomes $\le 0$ (Chapter 5). Under encryption the max-subtraction <em>is</em> the expensive part &mdash; it is a comparison tournament, Section 39.5's costliest primitive &mdash; and how a system handles it is the single most revealing design decision in its softmax. The published systems split four ways. All four descriptions below are verified against the papers or, for BOLT and NEXUS, against their public source code.</p>
+<p><strong>BOLT (Pang, Zhu, M&ouml;llering, Zheng, Schneider; IEEE S&amp;P 2024) &mdash; compute the max exactly, in MPC.</strong> BOLT is an HE+MPC hybrid: matrix products run under HE, nonlinearities on secret shares, where OT-based comparison is cheap. Its <code>softmax_fix</code> computes an exact secret-shared row max via a comparison tree, subtracts it, then applies range reduction $x = p - \ell\ln 2$ with $p \in (-\ln 2, 0]$, evaluates the degree-2 polynomial $0.3585\,(p + 1.353)^2 + 0.344$ &mdash; the I-BERT quadratic (Kim et al., 2021), imported into the ceremony &mdash; and right-shifts by $\ell$ (clamped at 13) using MPC's native bit operations; normalization is a secure fixed-point division protocol <span class="tag tag-certain">Certain</span>. The lesson: in a threat model with interaction, comparison stops being the bottleneck, and the whole approximation problem deflates to one quadratic.</p>
+<p><strong>NEXUS (Zhang et al.; NDSS 2025) &mdash; skip the max entirely.</strong> The first non-interactive (pure RNS-CKKS) transformer system. Its softmax exponentiates directly &mdash; no max, no clipping: $e^x \approx (1 + x/2^7)^{128}$, the compound-interest limit evaluated as one plaintext multiplication plus 7 squarings, depth 8. (Survey papers routinely file this under &ldquo;Taylor series&rdquo;; the code is the limit definition with iterated squaring, which is not a truncated Taylor evaluation and has different error behavior on wide intervals.) Rotations sum the row; the sum is scaled by a hard-coded constant $0.01$ into the unit interval, inverted by the Goldschmidt product form of Section 39.4 (default 4 iterations), and rescaled <span class="tag tag-certain">Certain</span>. Stability rests entirely on an assumed input range &mdash; the paper's evaluation shows it holds for its models, but nothing in the pipeline enforces it. The paper reports BERT-base inference in 37.3&nbsp;s and a 372.5&times; bandwidth reduction over BOLT under its own setting.</p>
+<p><strong>Powerformer (Park, Lee, Lee; ePrint 2024/1429, ACL 2025) &mdash; retrain the problem away.</strong> Replaces softmax outright with BRPmax, a ReLU-and-power &ldquo;rectifier-power max&rdquo; score that is polynomial-friendly by construction &mdash; no exponential, no max-subtraction, no unstable approximation &mdash; and distills the pretrained model onto the new attention so accuracy is recovered by training rather than by approximation <span class="tag tag-certain">Certain</span>. The paper reports a 45% computation-time reduction against the state-of-the-art HE language model with no accuracy loss, BRPmax outperforming the original softmax BERT-Large baseline, and a &ldquo;pseudo-sign&rdquo; composite approximation (Section 39.5 machinery) for GELU and tanh <span class="tag tag-verify">Verify</span>. The same philosophy appears in Power-Softmax (Zimerman et al., 2024), which uses $x_i^p/\sum_j x_j^p$ for even $p$: change the model class so the non-polynomial core shrinks.</p>
+<p><strong>THOR (Moon, Yoo, Jiang, Kim; ePrint 2024/1881, CCS 2025) &mdash; substitute a calibrated constant for the max.</strong> THOR subtracts a fixed constant chosen from the activation statistics of the target model rather than computing a max, then manages the residual wide range with a squaring-and-normalization strategy &mdash; interleaving exponential evaluation with normalization so both proceed in small stable steps, in the spirit of the normalize-and-square softmax of Cho, Hanrot, Kim, Park, and Stehl&eacute; (CCS 2024), which THOR's own related-work discussion identifies as its closest relative &mdash; with division by an inverse approximation chosen for wide-domain convergence in few iterations <span class="tag tag-likely">Likely</span>. The paper reports BERT-base inference on 128 tokens in about 10 minutes on a single GPU. The calibration is also THOR's exposure: the ATLAS paper (2025) observes that THOR's hand-calibrated domains &mdash; the GELU interval, the softmax constant &mdash; can be silently exceeded when the recipe is applied to other weights <span class="tag tag-verify">Verify</span>. A fifth strategy completes the design space: HETAL (Lee et al., ICML 2023), an encrypted-training system, computes a true homomorphic max via approximate comparison and stretches the exponential's usable range to $[-128,128]$ with domain-extension polynomials &mdash; paying the comparison cost to obtain the plaintext algorithm's robustness.</p>
+<p>One caution before any cross-system reading: the latency figures quoted above are <em>not comparable with each other</em> &mdash; BOLT's threat model includes interaction and network cost, NEXUS and THOR are non-interactive but benchmark different sequence lengths on different hardware with different steps excluded from timing; each number is meaningful only inside its own paper's setting.</p>
+
+<h4>39.7 Domain Control: Clipping, Normalization, and the Drift Failure</h4>
+<p>Every technique above carried an interval assumption: the Remez fit its $[a,b]$, Newton its $[m,M]$ initialization, composite sign its $[-1,1]$, each system's softmax its logit range. Off the interval, a degree-$d$ fit in the Chebyshev basis grows like $|T_d|$ does &mdash; as $\big(|x| + \sqrt{x^2-1}\big)^{d}$, exponential in degree &mdash; and iterated constructions square that growth per round, which is the $1.3\times 10^{13}$ in the warning box <span class="tag tag-certain">Certain</span>. Chapter 38's framing bears repeating: this is the failure mode of encrypted inference, because nothing observable distinguishes a drifted input from a valid one until decryption.</p>
+<p>The systems above exhibit the full menu of defenses, in increasing order of invasiveness. <em>Architectural bounds:</em> attention logits are already scaled by $1/\sqrt{d_k}$ (Chapter 18), and normalization layers (Chapter 12) keep intermediate scales near 1 &mdash; free, but not a guarantee. <em>Calibration:</em> measure activation ranges on held-out data and fit to those (THOR's constant, most systems' GELU intervals) &mdash; cheap, and exactly as trustworthy as the calibration set is representative of deployment inputs. <em>Enforcement:</em> compute the bound-enforcing quantity under encryption (BOLT's exact MPC max, HETAL's homomorphic max) &mdash; a paid-for guarantee. <em>Retraining:</em> change the function class so the dangerous primitive disappears (Powerformer's BRPmax) &mdash; the strongest fix, at the price of touching the weights and the accuracy-recovery pipeline. Explicit clipping &mdash; evaluating a polynomial approximation of $\min(\max(x, a), b)$ before the fitted function &mdash; is itself sign-machinery of Section 39.5, so it costs comparison-grade depth; it appears in argmax pipelines more than in softmax ones. The trade is now visible end to end: enforcement spends depth to shrink the assumed domain; every fitted polynomial upstream then gets $(b-a)^{d+1}$-style accuracy back. Domain control against everything.</p>
+
+<h4>39.8 The Accuracy&ndash;Depth Frontier</h4>
+<p>Assemble softmax from the toolkits and the budget becomes concrete. Artifact 39.1 builds it as: minimax exp of degree $d$ on $[-1,0]$ evaluated at $x/8$, squared 3 times to cover $[-8,0]$ (using $e^x = (e^{x/8})^8$); rotation-summed; Newton-inverted with $t$ rounds from the equioscillating affine start of Section 39.4. Levels consumed, in the counting model (one level per ciphertext or plaintext multiplication; rotations and additions free): $\lceil \log_2 d\rceil + 1$ for the exponential's polynomial and argument scaling, 3 for the squarings, $2t$ for Newton, 2 to recombine. Sweeping $d \in \{3,5,7\}$, $t \in \{2,\dots,5\}$ yields a Pareto table whose frontier is monotone &mdash; asserted in code: more depth never hurts the best-achievable error &mdash; and whose interior is instructive: at depth 14&ndash;15 the Newton error $e_0^{2^t}$ dominates and raising $d$ from 3 to 7 buys almost nothing ($8.2\times 10^{-4}$ vs $7.1\times 10^{-4}$), while at $t \ge 4$ the exponential floor takes over and $d{=}3$ stalls at $8.2\times 10^{-4}$ no matter how many Newton rounds are added. Balanced budgets win: depth 17 reaches $5.4\times 10^{-7}$, depth 19 reaches $1.8\times 10^{-9}$. Against a bootstrapping budget of 10&ndash;20 usable levels between refreshes (Chapter 38), one softmax at $10^{-6}$-grade accuracy consumes most of a budget &mdash; which is why softmax placement drives bootstrapping schedules in every system in Chapter 40, and why Powerformer's decision to delete the exponential altogether reads less like a trick and more like a position on this frontier.</p>
+
+<div class="artifact-box"><div class="box-title">Artifact 39.1 &mdash; Three Approximation Toolkits, Measured</div>
+<p>The module implements the chapter end to end in NumPy: (1) Chebyshev-node interpolation versus a Remez exchange minimax fit for $e^x$ on $[-4,0]$ at degree 7, with a numerical equioscillation audit; (2) the composite sign iteration using the exact $f_4, g_4$ polynomials NEXUS ships, measuring transition width against rounds, the NEXUS $g,g,f,f$ schedule, and the off-interval divergence; (3) the softmax accuracy&ndash;depth Pareto table &mdash; minimax exp composed with squarings and Newton division &mdash; under an explicit level-counting model (this environment has no FHE library; depth numbers are counted, not timed). Torch appears only to cross-check the plaintext softmax reference.</p>
+<pre><code># Artifact 39.1 -- Approximating the non-polynomial core, measured.
+# Three toolkits: (1) Chebyshev vs Remez-minimax for exp on an interval;
+# (2) composite sign iteration f_4 (Cheon-Kim-Kim, ASIACRYPT 2020);
+# (3) accuracy-vs-depth Pareto table for a CKKS-style softmax
+#     (minimax exp + squaring + Newton reciprocal). Depth numbers are a
+#     COUNTING model (multiplicative levels consumed), not an FHE timing.
+import numpy as np
+from numpy.polynomial import chebyshev as C
+
+rng = np.random.default_rng(0)
+GRID = np.linspace(-1, 1, 200_001)
+
+# ---------- shared machinery: Chebyshev interpolation and Remez ----------
+def cheb_interp(f, a, b, deg):
+    """Interpolant of f at the deg+1 Chebyshev nodes of [a,b] (cheb basis)."""
+    t = np.cos((2 * np.arange(deg + 1) + 1) * np.pi / (2 * deg + 2))
+    x = (a + b) / 2 + (b - a) / 2 * t
+    return C.chebfit(t, f(x), deg)
+
+def remez(f, a, b, deg, iters=20):
+    """Minimax fit on [a,b] by Remez exchange, Chebyshev basis on [-1,1].
+    Solve p(t_i) + (-1)^i E = f(x(t_i)) on deg+2 references, then move the
+    references to the error extrema (one per sign-change segment)."""
+    to_x = lambda t: (a + b) / 2 + (b - a) / 2 * t
+    ref = np.cos(np.pi * np.arange(deg + 2) / (deg + 1))[::-1]
+    for _ in range(iters):
+        V = C.chebvander(ref, deg)
+        M = np.hstack([V, ((-1.0) ** np.arange(deg + 2))[:, None]])
+        sol = np.linalg.solve(M, f(to_x(ref)))
+        c = sol[:-1]
+        err = f(to_x(GRID)) - C.chebval(GRID, c)
+        s = np.where(np.diff(np.sign(err)) != 0)[0]      # sign changes
+        bnd = np.concatenate([[0], s + 1, [len(GRID)]])  # -&gt; segments
+        new = [b0 + np.argmax(np.abs(err[b0:b1]))
+               for b0, b1 in zip(bnd[:-1], bnd[1:])]
+        if len(new) != deg + 2:                          # defensive only
+            break
+        ref = GRID[new]
+    return c, err
+
+# ---------- (1) Chebyshev vs minimax for exp on [-4,0], degree 7 ----------
+A, B, DEG = -4.0, 0.0, 7
+cc = cheb_interp(np.exp, A, B, DEG)
+cheb_err = np.max(np.abs(np.exp((A + B) / 2 + (B - A) / 2 * GRID)
+                         - C.chebval(GRID, cc)))
+c_mm, err_mm = remez(np.exp, A, B, DEG)
+mm_err = np.max(np.abs(err_mm))
+# equioscillation audit: alternating extrema of near-equal magnitude
+s = np.where(np.diff(np.sign(err_mm)) != 0)[0]
+bnd = np.concatenate([[0], s + 1, [len(GRID)]])
+ext = np.array([err_mm[b0 + np.argmax(np.abs(err_mm[b0:b1]))]
+                for b0, b1 in zip(bnd[:-1], bnd[1:])])
+alt_ok = np.all(np.sign(ext[1:]) != np.sign(ext[:-1]))
+ratio = np.min(np.abs(ext)) / np.max(np.abs(ext))
+print(f"[1] exp on [{A:g},{B:g}], degree {DEG}")
+print(f"    Chebyshev-interp max err : {cheb_err:.3e}")
+print(f"    Remez minimax   max err : {mm_err:.3e}  "
+      f"(improvement x{cheb_err / mm_err:.3f})")
+print(f"    equioscillation: {len(ext)} alternating extrema (need {DEG + 2}), "
+      f"min/max magnitude ratio {ratio:.6f}")
+assert mm_err &lt; cheb_err, "minimax must beat interpolation at equal degree"
+assert len(ext) == DEG + 2 and alt_ok and ratio &gt; 0.999
+
+# ---------- (2) composite sign iteration ----------
+# f4 and g4 are exactly the odd degree-9 polynomials shipped in NEXUS's
+# CKKS evaluator (F4_COEFFS/128, G4_COEFFS/1024); f4 is f_n (n=4) from
+# Cheon-Kim-Kim ASIACRYPT 2020, g4 the acceleration polynomial.
+f4 = lambda x: np.polyval(
+    np.array([35, 0, -180, 0, 378, 0, -420, 0, 315, 0]) / 128.0, x)
+g4 = lambda x: np.polyval(
+    np.array([46623, 0, -113492, 0, 97015, 0, -34974, 0, 5850, 0]) / 1024.0, x)
+
+def trans_width(k, tol=1e-2, first_g=0):
+    """Half-width w s.t. |F(x) - sgn(x)| &lt;= tol for all w &lt;= |x| &lt;= 1,
+    where F = (k - first_g) rounds of f4 after first_g rounds of g4."""
+    x = np.linspace(-1, 1, 400_001)
+    y = x.copy()
+    for i in range(k):
+        y = g4(y) if i &lt; first_g else f4(y)
+    bad = np.abs(y - np.sign(x)) &gt; tol
+    return np.max(np.abs(x[bad])) if bad.any() else 0.0
+
+print("[2] composite sign: rounds k, depth 4k (deg-9 poly = 4 levels/round)")
+widths = [trans_width(k) for k in range(1, 6)]
+for k, w in enumerate(widths, 1):
+    print(f"    k={k}  depth={4 * k:2d}  width(|err|&lt;=1e-2) = {w:.6f}")
+w_nexus = trans_width(4, first_g=2)
+print(f"    NEXUS g4,g4,f4,f4 (k=4, depth 16): width = {w_nexus:.6f} "
+      f"vs f4^4 = {widths[3]:.6f}")
+assert all(widths[i + 1] &lt; widths[i] for i in range(4)), "k must sharpen"
+# domain-drift hazard, measured: composing f4 outside [-1,1] diverges
+print(f"    f4(1.5) = {f4(1.5):.3f}, f4(f4(2.0)) = {f4(f4(2.0)):.3e}")
+
+# ---------- (3) softmax accuracy-vs-depth Pareto (counting model) ----------
+# Pipeline (n=8 slots, logits U[-4,4], exact max-subtraction stand-in, so
+# inputs live in [-8,0]):
+#   exp: minimax degree-d fit of e^x on [-1,0] (toolkit 1), evaluated at
+#        x/8, then squared j=3 times    -&gt; depth ceil(log2 d) + 3 + 1
+#   sum: rotations+adds, free in levels; scale by 1/n so v=sum/n in [1/8,1]
+#   1/v: Newton y&lt;-y(2-v*y), y0 = a+b*v the minimax linear init on [m,1],
+#        m=1/8: equioscillation of q(v)=1-v*y0 at {m,(m+1)/2,1} gives
+#        e0=(1-m)^2/(1+6m+m^2), error e0^(2^t) -&gt; depth 2t
+#   recombine: 1 ct-ct mult + 1 plain mult -&gt; depth 2
+n, ntrials, J = 8, 200, 3
+Z = rng.uniform(-4, 4, size=(ntrials, n))
+Zs = Z - Z.max(axis=1, keepdims=True)
+ref = np.exp(Zs) / np.exp(Zs).sum(axis=1, keepdims=True)
+m = 1.0 / n
+e0 = (1 - m) ** 2 / (1 + 6 * m + m * m)      # 0.4336 for m=1/8
+b_i = -8 * e0 / (1 - m) ** 2                 # y0 = a_i + b_i*v (derived
+a_i = -b_i * (1 + m)                         #  from the equioscillation)
+
+def softmax_poly(zs, d, t):
+    cd, _ = remez(np.exp, -1.0, 0.0, d)      # minimax exp on [-1,0]
+    e = C.chebval(2 * (zs / 8.0) + 1, cd)    # eval at x/8, map to [-1,1]
+    for _ in range(J):
+        e = e * e                            # back to range [-8,0]
+    v = e.sum(axis=1, keepdims=True) / n
+    y = a_i + b_i * v
+    for _ in range(t):
+        y = y * (2.0 - v * y)
+    return e * y / n
+
+rows = []
+for d in (3, 5, 7):
+    for t in (2, 3, 4, 5):
+        depth = int(np.ceil(np.log2(d))) + J + 1 + 2 * t + 2
+        err = np.max(np.abs(softmax_poly(Zs, d, t) - ref))
+        rows.append((depth, d, t, err))
+rows.sort()
+print(f"[3] softmax Pareto: depth | d (exp) | t (Newton) | max |err| "
+      f"({ntrials} draws, n={n}, logits U[-4,4])")
+best, frontier = np.inf, []
+for depth, d, t, e in rows:
+    star = " *" if e &lt; best else ""
+    best = min(best, e)
+    frontier.append(best)
+    print(f"    {depth:2d}   |  {d}  |  {t}  | {e:.3e}{star}")
+assert all(frontier[i + 1] &lt;= frontier[i] for i in range(len(frontier) - 1)), \
+    "frontier must be monotone: more depth never hurts best-achievable error"
+assert frontier[-1] &lt; 1e-6, "deep end of the table must reach 1e-6"
+
+# cross-check the plaintext reference against torch, if present
+try:
+    import torch
+except ImportError:
+    torch = None
+if torch is not None:
+    dev = np.max(np.abs(torch.softmax(torch.tensor(Z), dim=1).numpy() - ref))
+    print(f"[x] torch.softmax cross-check: max deviation {dev:.2e}")
+    assert dev &lt; 1e-12
+else:
+    print("[x] [skipped: torch not installed]")
+
+if __name__ == "__main__":
+    print("all assertions passed")
+</code></pre>
+<p>Running it takes about 3&nbsp;s on CPU and prints, in order: the toolkit-1 comparison &mdash; Chebyshev $9.325\times 10^{-6}$ versus minimax $7.589\times 10^{-6}$ (factor 1.229), with 9 alternating extrema of magnitude ratio $1.000000$; the toolkit-2 width table &mdash; $0.708, 0.332, 0.138, 0.056, 0.023$ for $k = 1..5$, the NEXUS $g,g,f,f$ schedule at $0.0104$ versus $0.0564$ for $f_4^{(4)}$, and the divergence pair $f_4(1.5)=1.527$, $f_4(f_4(2.0))=1.324\times 10^{13}$; and the 12-row Pareto table of Section 39.8, whose frontier entries run $2.6\times 10^{-2} \to 8.2\times 10^{-4} \to 5.4\times 10^{-7} \to 1.8\times 10^{-9}$ as depth goes $12 \to 14 \to 17 \to 19$, ending with the torch cross-check at $3.33\times 10^{-16}$ and <code>all assertions passed</code>.</p>
+</div>
+
+<div class="key-takeaways">
+<div class="kt-title">Key Takeaways</div>
+<ul>
+<li>Minimax beats Chebyshev interpolation at equal degree by at most the Lebesgue-constant factor &mdash; measured 1.229&times; for $e^x$ on $[-4,0]$ at degree 7, with textbook equioscillation (9 alternating extrema, equal to machine precision) &mdash; and the win is free at fixed depth, which is why Remez fits are standard in CKKS toolchains. <span class="tag tag-certain">Certain</span></li>
+<li>Iterations beat one-shot fits wherever they apply: Newton and Goldschmidt square the error every two levels, so accuracy per depth is doubly exponential &mdash; but only from an interval-fitted initial guess, so division inherits the same domain assumption it was meant to avoid. <span class="tag tag-certain">Certain</span></li>
+<li>Comparison is the most expensive primitive because sign is discontinuous: the Cheon&ndash;Kim&ndash;Kim composite iteration is asymptotically optimal, needs depth 4 per $f_4$ round for a measured ~2.4&times; width reduction, and diverges doubly exponentially off $[-1,1]$ ($f_4(f_4(2)) \approx 1.3\times 10^{13}$). <span class="tag tag-certain">Certain</span></li>
+<li>The four published softmax answers to max-subtraction are: compute it exactly in MPC (BOLT), skip it and assume a bounded domain (NEXUS), replace the max with a calibrated constant (THOR), or retrain softmax away entirely (Powerformer, BRPmax) &mdash; and their latency figures are not mutually comparable across threat models and setups. <span class="tag tag-certain">Certain</span></li>
+<li>Domain control is the governing trade of the whole part: every polynomial and every iteration is fitted to an interval, drift off it fails silently under encryption, and the defenses &mdash; calibration, enforcement, retraining &mdash; differ mainly in how much depth or training they spend to buy a guaranteed interval. <span class="tag tag-likely">Likely</span></li>
+</ul>
+</div>
+</div>

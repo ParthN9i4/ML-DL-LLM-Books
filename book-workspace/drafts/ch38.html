@@ -1,0 +1,315 @@
+<div class="chapter" id="ch38">
+<div class="chapter-header"><div class="ch-label">Chapter 38</div><h3>What Breaks When You Encrypt a Transformer</h3></div>
+
+<div class="learning-objectives">
+<div class="lo-title">Learning Objectives</div>
+<ul>
+<li>State the CKKS facts a transformer engineer needs &mdash; levels, rescaling, slot packing, rotations, bootstrapping &mdash; without re-deriving the scheme.</li>
+<li>Inventory the non-polynomial operations of one transformer block and classify each by the strategy space available to it: polynomial approximation, iteration, architectural replacement, or protocol escape.</li>
+<li>Derive the multiplicative-depth ledger of one pre-norm attention block line by line, and locate where the budget actually goes.</li>
+<li>Compute the rotation and ciphertext cost of the block's matrix multiplications under diagonal (Halevi&ndash;Shoup) and baby-step&ndash;giant-step packings, including the $n_1+n_2-2$ rotation count.</li>
+<li>Implement a transformer FHE cost model &mdash; depth, ciphertext-ciphertext multiplications, rotations, ciphertext counts &mdash; in working code.</li>
+</ul>
+</div>
+
+<div class="read-alongside"><strong>Read alongside</strong> &mdash; <strong>Raschka</strong>, <em>Build a Large Language Model (From Scratch)</em>, for the plaintext transformer block whose every line this chapter re-prices. For CKKS itself this book deliberately defers to primary sources: Cheon, Kim, Kim, and Song (ASIACRYPT 2017) for the scheme, the <em>Homomorphic Encryption Standard</em> (homomorphicencryption.org, v1.1) for parameter tables, and the OpenFHE documentation for what a production library actually exposes. We use those facts; we do not re-derive them.</div>
+
+<p>Parts I&ndash;VII costed computation in FLOPs, bytes, and wall-clock, and the transformer of Chapter 18 was tuned against that price list: matmuls dominate, elementwise operations are noise, and Chapter 30's roofline decided everything. Homomorphic encryption voids that price list and issues a new one. Under CKKS, multiplications are affordable but each one spends irreplaceable <em>depth</em>; rotations replace memory movement; and the softmax, LayerNorm, and GELU that were rounding errors in Part VI become the dominant cost. This chapter does the re-costing: the CKKS fee schedule (38.1), who is hidden from whom (38.2), the block's non-polynomial inventory (38.3), a line-by-line depth ledger (38.4), rotation-counted matmuls (38.5), and the conclusion that bootstrapping is the architecture (38.6). Chapter 39 then attacks the approximations themselves, and Chapters 40&ndash;41 assemble systems from these parts.</p>
+
+<h4>38.1 The Currency Change: What CKKS Charges For</h4>
+
+<p>The CKKS facts we need, stated once. A CKKS ciphertext over ring dimension $N$ holds $N/2$ complex <em>slots</em> and supports slotwise addition, slotwise multiplication, and cyclic rotation of the slot vector; arithmetic is approximate, carrying a noise floor that plays the role of Chapter 5's machine epsilon. Each multiplication roughly squares the encoded scale, and a <em>rescaling</em> divides it back down by dropping one prime from the ciphertext modulus chain &mdash; so a freshly encrypted ciphertext at level $\ell_{\max}$ can absorb only $\ell_{\max}$ sequential multiplications before the modulus is exhausted. Rotations and ciphertext-ciphertext multiplications additionally require a key-switching operation, which costs compute but no depth. When the levels run out, <em>bootstrapping</em> homomorphically re-encrypts the ciphertext to a higher level; it is the only way to refresh depth, and it is orders of magnitude more expensive than any other operation. That is the whole interface. For why any of it is true &mdash; RLWE, canonical embedding, relinearization &mdash; see the CKKS paper and a dedicated FHE text; nothing below depends on the internals.</p>
+
+<div class="definition"><div class="box-title">Definition 38.1 (Multiplicative depth and the level budget)</div>
+<p>The <em>multiplicative depth</em> of an arithmetic circuit is the maximum number of multiplications on any input-to-output path, counting both ciphertext&ndash;ciphertext and plaintext&ndash;ciphertext multiplications (each forces a rescale) and counting additions and rotations as zero. A CKKS parameter set fixes a <em>level budget</em> $\ell_{\max}$ at key generation: a circuit of depth $\le \ell_{\max}$ can be evaluated <em>leveled</em>, with no bootstrapping; deeper circuits cannot, no matter how long you are willing to wait. Depth is a budget, not a runtime.</p></div>
+
+<h5>38.1.1 The fee schedule and the budget's actual size</h5>
+
+<p>The resulting price list, in rough ascending order: additions are nearly free; plaintext-ciphertext multiplication is cheap in compute but costs one level; ciphertext-ciphertext multiplication costs one level plus a key-switch; a rotation costs zero levels but one key-switch, making it comparable in wall-clock to a ct-ct multiply; any non-polynomial function is not directly expressible at all; and bootstrapping costs seconds of CPU time and a slab of the budget itself. Security caps the budget. At 128-bit classical security with ternary secrets, the Homomorphic Encryption Standard's tables allow a total ciphertext modulus of at most 829 bits at $N=2^{15}$ and 1782 bits at $N=2^{16}$ <span class="tag tag-certain">Certain</span>. With scaling primes of 40&ndash;50 bits plus auxiliary key-switching moduli, an $N=2^{16}$ parameter set yields on the order of 20&ndash;35 usable levels in total &mdash; and a bootstrappable configuration must reserve 10&ndash;15 of them for the bootstrapping circuit itself, leaving perhaps 10&ndash;20 levels of workspace between refreshes <span class="tag tag-verify">Verify: library- and configuration-dependent; check against OpenFHE's <code>advanced-ckks-bootstrapping</code> examples and Lattigo's bootstrapping parameters</span>.</p>
+
+<p>Bootstrapping cost is a moving number, so we cite reports rather than assert facts. Bossuat, Mouchet, Troncoso-Pastoriza, and Hubaux (EUROCRYPT 2021) report bootstrapping a full $\mathbb{C}^{32768}$-slot ciphertext in about 18 seconds in Lattigo on CPU, at 19.1 bits of mean output precision. Jung et al. (TCHES 2021) report a GPU implementation with amortized cost around 0.4 &mu;s per plaintext bit, a claimed 257&times; over single-threaded CPU. Hardware accelerator papers project further orders of magnitude. The honest summary: seconds per ciphertext on a CPU, tens to hundreds of milliseconds on a well-engineered GPU stack, all figures tied to specific parameter sets and precision targets <span class="tag tag-verify">Verify: these numbers move yearly with hardware and library releases</span>.</p>
+
+<p>Two consequences frame everything else. First, the currency inversion: in plaintext, 99%+ of a transformer's FLOPs are matmuls (Chapter 24's $C \approx 6ND$ counted nothing else), and softmax and LayerNorm are noise. Under CKKS, matmuls are the one thing the scheme does well &mdash; plaintext weights, one level, rotations parallelizable &mdash; while every non-polynomial elementwise op detonates into polynomial evaluations and iterations that eat the level budget. Second, comparisons are ruinous: $\max$, $\mathrm{sign}$, argmax, and any data-dependent branch require high-degree polynomial approximations of a discontinuous function (Chapter 39 quantifies this), which is why the entire strategy space below is organized around avoiding them.</p>
+
+<h4>38.2 Threat Models: Who Is Hidden from Whom</h4>
+
+<p>There are three parties in the abstract deployment: the data owner (client), the model owner, and the compute provider (server); in the common two-party collapse the server owns both the model and the hardware. The pure-FHE, non-interactive model &mdash; the one this Part centers &mdash; has the client send encrypted activations; the server evaluates the whole network on ciphertext with plaintext weights and returns encrypted logits; the server learns nothing about the input beyond its shape, and because no data-dependent control flow is expressible, there is no side channel through access patterns: the circuit is identical for every input. The client learns only the output, not the weights. NEXUS (Zhang et al., ePrint 2024/136; NDSS 2025) and THOR (Moon et al., ePrint 2024/1881; CCS 2025) are this model; so are the polynomial-architecture line of Zimerman et al. (ICML 2024) and the encryption-friendly LLM architecture of Rho et al. (ICLR 2025). A variant hides the model too: if the model owner distrusts the compute provider, weights are also encrypted, and every plaintext-ciphertext matmul becomes ciphertext-ciphertext &mdash; same depth per multiply, but key-switches on every product and no precomputed plaintext diagonals, a large constant-factor loss <span class="tag tag-likely">Likely</span>.</p>
+
+<p>The main alternative is the interactive hybrid: HE (often additively or in low-depth bursts) for the linear layers, secret-sharing or garbled-circuit two-party computation for the non-polynomials. Iron (Hao et al., NeurIPS 2022), BOLT (Pang et al., IEEE S&amp;P 2024), and BumbleBee (Lu et al., NDSS 2025) are this family, under semi-honest assumptions. The exchange rate flips again: comparisons become cheap (garbled circuits do $\max$ natively), depth stops mattering &mdash; but every nonlinearity costs communication rounds, both parties stay online, and the client does cryptographic work proportional to the model. BOLT reports a 10.91&times; communication reduction and 4.8&ndash;9.5&times; end-to-end speedup over the prior 2PC state of the art on BERT. A third pattern, client-aided HE, ships hard intermediate values back to the client for decryption: THE-X (Chen et al., Findings of ACL 2022) does this, which later work criticizes as both interactive and leaky, since decrypted intermediates reveal information about inputs and weights <span class="tag tag-likely">Likely</span>.</p>
+
+<table><thead><tr><th>System</th><th>Model class</th><th>Interaction</th><th>Non-polynomials</th><th>A reported figure</th></tr></thead>
+<tbody>
+<tr><td>THE-X (ACL Findings 2022)</td><td>client-aided HE</td><td>per-layer</td><td>replaced + client-side</td><td>the paper reports &asymp;1.5% avg. accuracy drop on BERT-tiny tasks</td></tr>
+<tr><td>Iron (NeurIPS 2022)</td><td>HE + 2PC hybrid</td><td>per-nonlinearity</td><td>2PC protocols</td><td>the paper reports GB-scale communication per BERT inference</td></tr>
+<tr><td>BOLT (S&amp;P 2024)</td><td>HE + 2PC hybrid</td><td>per-nonlinearity</td><td>2PC protocols</td><td>the paper reports 10.91&times; less communication than Iron</td></tr>
+<tr><td>NEXUS (NDSS 2025)</td><td>pure CKKS</td><td>none</td><td>polynomial/iterative</td><td>first non-interactive transformer inference, SEAL-based</td></tr>
+<tr><td>THOR (CCS 2025)</td><td>pure CKKS</td><td>none</td><td>polynomial/iterative</td><td>the paper reports BERT-base, 128 tokens, &asymp;10 min on one GPU</td></tr>
+<tr><td>Rho et al. (ICLR 2025)</td><td>pure CKKS, retrained</td><td>none</td><td>architectural (Gaussian-kernel attention)</td><td>the paper reports 6.94&times; fine-tuning, 2.3&times; inference speedup vs. its own softmax-HE baseline</td></tr>
+</tbody></table>
+
+<p>These figures are <em>not comparable to each other</em>: the systems differ in threat model, sequence length, hardware, network assumptions, and in what is excluded from timing (key generation, encoding, communication); the table is a map of the design space, not a leaderboard. Which family wins is genuinely contested <span class="tag tag-contested">Contested</span>: hybrids post better latency today on LAN benchmarks, while pure FHE needs no client liveness, no per-query bandwidth, and matches the fire-and-forget shape of real serving; hybrid advocates counter that interaction is acceptable for interactive applications anyway. Our position: for server-side LLM serving at scale, non-interactivity is the deployment-realistic target, and this Part prices that road; sustained sub-10&times;-overhead hybrid results at 1k+ token contexts over WAN would weaken it.</p>
+
+<h4>38.3 The Non-Polynomial Inventory of a Transformer Block</h4>
+
+<p>Walk one pre-norm block, $y = x + \mathrm{MHA}(\mathrm{LN}_1(x))$, $z = y + \mathrm{MLP}(\mathrm{LN}_2(y))$, and flag everything CKKS cannot evaluate directly. LayerNorm: the mean is additions (fine), but $1/\sqrt{\mathrm{Var}+\epsilon}$ is a reciprocal square root &mdash; non-polynomial. The four weight matmuls and the two attention matmuls: polynomial, one level each &mdash; the good news. The softmax contains three separate offenses: the numerically stabilizing $\max$ subtraction of Chapter 5 is a comparison; $e^{s}$ is transcendental; and the normalization is a division. GELU is $x\,\Phi(x)$ with an erf inside &mdash; non-polynomial. Residual adds are free. At the output, argmax or nucleus sampling over the vocabulary is comparison-laden; in practice the server returns encrypted logits and the client decodes, so decoding exits the encrypted domain <span class="tag tag-certain">Certain</span>.</p>
+
+<p>Each offender has a strategy space with exactly four moves. (i) <em>Polynomial approximation</em>: replace $f$ by a minimax or least-squares polynomial on a bounded interval $[-B, B]$; degree $k$ costs $\lceil \log_2(k{+}1)\rceil$ levels and requires a <em>range guarantee</em> that inputs stay in the interval &mdash; a promise the model itself must be made to keep (Chapter 39). (ii) <em>Iteration</em>: Newton/Goldschmidt for $1/x$ and $1/\sqrt{x}$ &mdash; each iteration is itself a small polynomial, 2 levels, with quadratic convergence from a good initial guess on a known range. (iii) <em>Architectural replacement</em>: change the network so the operation never occurs &mdash; ReLU for GELU (THE-X), Gaussian-kernel attention for softmax (Rho et al.), power-function attention (Powerformer) &mdash; at the price of retraining or fine-tuning. (iv) <em>Protocol escape</em>: hand the operation to 2PC or the client, buying exactness with interaction. The comparison inside softmax is almost universally handled by move (iii) in disguise: drop the $\max$ shift and enforce bounded logits instead, which quietly couples cryptographic correctness to training-time regularization.</p>
+
+<table><thead><tr><th>Operation</th><th>Offense</th><th>Available moves</th><th>Depth at this chapter's settings</th></tr></thead>
+<tbody>
+<tr><td>LN mean</td><td>none</td><td>&mdash;</td><td>0</td></tr>
+<tr><td>LN $1/\sqrt{\mathrm{Var}+\epsilon}$</td><td>rsqrt</td><td>(i), (ii), (iii)</td><td>$1 + 2r + 1 = 10$ at $r{=}4$</td></tr>
+<tr><td>softmax $\max$-shift</td><td>comparison</td><td>(iii) bounded logits, (iv)</td><td>0 (removed)</td></tr>
+<tr><td>softmax $e^{s}$</td><td>transcendental</td><td>(i), (iii)</td><td>4 at degree 15</td></tr>
+<tr><td>softmax $1/\sum e^{s}$</td><td>division</td><td>(ii), (iv)</td><td>$2r + 1 = 9$ at $r{=}4$</td></tr>
+<tr><td>GELU</td><td>erf</td><td>(i), (iii)</td><td>4 at degree 15</td></tr>
+<tr><td>matmuls (6)</td><td>none</td><td>&mdash;</td><td>1 each</td></tr>
+<tr><td>argmax / sampling</td><td>comparison</td><td>(iv) client decodes</td><td>0 (exits FHE)</td></tr>
+</tbody></table>
+
+<h4>38.4 The Depth Ledger</h4>
+
+<p>Now the central accounting. Conventions, chosen to match standard practice and stated so the ledger is checkable: every plaintext-ciphertext or ciphertext-ciphertext multiplication costs one level; additions and rotations cost zero; a degree-$k$ polynomial evaluated by Paterson&ndash;Stockmeyer/BSGS costs $\lceil\log_2(k{+}1)\rceil$ levels ($k{=}15 \Rightarrow 4$); a Goldschmidt reciprocal iteration $y \leftarrow y(2 - ay)$ costs 2 levels, and the coupled Goldschmidt inverse-square-root iteration also costs 2 levels per iteration (3 multiplies, but only 2 on the critical path). These are the conventions under which published depth counts are exchanged <span class="tag tag-likely">Likely: papers vary in whether plaintext multiplies are charged; charging them is the conservative and more common choice</span>. Settings: degree-15 polynomials for $\exp$ and GELU, $r=4$ Goldschmidt iterations for both reciprocal and rsqrt.</p>
+
+<table><thead><tr><th>Step (pre-norm block)</th><th>Levels</th><th>Cumulative</th></tr></thead>
+<tbody>
+<tr><td>LN$_1$: variance (ct-ct square)</td><td>1</td><td>1</td></tr>
+<tr><td>LN$_1$: rsqrt, 4 Goldschmidt iterations</td><td>8</td><td>9</td></tr>
+<tr><td>LN$_1$: apply $(x-\mu)\odot \mathrm{rsqrt}$ (ct-ct)</td><td>1</td><td>10</td></tr>
+<tr><td>$Q,K,V$ projections (pt-ct)</td><td>1</td><td>11</td></tr>
+<tr><td>scale by $1/\sqrt{d_k}$ (pt; foldable into $W_Q$)</td><td>1</td><td>12</td></tr>
+<tr><td>$QK^\top$ (ct-ct)</td><td>1</td><td>13</td></tr>
+<tr><td>softmax: $\exp$ polynomial, degree 15</td><td>4</td><td>17</td></tr>
+<tr><td>softmax: reciprocal, 4 Goldschmidt iterations</td><td>8</td><td>25</td></tr>
+<tr><td>softmax: normalize (ct-ct)</td><td>1</td><td>26</td></tr>
+<tr><td>attention $\times\, V$ (ct-ct)</td><td>1</td><td>27</td></tr>
+<tr><td>output projection $W_O$ (pt-ct)</td><td>1</td><td><strong>28</strong></td></tr>
+<tr><td>LN$_2$ (as LN$_1$)</td><td>10</td><td>38</td></tr>
+<tr><td>$W_{\mathrm{up}}$ (pt-ct)</td><td>1</td><td>39</td></tr>
+<tr><td>GELU polynomial, degree 15</td><td>4</td><td>43</td></tr>
+<tr><td>$W_{\mathrm{down}}$ (pt-ct)</td><td>1</td><td><strong>44</strong></td></tr>
+</tbody></table>
+
+<p>Read the ledger the way you read a profile. The attention sub-block costs 28 levels &mdash; the &ldquo;roughly thirty&rdquo; of this chapter's thesis &mdash; and the full block 44 (27/43 if the $1/\sqrt{d_k}$ scale is folded into $W_Q$, which any implementation should do). The six matmuls &mdash; all of the model's FLOPs, all of its parameters &mdash; account for 6 of 44 levels, under 14%. The two LayerNorms alone cost 20; softmax 13; GELU 4: the non-polynomials take 37 of 44 levels, 84% of the budget, for operations that were <em>free</em> in Part VI's accounting. And this ledger is charitable: it charges nothing for the masking multiplies that realistic packings need (see the pitfall below), nothing for level-alignment before residual adds, and it assumes the degree-15/4-iteration settings suffice for accuracy, which Chapter 39 will show is optimistic for LLM-scale ranges. Note also what the ledger does not depend on: $T$. Softmax is elementwise in the scores and the iterations are slotwise, so sequence length multiplies ciphertext counts and rotations, never depth.</p>
+
+<h4>38.5 Matmuls, Packings, and Rotation Counts</h4>
+
+<p>Depth is one axis; the other is rotations, because every rotation is a key-switch and key-switches dominate wall-clock in linear layers. Pack the activation matrix $X \in \mathbb{R}^{T\times d}$ row-major into slots: at $N=2^{16}$ there are $2^{15}$ slots per ciphertext, so BERT-base activations ($T{=}128$, $d{=}768$) occupy $\lceil Td/2^{15}\rceil = 3$ ciphertexts, with $2^{15}/d \approx 42$ token vectors sharing each ciphertext. A weight multiply $xW$ with $W$ plaintext then reduces to $d\times d$ matrix-vector products applied SIMD-fashion across the packed tokens. The classical method is Halevi and Shoup's diagonal decomposition (CRYPTO 2014): writing $\mathrm{diag}_i(W)[t] = W[t, (t{+}i)\bmod d]$,</p>
+
+$$xW \;=\; \sum_{i=0}^{d-1} \mathrm{diag}_i(W) \odot \mathrm{rot}(x, i),$$
+
+<p>which is $d$ plaintext multiplies, $d-1$ rotations, $d-1$ additions &mdash; and only <em>one</em> level of depth, since the products are summed, not chained. The rotations, not the multiplies, are the cost: $d-1 = 767$ key-switches per packed matvec at $d=768$.</p>
+
+<div class="theorem"><div class="box-title">Theorem 38.1 (Baby-step&ndash;giant-step rotation count)</div>
+<p>Let $d = n_1 n_2$. The diagonal-method product $xW$ can be computed with $n_1 + n_2 - 2$ ciphertext rotations; for square $d$ with $n_1=n_2=\sqrt d$ this is $2\sqrt d - 2$, versus $d-1$ for the naive method.</p>
+<p><strong>Proof.</strong> Write $i = jn_1 + k$ with $0 \le k &lt; n_1$, $0 \le j &lt; n_2$. Since $\mathrm{rot}(x, jn_1{+}k) = \mathrm{rot}(\mathrm{rot}(x,k), jn_1)$ and rotation distributes over $\odot$ with plaintext counter-rotation,
+$$xW = \sum_{j=0}^{n_2-1} \mathrm{rot}\!\Big(\sum_{k=0}^{n_1-1} \mathrm{rot}\big(\mathrm{diag}_{jn_1+k}(W),\, -jn_1\big) \odot \mathrm{rot}(x,k),\; jn_1\Big).$$
+The inner rotations of the diagonals act on <em>plaintext</em> and are free precomputation. The ciphertext rotations are the baby steps $\mathrm{rot}(x,k)$ for $k=1,\dots,n_1{-}1$ ($n_1{-}1$ of them, computed once and reused across all $j$) and the giant steps for $j=1,\dots,n_2{-}1$ ($n_2{-}1$ of them, applied to the inner sums). Total: $n_1+n_2-2$. $\blacksquare$</p></div>
+
+<div class="example"><div class="box-title">Example 38.1 (BSGS at $d=16$)</div>
+<p>Naive diagonal method: $d-1 = 15$ rotations. BSGS with $n_1=n_2=4$: baby steps $\mathrm{rot}(x,1), \mathrm{rot}(x,2), \mathrm{rot}(x,3)$ &mdash; 3 rotations; then for each $j\in\{1,2,3\}$ one giant rotation by $4j$ of the inner sum $\sum_{k=0}^{3}\mathrm{rot}(\mathrm{diag}_{4j+k},-4j)\odot\mathrm{rot}(x,k)$ &mdash; 3 more. Total $3+3=6=2\sqrt{16}-2$, a $15/6 = 2.5\times$ saving. The artifact simulates exactly this decomposition at $d=256$ with counted <code>np.roll</code> calls: 255 rotations naive, 30 BSGS, and the two products agree with <code>A @ v</code> to a measured $4.3\times 10^{-14}$ and $1.8\times 10^{-14}$ respectively.</p></div>
+
+<p>At transformer scale the factor matters: the cost model gives $d=768$: 767 naive vs. 54 BSGS ($n_1{=}24, n_2{=}32$; 14.2&times;), and $d=4096$: 4095 vs. $2\sqrt{4096}-2 = 126$ (32.5&times;) &mdash; the asymptotic $\tfrac{1}{2}\sqrt{d}$ advantage almost exactly. Halevi and Shoup's follow-up (CRYPTO 2018) adds <em>hoisting</em> &mdash; sharing the expensive decomposition step across many rotations of the same ciphertext &mdash; which cuts the constant further and is standard in HElib, Lattigo, and OpenFHE <span class="tag tag-certain">Certain</span>.</p>
+
+<p>The ciphertext-ciphertext matmuls $QK^\top$ and $PV$ are harder: the &ldquo;matrix&rdquo; side is encrypted, so there are no free plaintext diagonals. Jiang, Kim, Lauter, and Song (CCS 2018) give a constant-depth $d\times d$ ct-ct algorithm with $O(d)$ rotations; THOR reports a BSGS-organized ct-ct matmul and attributes to it a 9.7&times; speedup over Powerformer's on attention-shaped products. Our cost model uses a deliberately naive per-row model &mdash; per head, each of $T$ query rows costs a broadcast plus a $\log_2 d_k$ rotate-reduce &mdash; and even so the lesson is right: after BSGS collapses the weight-matmul rotations of a BERT-base block from 27,612 to 1,944, the attention ct-ct products' 39,936 rotations dominate the block at 41,880 total. Optimizing the easy matmuls exposes attention as the rotation bottleneck, which is why every serious system paper is, at its core, a $QK^\top$ packing paper <span class="tag tag-likely">Likely</span>.</p>
+
+<div class="warning-box"><div class="box-title">Common Pitfall</div>
+<p>Treating slot rotation as <code>np.roll</code> on your logical vector. A real CKKS rotation is cyclic over <em>all</em> $N/2$ slots of the ciphertext. If 42 token vectors share one ciphertext and you rotate by $i$ to align diagonals for the matvec, each token's tail slots wrap into its <em>neighbor's</em> segment &mdash; silently, since CKKS raises no error and the result is just wrong in the boundary slots. The standard fix is a two-rotation-and-mask composition, and each mask is a plaintext multiply that <strong>costs a level</strong>: the ledger's &ldquo;rotations are free&rdquo; convention survives only if your packing keeps segments rotation-aligned (dimensions padded to powers of two, one logical block per rotation group). Every FHE matmul library has a version of this bug report.</p></div>
+
+<h4>38.6 Where the Budget Goes, and the Bootstrapping Conclusion</h4>
+
+<p>Assemble the ledger. One block: 44 levels, 84% of them non-polynomial. Twelve blocks (BERT-base): 528. Thirty-two blocks (a 7B-class LLM at $L=32$): 1,408 &mdash; against a leveled budget that tops out around 40 levels even at generous $N=2^{16}$ parameters. The 32-layer model overdraws the leveled budget by 35&times;: more than an order of magnitude, and no parameter tuning closes a gap of that shape, because the budget is capped by the security tables of 38.1 while the demand grows linearly in $L$. The conclusion is structural, not incidental: <strong>for any transformer deeper than about one block, bootstrapping is not an optimization to be avoided but the architecture itself.</strong> At a working figure of ~12 usable levels regained per refresh, the cost model schedules 41 bootstraps along a ciphertext lineage for the 12-layer model and 114 for the 32-layer &mdash; multiplied across every live ciphertext, which is why NEXUS treats bootstrap <em>placement</em> as a first-class optimization variable and why Rho et al. report their HE transformer's runtime dominated by bootstrapping even after architectural surgery <span class="tag tag-verify">Verify: bootstrap counts scale with the usable-levels-per-refresh figure, which is parameter- and library-specific</span>.</p>
+
+<p>This also fixes the exchange rate for Chapter 39's central trade: every extra degree of approximation accuracy costs depth, every unit of depth costs bootstraps, and every bootstrap costs seconds-to-milliseconds depending on hardware. Approximation error, multiplicative depth, and bootstrap count form a single coupled optimization &mdash; which is what the next chapter solves piece by piece, and what the system papers of Chapter 40 solve end to end.</p>
+
+<div class="artifact-box"><div class="box-title">Artifact 38.1 &mdash; A Transformer FHE Cost Model</div>
+<p>A counting model &mdash; explicitly <em>not</em> an FHE implementation; no ciphertext is ever created &mdash; that prices a transformer config (L, d, heads, T, polynomial degrees, Goldschmidt iterations, slot count, packing) in the chapter's currency: multiplicative depth, ct-ct multiplication count, rotations under naive-diagonal and BSGS packings, and ciphertext counts. It verifies itself three ways: the block depth must equal the hand ledger of Section 38.4; the BSGS formula must match rotations counted one-by-one in a simulated Halevi&ndash;Shoup matvec (with <code>np.roll</code> standing in for slot rotation and the result checked against <code>A @ v</code>); and the scaling laws (linear in $L$, independent of $T$, &ge;10&times; over a 40-level budget at $L{=}32$) are asserted, not assumed.</p>
+<pre><code>"""Artifact 38.1 -- A CKKS cost model for transformer inference.
+
+This is a COUNTING MODEL, not an FHE implementation: it never encrypts
+anything.  It charges every operation in the depth/rotation/ciphertext
+currency of Chapter 38 and checks itself three ways:
+  (1) the block depth matches a hand-computed ledger,
+  (2) the BSGS rotation formula matches an actual simulated Halevi-Shoup
+      matrix-vector product in NumPy (rotations counted one by one),
+  (3) scaling laws (linear in L, T-independent depth) hold exactly.
+Conventions (stated in Section 38.4): pt-ct mult = 1 level, ct-ct mult
+= 1 level, rotation/addition = 0 levels; degree-k poly via
+Paterson-Stockmeyer = ceil(log2(k+1)) levels; Goldschmidt reciprocal and
+inverse-sqrt = 2 levels per iteration (2 resp. 3 ct-ct mults per iter).
+"""
+import numpy as np
+from math import ceil, log2, isqrt
+
+# ---------------------------------------------------------------- depth atoms
+def poly_depth(k):        # Paterson-Stockmeyer depth for a degree-k poly
+    return ceil(log2(k + 1))
+
+def poly_mults(k):        # PS non-scalar mult count, ~ sqrt(2k) + log2 k
+    return ceil((2 * k) ** 0.5) + max(0, ceil(log2(k + 1)) - 1)
+
+REC_D, REC_M = 2, 2       # Goldschmidt reciprocal: depth 2, 2 muls / iter
+RSQ_D, RSQ_M = 2, 3       # coupled Goldschmidt rsqrt: depth 2, 3 muls / iter
+
+# ------------------------------------------------------------------ the ledger
+def block_ledger(cfg):
+    """Per-block (label, levels) list for one pre-norm transformer block."""
+    r, kx, kg = cfg["newton_iters"], cfg["exp_deg"], cfg["gelu_deg"]
+    ln = [("  LayerNorm: variance (ct-ct square)", 1),
+          ("  LayerNorm: rsqrt, %d Goldschmidt iters" % r, RSQ_D * r),
+          ("  LayerNorm: apply (x-mu) * rsqrt (ct-ct)", 1)]
+    attn = ln + [
+        ("  Q,K,V projections (pt-ct matmul)", 1),
+        ("  scale by 1/sqrt(d_k) (pt mult, foldable)", 1),
+        ("  Q K^T (ct-ct matmul)", 1),
+        ("  softmax: exp poly, degree %d" % kx, poly_depth(kx)),
+        ("  softmax: reciprocal, %d Goldschmidt iters" % r, REC_D * r),
+        ("  softmax: normalize (ct-ct)", 1),
+        ("  attention @ V (ct-ct matmul)", 1),
+        ("  output projection W_O (pt-ct matmul)", 1)]
+    mlp = ln + [
+        ("  W_up (pt-ct matmul)", 1),
+        ("  GELU poly, degree %d" % kg, poly_depth(kg)),
+        ("  W_down (pt-ct matmul)", 1)]
+    return attn, mlp
+
+def block_depth(cfg):
+    attn, mlp = block_ledger(cfg)
+    return sum(v for _, v in attn), sum(v for _, v in mlp)
+
+def total_depth(cfg):                      # residuals/rotations cost 0 levels
+    a, m = block_depth(cfg)
+    return cfg["L"] * (a + m)
+
+# ------------------------------------------------------- rotations &amp; ciphertexts
+def rot_naive(d):                          # Halevi-Shoup: one rot per diagonal
+    return d - 1
+
+def rot_bsgs(d):                           # n1 baby + n2 giant, n1*n2 = d
+    n1 = isqrt(d)
+    while d % n1:                          # largest factor &lt;= sqrt(d)
+        n1 -= 1
+    return n1 + d // n1 - 2                # = 2*sqrt(d) - 2 when d is square
+
+def block_costs(cfg, packing="bsgs"):
+    """Rotations, ct-ct mults, and ciphertext counts for ONE block."""
+    d, H, T, s = cfg["d"], cfg["heads"], cfg["T"], cfg["slots"]
+    dk, r = d // H, cfg["newton_iters"]
+    n_x = ceil(T * d / s)                  # activation ciphertexts
+    n_h = ceil(T * 4 * d / s)              # MLP hidden ciphertexts
+    n_s = ceil(H * T * T / s)              # attention-score ciphertexts
+    n_kv = ceil(T * dk / s)                # one head's K (or V) ciphertexts
+    rot1 = {"naive": rot_naive, "bsgs": rot_bsgs}[packing](d)
+    # 12 d x d pt-ct matmul equivalents: Wq,Wk,Wv,Wo + 4 for W_up + 4 for W_down
+    rot_w = 12 * n_x * rot1
+    # ct-ct matmuls, naive per-row model: each of T query rows per head needs a
+    # log2(T) broadcast and a log2(dk) rotate-reduce; same under either packing.
+    rot_cc = 2 * H * T * (ceil(log2(T)) + ceil(log2(dk)))
+    mults = (2 * (n_x + RSQ_M * r + n_x)             # two LayerNorms
+             + H * T * n_kv                          # Q K^T
+             + poly_mults(cfg["exp_deg"]) * n_s      # exp on scores
+             + REC_M * r + n_s                       # reciprocal + normalize
+             + H * T * n_kv                          # attn @ V
+             + poly_mults(cfg["gelu_deg"]) * n_h)    # GELU on hidden
+    return dict(rot=rot_w + rot_cc, rot_weights=rot_w, rot_cc=rot_cc,
+                ctct_mults=mults, cts=dict(acts=n_x, scores=n_s, hidden=n_h))
+
+# --------------------------------------- simulate Halevi-Shoup to verify counts
+def hs_matvec(A, v, bsgs=False):
+    """Diagonal-method A @ v with np.roll standing in for slot rotation.
+    Returns (result, rotations actually performed). Diagonal extraction and
+    plaintext pre-rotations are free (they happen on plaintext)."""
+    d = len(v); rots = 0
+    diag = lambda i: np.array([A[t, (t + i) % d] for t in range(d)])
+    if not bsgs:
+        acc = diag(0) * v
+        for i in range(1, d):
+            rots += 1                              # rotate v by i (hoisted: 1 ea.)
+            acc = acc + diag(i) * np.roll(v, -i)
+        return acc, rots
+    n1 = isqrt(d); n2 = d // n1; assert n1 * n2 == d
+    baby = [v]
+    for k in range(1, n1):
+        rots += 1
+        baby.append(np.roll(v, -k))                # n1 - 1 baby rotations
+    acc = np.zeros(d)
+    for j in range(n2):
+        inner = sum(np.roll(diag(j * n1 + k), j * n1) * baby[k]
+                    for k in range(n1))            # plaintext pre-rotation: free
+        if j:
+            rots += 1                              # n2 - 1 giant rotations
+            inner = np.roll(inner, -j * n1)
+        acc = acc + inner
+    return acc, rots
+
+# ------------------------------------------------------------------------ main
+if __name__ == "__main__":
+    cfg = dict(L=12, d=768, heads=12, T=128, exp_deg=15, gelu_deg=15,
+               newton_iters=4, slots=2 ** 15)      # slots = N/2 at N = 2^16
+    attn, mlp = block_ledger(cfg)
+    a_d, m_d = block_depth(cfg)
+
+    print("=== Depth ledger: one pre-norm block (deg-15 polys, 4 iters) ===")
+    run = 0
+    for name, lv in attn + mlp:
+        run += lv
+        print("%-52s %3d  (cum %3d)" % (name, lv, run))
+    print("attention sub-block: %d levels | MLP sub-block: %d | block: %d"
+          % (a_d, m_d, a_d + m_d))
+    HAND = [1, 8, 1, 1, 1, 1, 4, 8, 1, 1, 1]       # hand ledger, attention
+    assert a_d == sum(HAND) == 28 and 26 &lt;= a_d &lt;= 30, a_d
+    assert a_d + m_d == 44
+
+    print("\n=== Depth scaling (independent of T; linear in L) ===")
+    print("%6s %12s %18s %s" % ("L", "depth", "vs 40-lvl budget",
+                                "bootstraps @12 lvl/refresh"))
+    for L in (1, 2, 12, 32):
+        dep = total_depth({**cfg, "L": L})
+        boots = 0 if dep &lt;= 40 else ceil((dep - 40) / 12)
+        print("%6d %12d %17.1fx %d" % (L, dep, dep / 40, boots))
+    assert total_depth({**cfg, "L": 32}) == 32 * total_depth({**cfg, "L": 1})
+    assert total_depth(cfg) == total_depth({**cfg, "T": 2048})   # T-free
+    assert total_depth({**cfg, "L": 32}) &gt;= 10 * 40              # &gt;=10x budget
+
+    print("\n=== Rotations: d x d pt-ct matmul, per packed matvec ===")
+    for d in (768, 4096):
+        n, b = rot_naive(d), rot_bsgs(d)
+        print("d=%5d  naive %5d   BSGS %4d   ratio %5.1fx" % (d, n, b, n / b))
+    assert rot_bsgs(4096) == 2 * 64 - 2 == 126 and rot_naive(4096) == 4095
+    assert rot_naive(4096) / rot_bsgs(4096) &gt; 0.9 * (4096 ** 0.5) / 2
+
+    print("\n=== Simulated Halevi-Shoup matvec (d=256): counts vs formula ===")
+    rng = np.random.default_rng(0)
+    A, v = rng.standard_normal((256, 256)), rng.standard_normal(256)
+    for flag, fn in ((False, rot_naive), (True, rot_bsgs)):
+        y, rots = hs_matvec(A, v, bsgs=flag)
+        res = np.max(np.abs(y - A @ v))
+        print("%s: %3d rotations (formula %3d), residual %.2e"
+              % ("BSGS " if flag else "naive", rots, fn(256), res))
+        assert rots == fn(256) and res &lt; 1e-9
+
+    print("\n=== Per-block operation counts (BERT-base shape, T=128) ===")
+    for p in ("naive", "bsgs"):
+        c = block_costs(cfg, p)
+        print("%-5s rotations %7d (weights %6d + ct-ct matmul %5d)"
+              % (p, c["rot"], c["rot_weights"], c["rot_cc"]))
+    c = block_costs(cfg, "bsgs")
+    print("ct-ct mults per block: %d | ciphertexts: %s"
+          % (c["ctct_mults"], c["cts"]))
+    print("\nAll assertions passed. This is a counting model; no ciphertext "
+          "was harmed (or created).")
+</code></pre>
+<p>Running it prints the 17-line ledger culminating in <code>attention sub-block: 28 levels | MLP sub-block: 16 | block: 44</code>, then the scaling table: depth 44 at $L{=}1$ (1.1&times; a 40-level budget, 1 bootstrap), 528 at $L{=}12$ (41 bootstraps), 1,408 at $L{=}32$ (35.2&times; the budget, 114 bootstraps at 12 levels per refresh). The rotation table shows 767 &rarr; 54 at $d{=}768$ (14.2&times;) and 4,095 &rarr; 126 at $d{=}4096$ (32.5&times;); the simulated matvec counts 255 and 30 rotations exactly as the formulas predict, with residuals $4.26\times 10^{-14}$ and $1.78\times 10^{-14}$ against <code>A @ v</code>; and the BERT-base block totals 41,880 rotations under BSGS (of which 39,936 are the ct-ct attention matmuls) and 3,284 ct-ct multiplies. All assertions pass in 0.13 s.</p>
+</div>
+
+<div class="key-takeaways">
+<div class="kt-title">Key Takeaways</div>
+<ul>
+<li>CKKS re-prices the transformer: matmuls are cheap (one level, rotations parallelizable), non-polynomials are expensive, comparisons are ruinous, and depth is a budget fixed at key generation &mdash; capped near 40 levels by the 128-bit security tables at $N=2^{16}$. <span class="tag tag-certain">Certain</span></li>
+<li>One pre-norm attention sub-block costs 28 multiplicative levels at degree-15 polynomials and 4 Goldschmidt iterations, the full block 44 &mdash; and 84% of that goes to LayerNorm, softmax, and GELU, inverting the plaintext cost profile where those operations were free. <span class="tag tag-certain">Certain</span> (given the stated conventions)</li>
+<li>Baby-step&ndash;giant-step cuts the Halevi&ndash;Shoup diagonal matvec from $d-1$ to $n_1+n_2-2 \approx 2\sqrt d$ rotations &mdash; 4,095 to 126 at $d=4096$ &mdash; after which the ciphertext-ciphertext attention matmuls dominate the rotation bill. <span class="tag tag-certain">Certain</span></li>
+<li>Depth grows linearly in $L$ and is independent of $T$; a 32-layer model needs ~1,400 levels against a ~40-level leveled budget, so bootstrapping &mdash; seconds on CPU, tens-to-hundreds of milliseconds on GPU per ciphertext, per current reports &mdash; is the architecture, not an optimization. <span class="tag tag-verify">Verify</span> (bootstrap costs move with hardware and library)</li>
+<li>Whether pure-FHE or interactive HE+MPC hybrids are the right road is unsettled: hybrids report better latency on LAN benchmarks, pure FHE needs no client liveness or per-query bandwidth; published latencies are not cross-comparable, and this book bets on non-interactivity for serving. <span class="tag tag-contested">Contested</span></li>
+</ul>
+</div>
+</div>
