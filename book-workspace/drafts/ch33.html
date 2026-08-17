@@ -1,0 +1,295 @@
+<div class="chapter" id="ch33">
+<div class="chapter-header"><div class="ch-label">Chapter 33</div><h3>Inference: Serving, Caching, and Speculative Decoding</h3></div>
+
+<div class="learning-objectives">
+<div class="lo-title">Learning Objectives</div>
+<ul>
+<li>Derive why prefill is compute-bound and decode memory-bandwidth-bound, and compute the KV-cache size $2 L\, n_{\text{kv}} d_h T b$ bytes for a given model configuration.</li>
+<li>Explain paged KV-cache management and quantify the fragmentation it eliminates relative to contiguous max-length pre-allocation.</li>
+<li>Explain continuous batching and chunked prefill, and predict their opposing effects on time-to-first-token and time-per-output-token.</li>
+<li>Prove that speculative decoding preserves the target distribution exactly, and derive the expected tokens per verification cycle $(1-\alpha^{\gamma+1})/(1-\alpha)$ as a function of the acceptance rate $\alpha$.</li>
+<li>Implement speculative decoding with a distributional-equivalence test, plus a paged KV allocator, in working code.</li>
+</ul>
+</div>
+
+<div class="read-alongside"><strong>Read alongside</strong> &mdash; Stanford <strong>CS336</strong>'s inference lectures are the closest course treatment of this chapter's roofline arguments and serving systems. <strong>Raschka</strong>, <em>Build a Large Language Model (From Scratch)</em>, walks the generation loop and KV cache line by line, which makes the memory arithmetic here concrete.</div>
+
+<p>Chapter 30 established the roofline: a GPU delivers its rated FLOP/s only when arithmetic intensity exceeds a ridge point of a few hundred FLOPs per byte. Training lives comfortably above that ridge. Autoregressive <em>generation</em> does not: producing one token requires streaming every weight and every cached key&ndash;value pair through the memory system to perform roughly two FLOPs per parameter. A single-user chat session therefore runs a multi-terabyte-per-second, near-petaflop machine at well under 1% arithmetic utilization. This chapter treats every major serving technique &mdash; KV caching, paged memory management, continuous batching, chunked prefill, speculative decoding, prefix caching &mdash; as one idea in different costumes: find something useful for the idle arithmetic units to do while the memory system is the bottleneck. Chapter 31's FlashAttention already made prefill fast; Chapter 34 shrinks the bytes themselves via quantization; Chapter 41 revisits this entire stack under encryption, where the KV cache becomes the central obstruction.</p>
+
+<h4>33.1 Prefill versus Decode</h4>
+
+<p>Generation has two phases with opposite performance characters. <em>Prefill</em> processes the $T$ prompt tokens in one forward pass; <em>decode</em> then emits output tokens one at a time, each conditioned on everything before it. Consider a weight matrix $W \in \mathbb{R}^{d\times d}$ applied to a batch of $t$ token vectors: the GEMM costs $2td^2$ FLOPs and moves about $2d^2$ bytes of fp16 weights (activations are comparatively small), so its arithmetic intensity is roughly $t$ FLOPs per weight byte. In prefill, $t = T$ is hundreds or thousands &mdash; far above the ridge point, so prefill is <em>compute-bound</em> and runs near peak FLOP/s. In decode, $t = 1$: one FLOP per byte at fp16. On an H100 SXM the ridge sits near $989\ \text{TFLOP/s} / 3.35\ \text{TB/s} \approx 295$ FLOPs per byte <span class="tag tag-verify">Verify</span>, so batch-1 decode sits two orders of magnitude below it. The arithmetic units are idle; the step time is set entirely by how fast HBM can stream the weights and KV cache.</p>
+
+<div class="example"><div class="box-title">Example 33.1 (The decode latency floor)</div>
+<p>An 8-billion-parameter model in fp16 occupies $8\times 10^9 \times 2 = 16$ GB. Every decode step must read all of it. At 3.35 TB/s of HBM bandwidth <span class="tag tag-verify">Verify</span>, the step takes at least $16/3350 \approx 4.8$ ms, i.e. at most $\approx 209$ tokens/s for a single sequence &mdash; regardless of how many FLOP/s the chip has. The FLOPs actually performed are $2N \approx 16$ GFLOP per token, so the achieved rate is $209 \times 16\ \text{GFLOP} \approx 3.3$ TFLOP/s: about 0.3% of the machine. The other 99.7% is the budget every technique in this chapter spends.</p></div>
+
+<p>Two consequences follow immediately. First, decode latency is bought with bandwidth and bytes, not FLOPs &mdash; which is why weight quantization (Chapter 34) speeds up decode roughly in proportion to the byte reduction. Second, batching $B$ concurrent sequences reuses the same weight read for $B$ tokens, multiplying throughput nearly for free until intensity approaches the ridge, around $B \approx 300$ at fp16 on the hardware above. The caveat: KV-cache reads do <em>not</em> amortize, because each sequence attends to its own cache. Writing $W$ for weight bytes and $K(T)$ for one sequence's KV bytes at length $T$, the bandwidth-bound step time is</p>
+<p>$$t_{\text{step}} \;\approx\; \frac{W + B\,K(T)}{\text{BW}}, \qquad \text{throughput} \;\approx\; \frac{B\cdot\text{BW}}{W + B\,K(T)}.$$</p>
+<p>Throughput grows almost linearly in $B$ while $BK(T) \ll W$, then saturates at $\text{BW}/K(T)$ once cache traffic dominates. The crossover $B^{*} = W/K(T)$ is small at long context: for the 8B model below, $W = 16$ GB and $K(8192) = 1$ GiB give $B^{*} \approx 15$. Beyond that, adding users buys little &mdash; the attention portion of decode stays bandwidth-bound even when the MLP portion has become compute-bound, which is precisely why shrinking $K(T)$ (GQA, cache quantization, paging) is a <em>throughput</em> optimization and not merely a capacity one. <span class="tag tag-certain">Certain</span></p>
+
+<h4>33.2 The KV Cache</h4>
+
+<p>Attention at decode step $t$ needs the keys and values of all previous positions (Chapter 18). Recomputing them each step would make step $t$ cost a full forward pass over $t$ tokens, $\approx 2Nt$ FLOPs, for a total of $\sum_{t=1}^{T} 2Nt \approx NT^2$ FLOPs to generate $T$ tokens &mdash; quadratic in $T$ where caching gives $2NT$, linear. So every serving system stores K and V per layer, per head, per position. The price is memory:</p>
+
+<p>$$\text{KV bytes} \;=\; \underbrace{2}_{\text{K and V}} \;\times\; L \;\times\; n_{\text{kv}} \;\times\; d_h \;\times\; T \;\times\; b,$$</p>
+
+<p>where $L$ is layer count, $n_{\text{kv}}$ the number of KV heads (equal to attention heads for vanilla multi-head attention; smaller under GQA/MQA, Chapter 19), $d_h$ the head dimension, $T$ the current sequence length, and $b$ bytes per element.</p>
+
+<div class="example"><div class="box-title">Example 33.2 (KV cache for a Llama-3-8B-class model)</div>
+<p>Take $L=32$, $n_{\text{kv}}=8$ (GQA), $d_h=128$, fp16 ($b=2$) <span class="tag tag-verify">Verify</span>. Per token: $2 \times 32 \times 8 \times 128 \times 2 = 131{,}072$ bytes $= 128$ KiB. At $T = 8192$: $128\ \text{KiB} \times 8192 = 1$ GiB per sequence. On an 80 GB card holding 16 GB of weights, the remaining $\sim$60 GB caps concurrency at about 60 such sequences &mdash; and without GQA ($n_{\text{kv}}=32$) at about 15. The KV cache, not the weights, is what limits batch size, and Section 33.1 showed batch size is what buys throughput.</p></div>
+
+<p>Every factor in the formula is a lever, and they compose multiplicatively:</p>
+<table>
+<tr><th>Layout ($L=32$, $d_h=128$)</th><th>$n_{\text{kv}}$</th><th>$b$</th><th>Bytes/token</th><th>Sequences at 8K in 60 GB</th></tr>
+<tr><td>MHA, fp16</td><td>32</td><td>2</td><td>524,288</td><td>15</td></tr>
+<tr><td>GQA, fp16</td><td>8</td><td>2</td><td>131,072</td><td>61</td></tr>
+<tr><td>GQA, int8 cache</td><td>8</td><td>1</td><td>65,536</td><td>122</td></tr>
+<tr><td>MQA, int8 cache</td><td>1</td><td>1</td><td>8,192</td><td>983</td></tr>
+</table>
+<p>This is why GQA and MQA exist, why KV-cache quantization to 8 or 4 bits is standard practice (Chapter 34 covers its accuracy cost), and why long-context serving (Chapter 19) is primarily a memory problem. Note also that the cache grows <em>during</em> generation: a request's memory footprint at admission time is unknown, because you do not know how long its output will be. That uncertainty is the subject of the next section.</p>
+
+<h4>33.3 Paged Attention and Fragmentation</h4>
+
+<p>Early serving systems allocated each request's KV cache as one contiguous tensor sized to the maximum possible length &mdash; the only safe choice when the final length is unknown and tensors cannot grow in place. The waste is enormous: a request that generates 300 tokens against a 2048-token reservation strands 85% of its allocation as <em>internal fragmentation</em>, and differently-sized reservations churn the heap into unusable gaps (<em>external</em> fragmentation) besides. The vLLM authors reported that prior systems wasted 60&ndash;80% of KV memory this way <span class="tag tag-verify">Verify</span>.</p>
+
+<p>PagedAttention imports the operating-system fix wholesale: virtual memory. Physical KV memory is divided into fixed-size <em>blocks</em> of $B_{\text{blk}}$ tokens (16 is typical); each request holds a <em>block table</em> mapping logical position $i$ to physical block $\lfloor i/B_{\text{blk}}\rfloor$'s address plus offset. Blocks are allocated on demand from a free list as the sequence grows and returned on completion. Waste per request drops to at most $B_{\text{blk}}-1$ slots &mdash; the unfilled tail of the last block &mdash; and external fragmentation vanishes because all blocks are interchangeable. The attention kernel pays a small price: one level of indirection to gather K/V through the block table, a few percent of kernel time in practice <span class="tag tag-likely">Likely</span>.</p>
+<p>The improvement is predictable in closed form. With request lengths $T$ uniform on $\{1,\dots,T_{\max}\}$, contiguous reservation wastes an expected fraction $1 - \mathbb{E}[T]/T_{\max} = 1 - (T_{\max}+1)/(2T_{\max}) \approx 50\%$. Paging allocates $\lceil T/B_{\text{blk}}\rceil B_{\text{blk}}$ slots, an expected overhead of $(B_{\text{blk}}-1)/2$ slots per request, for a waste fraction of roughly $\frac{(B_{\text{blk}}-1)/2}{\mathbb{E}[T] + (B_{\text{blk}}-1)/2}$ &mdash; with $B_{\text{blk}}=16$ and $T_{\max}=2048$, about $7.5/1032 \approx 0.73\%$. Artifact 33.1 measures exactly this setup over 1,000 requests: contiguous reservation wastes 48.36% of allocated slots, paged allocation 0.694% &mdash; both in line with the closed forms, a $70\times$ reduction. Shrinking $B_{\text{blk}}$ further trims the tail waste but grows the block table and worsens gather locality; 16&ndash;32 tokens is the practical sweet spot <span class="tag tag-likely">Likely</span>.</p>
+
+<p>Paging buys more than density. Because a block is referenced through a table, two requests can <em>share</em> physical blocks: beam-search candidates share their common prefix with copy-on-write, and identical system prompts across users share cached blocks outright &mdash; the mechanism behind prefix caching (Section 33.7).</p>
+
+<h4>33.4 Continuous Batching and Chunked Prefill</h4>
+
+<div class="definition"><div class="box-title">Definition 33.1 (TTFT and TPOT)</div>
+<p><em>Time-to-first-token</em> (TTFT) is the delay from request arrival to the first output token &mdash; dominated by queueing plus prefill. <em>Time-per-output-token</em> (TPOT) is the average interval between subsequent tokens &mdash; dominated by decode step time. A serving system's latency contract is typically stated as percentile bounds on both.</p></div>
+
+<p>Static batching &mdash; assemble $B$ requests, run all to completion, repeat &mdash; wastes capacity twice: finished sequences idle their slots until the longest one ends, and arriving requests wait for the next batch to form. <em>Continuous batching</em> (iteration-level scheduling, introduced by Orca) reschedules at every decode step: completed sequences exit the batch immediately and waiting requests join mid-flight, keeping the batch full and both queueing and slot waste near zero. This is the single largest throughput lever in modern serving &mdash; multiples, not percentages, over static batching under realistic arrival processes <span class="tag tag-likely">Likely</span>.</p>
+
+<p>It creates a scheduling tension, though. When a new request joins, its prefill must run. Prefill is compute-bound and long; decode steps are bandwidth-bound and short. If the scheduler runs a 4,000-token prefill as one unit, every co-resident decoding sequence stalls for the duration &mdash; a TPOT spike (&ldquo;generation stall&rdquo;) visible to users as the stream freezing. Prioritizing decode instead starves prefill and inflates TTFT. <em>Chunked prefill</em> (Sarathi-Serve) dissolves the tension: split each prefill into chunks of a few hundred tokens and build every iteration's batch as one chunk plus all pending decode tokens. Each iteration does enough prefill work to be compute-efficient, yet no iteration is much longer than a decode step, so TPOT stays smooth. The cost is a modest TTFT increase for the chunked request &mdash; its prefill now interleaves rather than monopolizes &mdash; plus a small overhead because each chunk re-reads the KV cache of prior chunks. The TTFT/TPOT trade-off becomes a tunable chunk-size knob rather than a hard choice. <span class="tag tag-certain">Certain</span></p>
+
+<h4>33.5 Speculative Decoding</h4>
+
+<p>Batching converts idle FLOPs into <em>throughput</em> across users. Speculative decoding converts them into <em>latency</em> for a single user &mdash; the one case batching cannot help. The observation: because decode is bandwidth-bound, a forward pass that scores $\gamma+1$ token positions costs nearly the same wall-clock as one that scores a single position &mdash; the weights stream through HBM either way. If we could <em>guess</em> the next $\gamma$ tokens, one target-model pass could verify all guesses at once. A cheap <em>draft</em> distribution $q$ proposes; the expensive <em>target</em> $p$ verifies. The subtlety is doing this without changing the output distribution &mdash; naive &ldquo;accept if the target agrees&rdquo; schemes bias sampling. The modified rejection rule of Leviathan et&nbsp;al. and Chen et&nbsp;al. does it exactly.</p>
+
+<div class="definition"><div class="box-title">Definition 33.2 (Speculative sampling rule)</div>
+<p>Given draft distribution $q$ and target distribution $p$ over the vocabulary at some position, sample $x \sim q$ and accept it with probability $\min(1,\, p(x)/q(x))$. On rejection, resample from the <em>residual</em> distribution $p'(x) = \max(0,\, p(x)-q(x)) / \sum_z \max(0,\, p(z)-q(z))$. One cycle drafts $\gamma$ tokens from $q$ autoregressively, verifies them left to right under $p$ (all $\gamma+1$ needed distributions come from a single target forward pass), stops at the first rejection with a residual resample, and &mdash; if all $\gamma$ are accepted &mdash; draws one bonus token from the target's $(\gamma+1)$-th distribution. Every cycle thus emits between $1$ and $\gamma+1$ tokens for one target pass.</p></div>
+
+<p>Why is verification nearly free? A target pass over $\gamma+1$ positions is a tiny prefill: it moves the same $W$ weight bytes as a single decode step while performing $(\gamma+1)\times$ the FLOPs, so for small $\gamma$ its bandwidth-bound wall-clock is essentially unchanged &mdash; the verification FLOPs come out of the 99% idle budget of Example 33.1. Note also the greedy special case: if the target decodes by argmax, take $p$ to be a point mass; the acceptance test $\min(1, p(x)/q(x))$ then reduces to &ldquo;accept iff the draft equals the target's argmax,&rdquo; and the residual resample is just the target's token &mdash; speculative decoding degenerates to exact-match verification, which is how it is often first implemented.</p>
+
+<h5>33.5.1 The Rejection-Sampling Proof</h5>
+
+<div class="theorem"><div class="box-title">Theorem 33.1 (Exactness of speculative sampling)</div>
+<p>The token emitted at any position by the rule of Definition 33.2 is distributed exactly according to $p$. Moreover the acceptance probability is $\alpha = \sum_x \min(p(x), q(x)) = 1 - D_{\mathrm{TV}}(p, q)$.</p>
+<p><strong>Proof.</strong> Fix a position and let $X$ be the emitted token. Acceptance of a drafted $x$ occurs with probability $q(x)\min(1, p(x)/q(x)) = \min(p(x), q(x))$, so the total acceptance probability is $\alpha = \sum_x \min(p(x), q(x))$; the identity $\min(a,b) = \tfrac{1}{2}(a+b-|a-b|)$ gives $\alpha = 1 - \tfrac{1}{2}\sum_x |p(x)-q(x)| = 1 - D_{\mathrm{TV}}(p,q)$. The residual weights sum to $\sum_x (p(x)-q(x))^+ = 1-\alpha$, so $p'$ is a valid distribution. Then for any token $x$:</p>
+<p>$$\Pr[X = x] \;=\; \underbrace{\min(p(x), q(x))}_{\text{drafted and accepted}} \;+\; \underbrace{(1-\alpha)\cdot \frac{(p(x)-q(x))^+}{1-\alpha}}_{\text{rejected, residual resample}} \;=\; \min(p(x),q(x)) + (p(x)-q(x))^+ \;=\; p(x),$$</p>
+<p>using $\min(a,b) + (a-b)^+ = a$. Exactness at later positions in a cycle follows by the same computation applied to the conditional distributions given the (correctly distributed) prefix, and the bonus token is drawn from $p$ directly. $\blacksquare$</p></div>
+
+<p>The theorem is unconditional: it holds for <em>any</em> draft distribution, including a terrible one &mdash; a bad draft costs speed, never correctness. Quality enters only through $\alpha$: the closer $q$ is to $p$ in total variation, the more drafts survive.</p>
+
+<div class="theorem"><div class="box-title">Theorem 33.2 (Expected tokens per verification cycle)</div>
+<p>If each draft is accepted independently with probability $\alpha$, a cycle with $\gamma$ drafts emits on average
+$$\mathbb{E}[\text{tokens}] \;=\; \frac{1-\alpha^{\gamma+1}}{1-\alpha}$$
+tokens (and $\gamma+1$ exactly when $\alpha = 1$).</p>
+<p><strong>Proof.</strong> Let $A$ be the number of accepted drafts, so tokens emitted $= A + 1$ (the final token is either the residual resample or the bonus draw). Since $A \ge k$ iff the first $k$ drafts all pass, $\Pr[A \ge k] = \alpha^k$ for $k \le \gamma$, and $\mathbb{E}[A] = \sum_{k=1}^{\gamma} \alpha^k = \frac{\alpha(1-\alpha^\gamma)}{1-\alpha}$. Hence $\mathbb{E}[A+1] = \frac{1-\alpha+\alpha-\alpha^{\gamma+1}}{1-\alpha} = \frac{1-\alpha^{\gamma+1}}{1-\alpha}$. $\blacksquare$</p></div>
+
+<p>If a draft token costs a fraction $c$ of a target step and verification costs one target step, the wall-clock speedup of a cycle is $\frac{1-\alpha^{\gamma+1}}{(1-\alpha)(\gamma c + 1)}$. The i.i.d.-acceptance assumption is an idealization &mdash; in real language models $\alpha$ varies by position, and the formula is the standard first-order model rather than an exact law <span class="tag tag-likely">Likely</span>. In the artifact's controlled setting the assumption holds exactly, and the measured 1.8778 tokens/cycle matches the formula's 1.8805 to under 0.15%.</p>
+
+<div class="example"><div class="box-title">Example 33.3 (Speedup arithmetic)</div>
+<p>Take $\alpha = 0.8$, $\gamma = 4$, draft cost $c = 0.05$. Expected tokens per cycle: $(1 - 0.8^5)/(1-0.8) = (1 - 0.32768)/0.2 = 3.3616$. Cycle cost: $4 \times 0.05 + 1 = 1.2$ target-step equivalents. Speedup: $3.3616 / 1.2 \approx 2.8\times$. Doubling $\gamma$ to 8 raises expected tokens only to $(1-0.8^9)/0.2 = 4.329$ while cost grows to $1.4$ &mdash; $3.1\times$. The geometric decay $\alpha^k$ means long drafts add little: past a few tokens, the marginal draft is probably wasted.</p></div>
+
+<div class="warning-box"><div class="box-title">Common Pitfall</div>
+<p>Applying sampling transforms inconsistently between draft and target. Theorem 33.1 holds for the distributions actually used in the ratio test &mdash; so temperature, top-$k$, and top-$p$ warping must be applied to <em>both</em> $p$ and $q$ <em>before</em> computing $\min(1, p(x)/q(x))$ and the residual. A common bug is verifying against the raw target softmax while the production sampler uses temperature-0.7 top-p-0.9: the emitted stream then matches neither distribution, and the corruption is invisible to spot checks because every individual token still &ldquo;looks plausible.&rdquo; The distributional test in Artifact 33.1 &mdash; chi-square against the exact target over hundreds of thousands of tokens &mdash; is precisely the regression test that catches this class of bug.</p></div>
+
+<h4>33.6 Draft Models, Medusa, EAGLE</h4>
+
+<p>Where does $q$ come from? Three generations of answers. <em>Separate draft models</em> &mdash; a 1B model drafting for a 70B target &mdash; are simple and were the original proposal, but the draft runs autoregressively (adding $\gamma$ sequential small-model steps of cost $c$ each), must be trained and version-matched to the target's tokenizer, and its distributional mismatch caps $\alpha$. <em>Medusa</em> deletes the separate model: it bolts $k$ lightweight heads onto the target's last hidden state, head $j$ predicting the token $j$ positions ahead in a single non-autoregressive shot. Because independent heads are individually uncertain, Medusa drafts a <em>tree</em> of candidate continuations and verifies the whole tree in one target pass using a tree-structured attention mask &mdash; another purchase made with idle FLOPs. <em>EAGLE</em> improves the draft by autoregressing at the feature level: a single small transformer layer predicts the target's next <em>hidden state</em> from the current hidden state and sampled token, then reuses the target's own LM head. Hidden states carry far more information than sampled tokens, so acceptance rates rise substantially; EAGLE-2 and EAGLE-3 add dynamically grown draft trees. Reported end-to-end speedups are roughly $2\times$ for classic two-model drafting, $2$&ndash;$3\times$ for Medusa, and $3$&ndash;$4\times$ for EAGLE-2/3 on standard benchmarks <span class="tag tag-verify">Verify</span>.</p>
+
+<p>One boundary condition: speculative decoding spends surplus FLOPs, so it helps most at small batch. As batch size approaches the ridge point (Section 33.1) the surplus vanishes, and verification passes compete with other users' work &mdash; at high server load, speculation can reduce total throughput even while it still cuts single-stream latency. Production schedulers increasingly toggle speculation based on load. <span class="tag tag-likely">Likely</span></p>
+
+<h4>33.7 Prefix Caching</h4>
+
+<p>Chatbots and agents (Chapter 36) resend nearly identical context every turn: system prompt, tool definitions, conversation so far. Since keys and values at position $i$ depend only on tokens $\le i$ (with the positional caveats of Chapter 19), the KV cache of a shared prefix is <em>identical</em> across requests and reusable. Paged storage makes this cheap: hash each full block of tokens (chained with its prefix's hash) and look up incoming requests' prefixes block by block, or keep a radix tree over cached token sequences as SGLang does; matched blocks are reference-counted and shared, and prefill runs only on the unmatched suffix. TTFT for a hit drops roughly in proportion to the cached fraction &mdash; for a 4,000-token system prompt ahead of a 100-token question, about $40\times$ less prefill compute. Commercial APIs expose the same mechanism as discounted &ldquo;cached input token&rdquo; pricing, typically $5$&ndash;$10\times$ cheaper than uncached input <span class="tag tag-verify">Verify</span>. The eviction policy is LRU over blocks; the capacity spent on cache is capacity taken from batch, so the knob is workload-dependent.</p>
+
+<h4>33.8 Cost per Token</h4>
+
+<p>The economics compress into one line: $\text{cost/token} = \frac{\text{GPU-\$/s}}{\text{tokens/s}}$, and everything in this chapter is a tokens/s lever. The roofline yields a usable first-order cost model. Prefill throughput is compute-limited: $\approx P_{\text{peak}}/2N$ input tokens per second at full utilization. Decode throughput is bandwidth-limited: $\approx B \cdot \text{BW}/(\text{weight bytes} + B\cdot\text{KV bytes})$, growing with $B$ until either the ridge or &mdash; more often &mdash; KV memory (Example 33.2) caps it. For the 8B model of Example 33.1, prefill peaks near $989\ \text{TFLOP/s}/16\ \text{GFLOP} \approx 60{,}000$ tokens/s while batch-1 decode manages 209: a $\sim 300\times$ gap in marginal cost between input and output tokens at the extremes. Real serving closes much of that gap with batching, but an output token remains several times more expensive to produce than an input token, which is exactly the shape of commercial pricing &mdash; output rates commonly $3$&ndash;$5\times$ input rates <span class="tag tag-verify">Verify</span>. To put dollars on it (spec-sheet arithmetic, not a measurement): at \$2/GPU-hour <span class="tag tag-verify">Verify</span>, batch-1 decode at 209 tokens/s costs $\frac{2/3600}{209} \approx \$2.7$ per million output tokens, while the same model batched to $B=64$ at $T=2048$ ($K(T)=0.27$ GB per sequence, so $t_{\text{step}} \approx (16+17.2)/3350\ \text{s} \approx 9.9$ ms and $\approx 6{,}500$ tokens/s aggregate) costs about \$0.09 per million &mdash; a $30\times$ spread from batching alone, before speculation or caching. The full lever stack: quantization divides the bytes (Chapter 34), GQA and paging multiply feasible $B$, continuous batching keeps $B$ full, chunked prefill protects the latency contract while doing it, and speculation plus prefix caching recycle FLOPs and prefill work that would otherwise be wasted. Each attacks a different denominator term; a modern serving stack is simply all of them composed.</p>
+
+<div class="artifact-box"><div class="box-title">Artifact 33.1 &mdash; Speculative Decoding and Paged Allocation, Verified</div>
+<p>Speculative decoding needs no language model to be understood or tested: it is a claim about sampling. The artifact fixes explicit target and draft distributions $p, q$ over a 32-token vocabulary (so $\alpha$, the output law, and tokens-per-cycle all have closed forms), runs 200,000 verification cycles of Definition 33.2 vectorized in NumPy, and asserts (a) the emitted stream matches $p$ by total variation and chi-square, (b) the measured acceptance rate matches $\sum_x \min(p,q)$, (c) measured tokens/cycle matches Theorem 33.2, with a torch.multinomial sampler as an independent cross-check. Part two implements a free-list paged KV allocator (block size 16) fed token-by-token by 1,000 requests of uniform random length up to 2,048, and compares its waste against contiguous max-length reservation.</p>
+<pre><code>"""Artifact 33.1 -- Speculative decoding from scratch + a paged KV allocator.
+
+Speculative decoding is a statement about SAMPLING, not about language models:
+given a target distribution p and a cheap draft distribution q over a vocabulary,
+the modified rejection rule emits tokens whose distribution is EXACTLY p while
+letting q do most of the proposing.  We use fixed (context-independent) discrete
+distributions so every quantity has a closed form to assert against:
+  * output distribution == p          (chi-square + total-variation test)
+  * acceptance rate     == sum_x min(p(x), q(x)) = 1 - TV(p, q)
+  * tokens/verification == (1 - alpha^(gamma+1)) / (1 - alpha)
+Part 2 is a block-granular ("paged") KV allocator measured against contiguous
+max-length pre-allocation on random-length requests.
+"""
+import numpy as np
+from scipy import stats
+
+try:
+    import torch
+except ImportError:
+    torch = None
+
+
+# ----------------------------------------------------------------------------
+# Part 1: speculative decoding over explicit distributions
+# ----------------------------------------------------------------------------
+def sample(cdf, u):
+    """Inverse-CDF sampling: map uniforms u in [0,1) to vocabulary indices."""
+    return np.searchsorted(cdf, u, side="right")
+
+
+def spec_decode(p, q, gamma, n_cycles, rng):
+    """Run n_cycles of speculative decoding, vectorized over cycles.
+
+    Each cycle: q proposes gamma tokens; the target verifies them left to
+    right, accepting draft x with prob min(1, p(x)/q(x)); on first rejection
+    it resamples from the residual max(0, p-q)/(1-alpha) and the cycle ends;
+    if all gamma are accepted it draws one bonus token directly from p.
+    Returns (token counts, #accepted drafts, #examined drafts, #tokens).
+    """
+    V = p.size
+    q_cdf, p_cdf = np.cumsum(q), np.cumsum(p)
+    residual = np.maximum(p - q, 0.0)
+    residual /= residual.sum()                       # = (p-q)^+ / (1-alpha)
+    r_cdf = np.cumsum(residual)
+
+    drafts = sample(q_cdf, rng.random((n_cycles, gamma)))       # proposals ~ q
+    accept_p = np.minimum(1.0, p[drafts] / q[drafts])           # min(1, p/q)
+    acc = rng.random((n_cycles, gamma)) &lt; accept_p
+    # position of first rejection in each cycle; gamma if none
+    first_rej = np.where(acc.all(axis=1), gamma, acc.argmin(axis=1))
+
+    keep = np.arange(gamma)[None, :] &lt; first_rej[:, None]       # accepted prefix
+    kept_tokens = drafts[keep]
+    # last token of the cycle: residual resample on rejection, else bonus ~ p
+    u = rng.random(n_cycles)
+    final = np.where(first_rej &lt; gamma, sample(r_cdf, u), sample(p_cdf, u))
+
+    counts = np.bincount(kept_tokens, minlength=V) + np.bincount(final, minlength=V)
+    accepted = int(keep.sum())
+    examined = accepted + int((first_rej &lt; gamma).sum())  # verify stops at 1st reject
+    return counts, accepted, examined, accepted + n_cycles
+
+
+# ----------------------------------------------------------------------------
+# Part 2: paged KV allocator vs contiguous pre-allocation
+# ----------------------------------------------------------------------------
+class PagedKVAllocator:
+    """vLLM-style block allocator: KV slots are handed out in fixed-size
+    blocks from a free list; a request's 'block table' maps its logical
+    token positions to physical blocks.  A request of length T holds
+    ceil(T/B) blocks, so waste is &lt; B slots per request."""
+
+    def __init__(self, n_blocks, block_size):
+        self.B = block_size
+        self.free = list(range(n_blocks))
+        self.tables = {}                      # request id -> list of block ids
+        self.lens = {}                        # request id -> tokens written
+
+    def append_token(self, rid):
+        n = self.lens.get(rid, 0)
+        if n % self.B == 0:                   # current block full (or first token)
+            self.tables.setdefault(rid, []).append(self.free.pop())
+        self.lens[rid] = n + 1
+
+    def allocated_slots(self):
+        return sum(len(t) for t in self.tables.values()) * self.B
+
+
+def fragmentation_experiment(rng, n_req=1000, max_len=2048, block=16):
+    """All requests resident concurrently; lengths ~ Uniform{1..max_len}.
+    Contiguous serving reserves max_len slots per request up front (it cannot
+    know the final length); paging allocates blocks on demand."""
+    lengths = rng.integers(1, max_len + 1, size=n_req)
+    alloc = PagedKVAllocator(n_blocks=(n_req * (max_len // block + 1)), block_size=block)
+    for rid, T in enumerate(lengths):        # feed tokens one at a time
+        for _ in range(int(T)):
+            alloc.append_token(rid)
+    used = int(lengths.sum())
+    paged_alloc = alloc.allocated_slots()
+    # cross-check the allocator against the closed form ceil(T/B)*B
+    assert paged_alloc == int((np.ceil(lengths / block) * block).sum())
+    contig_alloc = n_req * max_len
+    return used, paged_alloc, contig_alloc
+
+
+if __name__ == "__main__":
+    rng = np.random.default_rng(0)
+    V, gamma, n_cycles = 32, 4, 200_000
+    p = rng.dirichlet(np.ones(V))                     # target distribution
+    q = rng.dirichlet(np.ones(V))                     # draft distribution
+    alpha = np.minimum(p, q).sum()                    # analytic acceptance rate
+
+    counts, accepted, examined, n_tok = spec_decode(p, q, gamma, n_cycles, rng)
+
+    # (a) output distribution == target, tested two ways
+    emp = counts / n_tok
+    tv = 0.5 * np.abs(emp - p).sum()
+    chi2, pval = stats.chisquare(counts, f_exp=n_tok * p)
+    print(f"[a] tokens={n_tok}  TV(empirical, p)={tv:.5f}  "
+          f"chi2={chi2:.1f} (df={V-1})  p-value={pval:.3f}")
+    # reference: direct i.i.d. sampling from p at the same sample size
+    direct = np.bincount(sample(np.cumsum(p), rng.random(n_tok)), minlength=V)
+    tv_direct = 0.5 * np.abs(direct / n_tok - p).sum()
+    print(f"    reference TV for direct target sampling, same n: {tv_direct:.5f}")
+    assert tv &lt; 0.01, "speculative output drifted from target distribution"
+    assert pval &gt; 1e-3, "chi-square rejects distributional equivalence"
+
+    # (b) measured acceptance rate vs analytic sum min(p, q)
+    meas_alpha = accepted / examined
+    print(f"[b] acceptance: measured={meas_alpha:.5f}  analytic={alpha:.5f}  "
+          f"|diff|={abs(meas_alpha - alpha):.5f}")
+    assert abs(meas_alpha - alpha) &lt; 5e-3
+
+    # (c) tokens per verification cycle vs (1 - a^(g+1)) / (1 - a)
+    meas_tok = n_tok / n_cycles
+    exp_tok = (1 - alpha ** (gamma + 1)) / (1 - alpha)
+    print(f"[c] tokens/cycle: measured={meas_tok:.4f}  analytic={exp_tok:.4f}  "
+          f"|diff|={abs(meas_tok - exp_tok):.4f}")
+    assert abs(meas_tok - exp_tok) &lt; 0.02
+
+    # cross-check (a) with torch.multinomial as an independent sampler
+    if torch is not None:
+        tt = torch.multinomial(torch.from_numpy(p), n_tok, replacement=True,
+                               generator=torch.Generator().manual_seed(0))
+        tv_torch = 0.5 * np.abs(np.bincount(tt.numpy(), minlength=V) / n_tok - p).sum()
+        print(f"    torch.multinomial cross-check TV: {tv_torch:.5f}")
+        assert tv_torch &lt; 0.01
+    else:
+        print("    [skipped: torch not installed]")
+
+    # (d) paged allocator vs contiguous pre-allocation
+    used, paged_alloc, contig_alloc = fragmentation_experiment(rng)
+    frag_paged = 100 * (1 - used / paged_alloc)
+    frag_contig = 100 * (1 - used / contig_alloc)
+    print(f"[d] KV slots used={used}  paged alloc={paged_alloc}  "
+          f"contiguous alloc={contig_alloc}")
+    print(f"    fragmentation: contiguous={frag_contig:.2f}%  "
+          f"paged (B=16)={frag_paged:.3f}%")
+    assert frag_paged &lt; frag_contig / 10, "paging should cut waste &gt;10x here"
+
+    print("All assertions passed.")
+</code></pre>
+<p>Running it (2.4 s on CPU) prints, for 375,567 emitted tokens: total variation from the target $0.00343$ against $0.00271$ for direct sampling from $p$ at the same sample size &mdash; statistically indistinguishable, confirmed by chi-square $34.3$ on 31 degrees of freedom ($p = 0.314$). Measured acceptance is $0.48116$ against the analytic $\alpha = 0.48208$; measured tokens/cycle $1.8778$ against the analytic $1.8805$. The allocator experiment reports contiguous fragmentation $48.36\%$ versus $0.694\%$ paged, with the allocator's block count matching the closed form $\lceil T/B\rceil B$ exactly.</p>
+</div>
+
+<div class="encrypted-note"><div class="box-title">Under Encryption</div>
+<p>The KV cache is the precise reason encrypted autoregressive <em>generation</em> is qualitatively harder than encrypted single-pass inference. Everything in this chapter treats the cache as cheap, elastic memory &mdash; append 128 KiB per token, repack blocks, share prefixes by pointer. Under CKKS none of that is free: each cached key and value lives inside packed ciphertexts whose slot layout is fixed at encryption time, so &ldquo;appending a token&rdquo; means either wasteful one-token ciphertexts or expensive rotation-and-mask surgery to insert into existing slots, and every decode step's attention must touch a ciphertext cache that grows without bound while consuming multiplicative depth. This is why most published encrypted-transformer results report a single forward pass &mdash; effectively prefill &mdash; rather than open-ended generation. Chapter 41 works out the memory blow-up and rotation counts in detail.</p></div>
+
+<div class="key-takeaways"><div class="kt-title">Key Takeaways</div>
+<ul>
+<li>Prefill is compute-bound (arithmetic intensity $\approx T$ FLOPs per weight byte); batch-1 decode is bandwidth-bound at $\approx 1$, leaving well over 99% of peak FLOP/s idle &mdash; the surplus every serving technique spends. <span class="tag tag-certain">Certain</span></li>
+<li>KV cache size is $2 L\, n_{\text{kv}} d_h T b$ bytes &mdash; 128 KiB/token, 1 GiB at 8K context for an 8B GQA model &mdash; and it, not the weights, usually caps batch size and hence throughput. <span class="tag tag-certain">Certain</span></li>
+<li>Paged allocation with 16-token blocks cut measured KV fragmentation from 48.36% (contiguous max-length reservation) to 0.694% on uniform random lengths, and its block indirection is what enables prefix sharing and copy-on-write. <span class="tag tag-certain">Certain</span></li>
+<li>Speculative decoding is exactly distribution-preserving for any draft (Theorem 33.1), with acceptance rate $1 - D_{\mathrm{TV}}(p,q)$ and expected $(1-\alpha^{\gamma+1})/(1-\alpha)$ tokens per target pass &mdash; verified empirically to three decimal places in Artifact 33.1. <span class="tag tag-certain">Certain</span></li>
+<li>Continuous batching plus chunked prefill trades a small TTFT increase for smooth TPOT and multiple-times higher throughput; speculation helps latency at small batch but can cost throughput near the compute roofline, so schedulers should gate it on load. <span class="tag tag-likely">Likely</span></li>
+</ul>
+</div>
+</div>

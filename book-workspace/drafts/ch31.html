@@ -1,0 +1,298 @@
+<div class="chapter" id="ch31">
+<div class="chapter-header"><div class="ch-label">Chapter 31</div><h3>FlashAttention and Writing Fast Kernels</h3></div>
+
+<div class="learning-objectives">
+<div class="lo-title">Learning Objectives</div>
+<ul>
+<li>Derive online (streaming) softmax and prove it equals batch softmax exactly, up to floating-point rounding.</li>
+<li>Derive the tiled FlashAttention forward pass, count its HBM accesses as $\Theta(n^2 d^2 / M)$, and explain why activation memory drops from $O(n^2)$ to $O(n)$.</li>
+<li>Explain the backward-pass recomputation strategy and quantify the extra FLOPs it accepts (about 17% of total training matmul FLOPs for attention) in exchange for never storing the score matrix.</li>
+<li>State what FlashAttention-2 and FlashAttention-3 each changed &mdash; work partitioning; Hopper asynchrony and FP8 &mdash; with attributed numbers.</li>
+<li>Implement tiled online-softmax attention in working code, with explicit memory and I/O accounting.</li>
+</ul>
+</div>
+
+<div class="read-alongside"><strong>Read alongside</strong> &mdash; Stanford CS336 (Language Modeling from Scratch): the kernel-writing assignments are the closest thing to doing this chapter by hand, including a Triton FlashAttention exercise. The HuggingFace Ultra-Scale Playbook situates fused attention kernels inside the full training-systems stack. The primary sources are short and readable: Dao et al. (2022), Dao (2023), and Shah et al. (2024).</div>
+
+<p>Chapter 30 established the memory wall: modern accelerators execute matmul FLOPs one to two orders of magnitude faster than they can move bytes to and from HBM, so any operation whose arithmetic intensity falls below the machine's ridge point is billed by traffic, not by arithmetic. This chapter applies that lens to the single most-optimized operation in deep learning. FlashAttention computes <em>exactly</em> the attention of Chapter 18 &mdash; same FLOPs, same output, no approximation &mdash; yet runs several times faster, because it reorganizes the computation so the $n \times n$ score matrix never touches HBM. It is the cleanest existence proof of this book's systems thesis: the binding constraint is movement, not arithmetic. We derive the enabling identity (online softmax), the tiled forward pass and its I/O complexity, the backward pass's recompute-instead-of-store bargain, then survey FlashAttention-2 and -3 and the wider kernel ecosystem. Chapter 33 reuses these ideas for inference; Chapter 32 scales them across devices.</p>
+
+<h4>31.1 Attention Cost Is Memory, Not FLOPs</h4>
+
+<p>Fix one attention head with sequence length $n$ and head dimension $d_k$ (typically 64&ndash;128, with $n$ in the thousands). The forward pass of standard attention is</p>
+$$S = \frac{QK^\top}{\sqrt{d_k}} \in \mathbb{R}^{n\times n}, \qquad P = \mathrm{softmax}_{\text{row}}(S), \qquad O = PV \in \mathbb{R}^{n\times d_k}.$$
+<p>The two matmuls cost $2n^2 d_k$ FLOPs each, $4n^2 d_k$ total; softmax adds $O(n^2)$ exponentials. The FLOP count is what it is &mdash; attention is exact, and Dao et al. proved a matching I/O lower bound (Section 31.3), so no exact algorithm reduces the arithmetic asymptotically. What a naive implementation adds on top is traffic: it writes $S$ to HBM ($n^2$ entries), reads it back to compute the row max and sum, writes $P$, then reads $P$ again for the final matmul. Every elementwise pass over an $n^2$ buffer &mdash; masking, softmax, dropout &mdash; has arithmetic intensity of roughly one FLOP per byte, hopelessly below the ridge point of $\sim$160&nbsp;FLOPs/byte for an A100's BF16 tensor cores against its $\sim$2&nbsp;TB/s of HBM bandwidth <span class="tag tag-verify">Verify</span>.</p>
+
+<p>Concretely, at $n=4096$, $d_k=128$ in FP16: $Q, K, V, O$ together occupy $4nd_k \cdot 2\,\text{B} = 4$&nbsp;MB, while $S$ and $P$ each occupy $n^2 \cdot 2\,\text{B} = 33.5$&nbsp;MB. The quadratic buffers are $16\times$ larger than all the actual inputs and outputs combined, and the naive schedule streams them through HBM four times. Multiply by heads and layers and the score matrices also dominate <em>activation memory</em>: 32 heads of stored $P$ at these sizes is 1.07&nbsp;GB per layer, which is why pre-FlashAttention training runs hit out-of-memory on sequence length long before they hit it on model size. <span class="tag tag-certain">Certain</span></p>
+
+<p>FlashAttention (Dao, Fu, Ermon, Rudra, R&eacute;, NeurIPS 2022) restructures the computation so that tiles of $S$ live only in on-chip SRAM (Chapter 30: ~100&ndash;200&nbsp;KB per SM, ~19&nbsp;TB/s aggregate on A100 <span class="tag tag-verify">Verify</span>) and are discarded after use. The paper reports up to 7.6$\times$ speedup on GPT-2's attention computation, 3$\times$ end-to-end GPT-2 speedup over the HuggingFace implementation of the day, and a 15% improvement over the MLPerf 1.1 BERT-large training record <span class="tag tag-verify">Verify</span> &mdash; all with zero FLOPs saved and bit-for-bit-comparable outputs. Two problems must be solved to make tiling work: softmax normalizes across an entire row of $S$, which we only see one tile at a time (Section 31.2), and the backward pass ordinarily needs the full $P$ (Section 31.4).</p>
+
+<h4>31.2 Online Softmax</h4>
+
+<p>Numerically safe softmax subtracts the row max before exponentiating: $\mathrm{softmax}(x)_i = e^{x_i - m}/\sum_j e^{x_j - m}$ with $m = \max_j x_j$. That is a three-pass algorithm &mdash; max, sum, divide &mdash; and each pass wants the whole row. Milakov and Gimelshein (2018) showed the max and sum passes fuse into one streaming pass with a rescaling trick; FlashAttention's contribution was to extend the same rescaling to the output accumulator so that even the third pass streams.</p>
+
+<div class="definition"><div class="box-title">Definition 31.1 (Online softmax state)</div>
+<p>For a row $x \in \mathbb{R}^n$ processed in blocks $x^{(1)}, x^{(2)}, \ldots$, maintain a running max $m$ and running normalizer $\ell$, initialized $m_0 = -\infty$, $\ell_0 = 0$. On block $t$:</p>
+$$m_t = \max\!\big(m_{t-1},\, \max_i x^{(t)}_i\big), \qquad \ell_t = \ell_{t-1}\, e^{\,m_{t-1} - m_t} + \sum_i e^{\,x^{(t)}_i - m_t}.$$
+<p>The factor $e^{\,m_{t-1}-m_t} \le 1$ rescales the stale normalizer, which was accumulated relative to the old max, into the new max's frame.</p></div>
+
+<div class="theorem"><div class="box-title">Theorem 31.1 (Exactness of online softmax)</div>
+<p>After processing all blocks covering $x$, $m_T = \max_j x_j$ and $\ell_T = \sum_j e^{x_j - m_T}$, so $e^{x_i - m_T}/\ell_T$ is exactly the numerically safe softmax. The recurrence is associative in the sense that any block partition &mdash; any chunk sizes, in any left-to-right order &mdash; yields the same result in exact arithmetic.</p>
+<p><strong>Proof.</strong> Induction on $t$ with invariant $\ell_t = \sum_{j \in \text{seen}(t)} e^{x_j - m_t}$. Base: $\ell_0 = 0$ over the empty set. Step: assume the invariant at $t-1$. Then
+$$\ell_{t-1} e^{m_{t-1}-m_t} = \Big(\sum_{j \in \text{seen}(t-1)} e^{x_j - m_{t-1}}\Big) e^{m_{t-1}-m_t} = \sum_{j \in \text{seen}(t-1)} e^{x_j - m_t},$$
+because $e^{x_j - m_{t-1}} e^{m_{t-1} - m_t} = e^{x_j - m_t}$ exactly as real numbers. Adding the new block's terms $\sum_i e^{x^{(t)}_i - m_t}$ extends the sum over $\text{seen}(t)$, and $m_t$ is the max over $\text{seen}(t)$ by construction. At $t = T$, $\text{seen}(T)$ is the whole row. Since each $m_t$ equals the max over elements seen so far, no exponent argument is ever positive, so no intermediate overflows &mdash; the streaming version inherits the safety of the batch version. $\blacksquare$</p></div>
+
+<p>In floating point the two computations differ only by rounding; the artifact measures a worst-case discrepancy of $4.4\times10^{-16}$ across chunk sizes from 1 to 1000 on rows with logits spanning $\pm 15$. The associativity is what everything downstream leans on: it is why tiles can arrive in any order (FlashAttention-2's parallelism), from any device (Ring Attention), and why the two-chunk merge rule $\ell = \ell_a e^{m_a - m}+\ell_b e^{m_b - m}$, $m = \max(m_a, m_b)$ gives split-KV inference decoding for free (Chapter 33). <span class="tag tag-certain">Certain</span></p>
+
+<div class="example"><div class="box-title">Example 31.1 (Online softmax by hand)</div>
+<p>Row $x = (1, 3, 2, 5)$ in two chunks $(1,3)$ and $(2,5)$. Chunk 1: $m_1 = 3$, $\ell_1 = e^{1-3} + e^{3-3} = 0.1353 + 1 = 1.1353$. Chunk 2: $m_2 = \max(3,5) = 5$; rescale factor $e^{3-5} = 0.1353$; $\ell_2 = 1.1353 \times 0.1353 + (e^{2-5} + e^{0}) = 0.1536 + 1.0498 = 1.2034$. Batch check: $e^{-4}+e^{-2}+e^{-3}+e^{0} = 0.0183+0.1353+0.0498+1 = 1.2034$. Identical. Final probability for the last element: $1/1.2034 = 0.831$.</p></div>
+
+<h4>31.3 Tiling and the Forward Pass</h4>
+
+<p>Partition $Q$ into row blocks $Q_1,\ldots,Q_{T_r}$ of $B_r$ rows and $K, V$ into row blocks $K_1,\ldots,K_{T_c}$, $V_j$ of $B_c$ rows, with block sizes chosen so a working set of one $Q_i$, one $K_j$, one $V_j$, and one $B_r \times B_c$ score tile fits in SRAM. Extend the online-softmax state to vectors $m_i, \ell_i \in \mathbb{R}^{B_r}$ (one scalar per query row) and add an <em>unnormalized output accumulator</em> $\tilde{O}_i \in \mathbb{R}^{B_r \times d_k}$. For each query block $i$, loop over key blocks $j$:</p>
+$$S_{ij} = \tfrac{1}{\sqrt{d_k}} Q_i K_j^\top, \quad
+m^{\text{new}} = \max(m_i, \mathrm{rowmax}\, S_{ij}), \quad
+\tilde{P}_{ij} = e^{\,S_{ij} - m^{\text{new}}},$$
+$$\alpha = e^{\,m_i - m^{\text{new}}}, \qquad
+\ell_i \leftarrow \alpha \odot \ell_i + \mathrm{rowsum}\, \tilde{P}_{ij}, \qquad
+\tilde{O}_i \leftarrow \mathrm{diag}(\alpha)\, \tilde{O}_i + \tilde{P}_{ij} V_j,$$
+<p>and after the last key block, $O_i = \mathrm{diag}(\ell_i)^{-1} \tilde{O}_i$. The output rescaling is Theorem 31.1 applied to the numerator: $\tilde{O}_i$ accumulates $\sum_j e^{S_{ij} - m}V_j$-style terms, all relative to the current max, and each max update multiplies the stale accumulator by the same $\alpha$ that fixes $\ell_i$. Division by the normalizer is deferred to a single step at the end &mdash; the whole softmax has been smeared across the tile loop without ever holding a full row of $P$. Causal masking composes trivially: skip tiles entirely above the diagonal, mask the tiles it crosses.</p>
+
+<p>Memory: what survives the loop is $O$ ($n d_k$ floats) and one logsumexp scalar per row (Section 31.4) &mdash; $O(n)$ in sequence length, versus $O(n^2)$ for stored $S$ and $P$. The inner-loop working set is $O(B_r B_c + (B_r + B_c) d_k)$, independent of $n$: the artifact verifies that doubling $n$ from 257 to 514 leaves the measured peak at exactly 24,832 elements while naive storage quadruples. <span class="tag tag-certain">Certain</span></p>
+
+<div class="theorem"><div class="box-title">Theorem 31.2 (HBM access count; Dao et al. 2022)</div>
+<p>With SRAM of size $M$ floats and $d_k \le M$, the tiled forward pass makes $\Theta(n^2 d_k^2 / M)$ HBM accesses, versus $\Theta(n d_k + n^2)$ for the standard implementation. Moreover no exact attention algorithm can do asymptotically better over all $M \in [d_k, n d_k]$.</p>
+<p><strong>Proof sketch.</strong> Each query block $Q_i$ is loaded once and held while <em>all</em> of $K$ and $V$ stream past: that inner sweep costs $\Theta(n d_k)$ reads, repeated $T_r = \lceil n/B_r \rceil$ times, for $\Theta(T_r\, n d_k)$ total. The SRAM budget forces $B_r = \Theta(M/d_k)$ (the $Q_i$ tile and score tile must fit), so $T_r = \Theta(n d_k / M)$ and the total is $\Theta(n^2 d_k^2 / M)$. Since $M \gg d_k^2$ on real hardware (e.g. $M \approx 25{,}000$ FP32 floats per 100&nbsp;KB of SRAM against $d_k^2 = 4096$&ndash;$16384$), this beats the standard $\Theta(n^2)$ by the factor $M/d_k^2$. The lower bound is a counting argument in the style of Hong&ndash;Kung red&ndash;blue pebbling: any algorithm computing all $n^2$ score interactions with $M$ fast memory must re-stream inputs $\Omega(n^2 d_k^2/M)$ times in the worst case. $\blacksquare$</p></div>
+
+<p>The artifact's accounting table makes the constant concrete: counted K/V reads equal $\lceil n/B_r\rceil \cdot n \cdot 2d_k$ exactly, falling from $559{,}232$ elements at $B_r = 16$ (17 full passes over $K,V$) to $32{,}896$ at $B_r = n$ (one pass) &mdash; traffic inversely proportional to the tile size that SRAM affords. That $1/M$ dependence is the whole economic content of FlashAttention. Rabe and Staats (2021) had independently shown attention needs only $O(\sqrt{n})$ extra memory via the same lazy-normalization idea; FlashAttention's advance was recognizing and engineering the <em>I/O</em> claim, not just the memory claim. <span class="tag tag-likely">Likely</span></p>
+
+<h4>31.4 The Backward Pass and Recomputation</h4>
+
+<p>The backward pass needs $P$ (for $dV = P^\top dO$) and $S$ (for the softmax Jacobian). Storing them would reintroduce the $O(n^2)$ buffers, so FlashAttention stores neither; it saves only the per-row logsumexp $L_i = m_i + \log \ell_i \in \mathbb{R}^n$ and recomputes score tiles on the fly: $P_{ij} = \exp(S_{ij} - L_i)$, exactly the forward value with no renewed max-tracking, because $L_i$ already encodes the finished normalization. Note the pitfall the $L$ encoding avoids: storing $m$ and $\ell$ separately and recombining via $e^{-m}/\ell$ risks overflow; the log-domain sum is safe.</p>
+
+<p>The FLOP bill is explicit. Forward: 2 matmuls ($QK^\top$, $PV$), $4n^2d_k$ FLOPs. Backward with stored $P$: 4 matmuls ($dV = P^\top dO$, $dP = dO\, V^\top$, $dQ = dS\, K$, $dK = dS^\top Q$), $8n^2 d_k$. Backward with recomputation adds one matmul, re-forming $S = QK^\top$ tile-by-tile: $10 n^2 d_k$. Training-step attention matmul FLOPs rise from $12 n^2 d_k$ to $14 n^2 d_k$ &mdash; a 16.7% arithmetic surcharge, deliberately paid because those FLOPs run at tensor-core speed while the avoided $n^2$ HBM round-trips run at bandwidth speed. Recomputation is cheaper than remembering. <span class="tag tag-certain">Certain</span> This is gradient checkpointing's logic (Chapter 32) applied inside a single operator, and it compounds: the memory freed by not storing $P$ is what makes 32K&ndash;128K-token training contexts feasible at all.</p>
+
+<p>One further identity keeps the backward streaming. The softmax Jacobian term $dS_{ij} = P_{ij} \odot (dP_{ij} - D_i)$ needs the row sums $D_i = \mathrm{rowsum}(dP_i \odot P_i)$, which naively couple all tiles of a row. But $D_i = \mathrm{rowsum}(dO_i \odot O_i)$ &mdash; provable in one line from $O = PV$ and the softmax Jacobian &mdash; so $D$ is precomputed from tensors already in HBM, $O(n d_k)$ traffic, and the backward tile loop stays single-pass. The backward's HBM complexity matches the forward's $\Theta(n^2 d_k^2/M)$.</p>
+
+<h4>31.5 FlashAttention-2: Work Partitioning</h4>
+
+<p>FlashAttention-1 got the algorithm right and the GPU mapping wrong enough to leave 2$\times$ on the table. Dao (2023; ICLR 2024) reports the original reaching only 25&ndash;40% of theoretical peak FLOPs/s, and attributes the gap to suboptimal partitioning of work between thread blocks and between warps <span class="tag tag-verify">Verify</span>. FlashAttention-2 made three changes, all scheduling, none algorithmic:</p>
+
+<p><strong>Fewer non-matmul FLOPs.</strong> Tensor cores execute matmul FLOPs roughly 16$\times$ faster than the CUDA cores execute everything else (A100: 312 TFLOPs/s FP16 matmul vs. 19.5 TFLOPs/s FP32 scalar <span class="tag tag-verify">Verify</span>), so a non-matmul FLOP is ~16$\times$ more expensive. FA-2 defers the $\mathrm{diag}(\ell)^{-1}$ rescaling to once per query block rather than once per tile iteration, and keeps only $L_i$ rather than $m_i, \ell_i$ separately.</p>
+
+<p><strong>Parallelism over sequence length.</strong> FA-1 parallelized over batch $\times$ heads only; one thread block per head. At long context the batch shrinks to keep memory bounded, so batch $\times$ heads falls below the ~108 SMs of an A100 and the GPU idles. FA-2 additionally parallelizes over query blocks &mdash; correctness is free because query rows are independent &mdash; restoring occupancy exactly in the long-sequence regime that FlashAttention exists to serve.</p>
+
+<p><strong>Warp-level partitioning.</strong> Within a thread block, FA-1 split $K$ across warps ("split-K"), forcing warps to write partial results to shared memory and synchronize to reduce them. FA-2 splits $Q$ across warps instead: each warp owns whole output rows, needs no inter-warp reduction for the accumulator, and shared-memory traffic drops.</p>
+
+<p>Attributed results: ~2$\times$ speedup over FlashAttention-1, reaching 50&ndash;73% of theoretical peak FLOPs/s on A100 in the forward pass, and end-to-end GPT-style training at up to 225 TFLOPs/s per A100 &mdash; 72% model FLOPs utilization (Dao 2023) <span class="tag tag-verify">Verify</span>. The lesson generalizes: after the I/O algorithm is right, the next factor of two lives in occupancy and intra-block communication.</p>
+
+<h4>31.6 FlashAttention-3: Asynchrony and FP8</h4>
+
+<p>Hopper (H100) changed the hardware contract: the Tensor Memory Accelerator (TMA) issues bulk HBM&rarr;SRAM copies asynchronously, and warpgroup matmul instructions (WGMMA) run asynchronously too, so a kernel written in the synchronous FA-2 style leaves both engines waiting on each other. Shah, Bikshandi, Zhang, Thakkar, Ramani, and Dao (NeurIPS 2024) rebuilt the kernel around three techniques. First, <em>warp specialization</em>: producer warpgroups do nothing but issue TMA loads of upcoming $K_j, V_j$ tiles while consumer warpgroups compute on current ones, a hardware-level pipeline hiding memory latency behind arithmetic. Second, <em>pingpong scheduling</em>: the softmax of one tile (slow exponentials on the multi-function units) is interleaved with the WGMMA matmuls of another tile, so the non-matmul work that FA-2 minimized is instead hidden. Third, <em>FP8 with error control</em>: block quantization (one scale per tile rather than per tensor) plus <em>incoherent processing</em> &mdash; multiplying $Q$ and $K$ by a random orthogonal (Hadamard-based) matrix, which leaves $QK^\top$ mathematically unchanged but spreads outlier magnitudes across dimensions before quantization (the same trick Chapter 34 uses for weight quantization).</p>
+
+<p>Attributed results: 1.5&ndash;2.0$\times$ faster than FlashAttention-2 in FP16, up to 740 TFLOPs/s &mdash; 75% utilization of H100's theoretical peak, versus roughly 35% for FA-2 on the same part; with FP8, close to 1.2 PFLOPs/s; and FP8 numerical error 2.6$\times$ lower than a baseline per-tensor-quantized FP8 attention (Shah et al. 2024) <span class="tag tag-verify">Verify</span>. Read the trajectory as a statement about hardware, not cleverness exhaustion: FA-1 fixed the I/O algorithm, FA-2 fixed the parallel decomposition, FA-3 fixed the pipeline &mdash; each layer of the Chapter 30 execution model claimed in turn, and each rewrite forced by a new architecture. Kernels are not written once. <span class="tag tag-likely">Likely</span></p>
+
+<h4>31.7 PagedAttention, FlexAttention, Ring Attention</h4>
+
+<p>Three descendants show the ideas' reach. <strong>PagedAttention</strong> (Kwon et al., SOSP 2023; the vLLM engine) targets inference, where the quadratic problem is not activations but the KV cache (Chapter 33): serving systems that pre-allocated contiguous per-request KV buffers wasted 60&ndash;80% of cache memory to fragmentation and over-reservation. PagedAttention stores KV in fixed-size non-contiguous blocks behind a page table, exactly like virtual memory &mdash; possible because the tiled attention loop never needed contiguity, only block-at-a-time access. The paper reports waste under 4% and 2&ndash;4$\times$ serving throughput over then-state-of-the-art systems <span class="tag tag-verify">Verify</span>.</p>
+
+<p><strong>FlexAttention</strong> (PyTorch 2.5+) attacks the variant explosion: causal, sliding-window, ALiBi, PrefixLM, and document masking each traditionally needed a hand-written fused kernel or fell back to the slow path. FlexAttention lets the user supply a Python <code>score_mod</code> function and block-sparse mask; <code>torch.compile</code> fuses it into the tiled loop, generating forward and backward kernels the PyTorch team reports at roughly 90% of hand-tuned FlashAttention-2 performance <span class="tag tag-verify">Verify</span>. It is the compiler bet: encode the FlashAttention <em>schedule</em> once, let codegen handle the algebra.</p>
+
+<p><strong>Ring Attention</strong> (Liu, Zaharia, Abbeel, 2023) is Theorem 31.1 stretched across machines: shard the sequence over devices, and pass $K,V$ blocks around a ring while each device updates its queries' running $(m, \ell, \tilde{O})$ state against each arriving block, overlapping the communication with the blockwise compute. Because online softmax is order-independent, the result is exact, and maximum context length scales linearly with device count &mdash; the mechanism behind million-token contexts. Chapter 32 covers its placement in the parallelism taxonomy.</p>
+
+<h4>31.8 What Writing a Kernel Actually Involves</h4>
+
+<p>Demystifying the artifact&rsquo;s real-GPU counterpart: a production FlashAttention kernel is the same ~40 lines of algorithm embedded in ~10$\times$ that of scheduling. The working sequence, in the order practitioners actually iterate: <strong>(1)</strong> derive the tiling from the SRAM budget &mdash; pick $B_r, B_c$ so $Q_i, K_j, V_j$, the score tile, and the accumulator fit in shared memory and registers, with headroom for double-buffering; <strong>(2)</strong> make every HBM access coalesced and every shared-memory layout bank-conflict-free (swizzling); <strong>(3)</strong> balance occupancy against register pressure &mdash; the accumulator $\tilde{O}_i$ lives in registers, and spilling it to local memory silently reintroduces the traffic the algorithm exists to avoid; <strong>(4)</strong> overlap: async copies (<code>cp.async</code>, TMA on Hopper) prefetching tile $j{+}1$ during tile $j$; <strong>(5)</strong> autotune tile sizes, warp counts, and pipeline stages per (GPU, $d_k$, dtype) triple, because the optimum moves. Triton occupies the productive middle ground &mdash; you write the tile program, the compiler handles layouts and pipelining &mdash; and a Triton FlashAttention lands within a few tens of percent of CUTLASS-based CUDA on most shapes, at a tenth of the code <span class="tag tag-likely">Likely</span>. Validate the way the artifact does: exactness against a reference at FP32/FP64 first, adversarial shapes (ragged tails, $n$ not divisible by tiles, huge logits) second, a roofline measurement (Chapter 30) third &mdash; achieved bytes and FLOPs against the machine ceilings, never wall-clock alone.</p>
+
+<div class="warning-box"><div class="box-title">Common Pitfall</div>
+<p>Forgetting to rescale the <em>output accumulator</em> when the running max updates. The buggy inner loop updates $\ell_i \leftarrow \alpha \ell_i + \mathrm{rowsum}\,\tilde P_{ij}$ correctly but writes $\tilde{O}_i \leftarrow \tilde{O}_i + \tilde{P}_{ij}V_j$, dropping the $\mathrm{diag}(\alpha)$ factor. This passes small unit tests whenever the first tile happens to contain the row max (then $\alpha = 1$ forever after) &mdash; e.g. tests with i.i.d. small-magnitude logits and one tile, or causal tests where early positions dominate &mdash; and then produces subtly wrong attention on real data where later keys score highest. The symptom is outputs biased toward early-sequence values, which looks like a modeling problem, not a kernel bug. Test specifically with the row max forced into the <em>last</em> tile; the artifact's $\pm 15$-range logits across many chunk splits exist for exactly this reason.</p></div>
+
+<div class="artifact-box"><div class="box-title">Artifact 31.1 &mdash; Tiled Online-Softmax Attention with I/O Accounting</div>
+<p>The full forward pass of Sections 31.2&ndash;31.3 in pure NumPy, instrumented rather than timed: since no CPU run can demonstrate GPU speedups, the artifact instead verifies the four claims the speedups rest on. It checks (a) exactness of the tiled pass against naive attention across seven tile shapes, including ragged edges ($n = 257$ against tiles of 16, 53, 100, 128); (b) exactness of streaming softmax against batch softmax across chunk sizes; (c) that peak intermediate allocation is $O(n)$, by counting live array elements inside the tile loop and comparing against the $2n^2$ elements the naive version materializes; and (d) that counted K/V block reads equal $\lceil n/B_r \rceil \cdot n \cdot 2d_k$ exactly, reproducing the $1/M$ tile-size dependence of Theorem 31.2 as a measured table. A <code>torch</code> SDPA cross-check runs if available.</p>
+<pre><code>"""Artifact 31.1 -- Tiled online-softmax attention (FlashAttention forward) in NumPy.
+
+Verifies four claims from the chapter:
+  (a) tiled output == naive attention to ~1e-6, across tile sizes incl. ragged edges;
+  (b) running-rescale online softmax == batch softmax to ~1e-12 on a chunked row;
+  (c) peak intermediate memory is O(N), not O(N^2)  (explicit allocation accounting);
+  (d) HBM-equivalent reads of K/V blocks scale as N^2 * d / Br  (inverse in tile size),
+      matching the paper's O(N^2 d^2 / M) analysis with Br ~ M/d.
+No GPU is used or simulated for timing; "HBM reads" here means counted array elements
+that a real kernel would have to fetch from off-chip memory. Everything else is exact.
+"""
+import numpy as np
+
+rng = np.random.default_rng(0)
+
+
+# ---------------------------------------------------------------- reference path
+def naive_attention(Q, K, V):
+    """Standard attention: materializes the full N x N score matrix.
+
+    Returns (output, peak_intermediate_elements). The peak intermediate is the
+    N x N score matrix plus its N x N softmax -- what a framework without a fused
+    kernel actually allocates (scores and probs coexist during softmax)."""
+    N, d = Q.shape
+    S = (Q @ K.T) / np.sqrt(d)                    # N x N   &lt;- the quadratic buffer
+    m = S.max(axis=1, keepdims=True)              # stabilize
+    P = np.exp(S - m)
+    P /= P.sum(axis=1, keepdims=True)             # N x N softmax
+    return P @ V, 2 * N * N                        # S and P both live: 2*N^2 elements
+
+
+def batch_softmax(x):
+    e = np.exp(x - x.max())
+    return e / e.sum()
+
+
+# ---------------------------------------------------- (b) online softmax, one row
+def online_softmax(x, chunk):
+    """Streaming softmax over a 1-D array seen in chunks of size `chunk`.
+
+    Maintains running max m and running normalizer l; every time a new chunk
+    raises the max, the old normalizer is rescaled by exp(m_old - m_new).
+    Algebraically identical to batch softmax (Theorem 31.1)."""
+    m, l = -np.inf, 0.0
+    for j in range(0, len(x), chunk):
+        xj = x[j:j + chunk]
+        m_new = max(m, xj.max())
+        l = l * np.exp(m - m_new) + np.exp(xj - m_new).sum()
+        m = m_new
+    # second pass just to emit probabilities (attention never needs this pass:
+    # it folds the division into the running output accumulator instead)
+    return np.exp(x - m) / l
+
+
+# ------------------------------------------------- (a,c,d) tiled forward pass
+def flash_forward(Q, K, V, Br, Bc):
+    """FlashAttention forward pass: tile Q into Br-row blocks, K/V into Bc-row
+    blocks; never materialize more than a Br x Bc score tile.
+
+    Returns (O, logsumexp L, stats) where stats counts
+      kv_read_elems : elements of K and V blocks loaded across the whole loop
+                      (the HBM traffic a real kernel pays), and
+      peak_elems    : max intermediate elements alive inside the tile loops
+                      (excludes inputs Q,K,V and the returned O,L)."""
+    N, d = Q.shape
+    scale = 1.0 / np.sqrt(d)
+    O = np.zeros((N, d))
+    L = np.zeros(N)                                # logsumexp per row, kept for backward
+    kv_read_elems = 0
+    peak_elems = 0
+    for i in range(0, N, Br):                      # outer loop over query blocks
+        Qi = Q[i:i + Br]                           # Br x d (ragged at the edge)
+        bi = Qi.shape[0]
+        mi = np.full(bi, -np.inf)                  # running row max
+        li = np.zeros(bi)                          # running normalizer
+        Oi = np.zeros((bi, d))                     # unnormalized output accumulator
+        for j in range(0, N, Bc):                  # inner loop over key/value blocks
+            Kj, Vj = K[j:j + Bc], V[j:j + Bc]      # each "loaded from HBM"
+            bj = Kj.shape[0]
+            kv_read_elems += 2 * bj * d            # count the load: K block + V block
+            Sij = (Qi @ Kj.T) * scale              # bi x bj score TILE -- the only
+            m_new = np.maximum(mi, Sij.max(axis=1))  # quadratic-shaped object, tiny
+            Pij = np.exp(Sij - m_new[:, None])     # bi x bj
+            alpha = np.exp(mi - m_new)             # rescale factor for stale state
+            li = li * alpha + Pij.sum(axis=1)
+            Oi = Oi * alpha[:, None] + Pij @ Vj    # rescale old accumulator, add new
+            mi = m_new
+            # everything alive right now inside the loops, in elements:
+            live = (bi * d          # Qi
+                    + 2 * bj * d    # Kj, Vj
+                    + 2 * bi * bj   # Sij, Pij
+                    + 3 * bi        # mi, li, alpha (m_new aliases into mi next)
+                    + bi            # m_new
+                    + bi * d)       # Oi
+            peak_elems = max(peak_elems, live)
+        O[i:i + Br] = Oi / li[:, None]             # single deferred division per row
+        L[i:i + Br] = mi + np.log(li)              # logsumexp: all backward needs
+    return O, L, {"kv_read_elems": kv_read_elems, "peak_elems": peak_elems}
+
+
+# --------------------------------------------------------------------- checks
+if __name__ == "__main__":
+    N, d = 257, 64                                 # deliberately not a tile multiple
+    Q = rng.standard_normal((N, d))
+    K = rng.standard_normal((N, d))
+    V = rng.standard_normal((N, d))
+    O_ref, naive_peak = naive_attention(Q, K, V)
+
+    # (b) online softmax == batch softmax to ~1e-12, chunked ragged
+    x = rng.standard_normal(1000) * 5              # spread ~ +-15: overflow-prone naively
+    worst_b = 0.0
+    for chunk in (1, 7, 100, 333, 1000):
+        err = np.abs(online_softmax(x, chunk) - batch_softmax(x)).max()
+        worst_b = max(worst_b, err)
+        assert err &lt; 1e-12, (chunk, err)
+    print(f"(b) online softmax vs batch, worst over chunk sizes {{1,7,100,333,1000}}: "
+          f"max|diff| = {worst_b:.2e}  (&lt; 1e-12)")
+
+    # (a) tiled forward == naive across tile shapes, incl. ragged edges
+    print("\n(a) tiled forward vs naive (N=257, d=64):")
+    worst = 0.0
+    for (Br, Bc) in [(16, 16), (32, 64), (64, 32), (64, 53), (128, 128), (257, 257), (100, 17)]:
+        O, L, st = flash_forward(Q, K, V, Br, Bc)
+        err = np.abs(O - O_ref).max()
+        worst = max(worst, err)
+        assert err &lt; 1e-6, (Br, Bc, err)
+        print(f"    Br={Br:&gt;3} Bc={Bc:&gt;3}  max|diff| = {err:.2e}")
+    print(f"    worst over all tilings: {worst:.2e}  (&lt; 1e-6)")
+
+    # (c) peak intermediate memory: O(N) vs the naive O(N^2)
+    _, _, st = flash_forward(Q, K, V, 64, 64)
+    print(f"\n(c) peak intermediates, Br=Bc=64: tiled {st['peak_elems']:,} elements "
+          f"vs naive {naive_peak:,} elements "
+          f"(ratio {naive_peak / st['peak_elems']:.1f}x); tiled peak is independent of N "
+          f"given fixed tiles (plus the N x d output, which naive also needs)")
+    assert st["peak_elems"] &lt; 6 * N * d            # O(N*d) bound, comfortably
+    assert st["peak_elems"] * 4 &lt; naive_peak       # far below the N^2 buffers
+    # peak must not grow with N at fixed tile size (pure O(1) inner state):
+    N2 = 2 * N
+    Q2, K2, V2 = (rng.standard_normal((N2, d)) for _ in range(3))
+    _, _, st2 = flash_forward(Q2, K2, V2, 64, 64)
+    assert st2["peak_elems"] == st["peak_elems"], "inner-loop state grew with N"
+    print(f"    doubling N to {N2}: tiled peak unchanged at {st2['peak_elems']:,} elements; "
+          f"naive would need {2 * N2 * N2:,}")
+
+    # (d) K/V HBM reads vs tile size: predicted = ceil(N/Br) * N * 2d
+    print("\n(d) K/V read accounting (N=257, d=64):  reads = ceil(N/Br) * N * 2d")
+    print(f"    {'Br':&gt;4} {'measured':&gt;12} {'predicted':&gt;12} {'vs one pass over K,V':&gt;22}")
+    for Br in (16, 32, 64, 128, 257):
+        _, _, st = flash_forward(Q, K, V, Br, 64)
+        Tr = -(-N // Br)                           # ceil
+        pred = Tr * N * 2 * d
+        assert st["kv_read_elems"] == pred, (Br, st["kv_read_elems"], pred)
+        print(f"    {Br:&gt;4} {st['kv_read_elems']:&gt;12,} {pred:&gt;12,} {Tr:&gt;20}x")
+    print("    reads scale as 1/Br exactly: bigger query tiles (more SRAM) =&gt; fewer "
+          "passes over K,V. With Br ~ M/d this is the O(N^2 d^2 / M) of Dao et al. 2022.")
+
+    # cross-check against torch SDPA if available
+    try:
+        import torch
+    except ImportError:
+        torch = None
+    if torch is not None:
+        ref = torch.nn.functional.scaled_dot_product_attention(
+            torch.from_numpy(Q)[None], torch.from_numpy(K)[None], torch.from_numpy(V)[None]
+        )[0].numpy()
+        O, _, _ = flash_forward(Q, K, V, 64, 64)
+        err = np.abs(O - ref).max()
+        assert err &lt; 1e-6
+        print(f"\ncross-check vs torch SDPA: max|diff| = {err:.2e}")
+    else:
+        print("\n[skipped: torch not installed]")
+    print("\nall assertions passed")
+</code></pre>
+<p>Running this prints, in about two seconds: online-vs-batch softmax worst discrepancy $4.44\times 10^{-16}$ over five chunkings; tiled-vs-naive worst error $1.22\times10^{-15}$ over seven tilings (assertion threshold $10^{-6}$, met with nine orders to spare, and a matching $7.77\times 10^{-16}$ against torch SDPA); a peak-allocation ratio of $132{,}098$ naive elements to $24{,}832$ tiled at $B_r{=}B_c{=}64$, with the tiled peak provably unchanged when $n$ doubles to 514; and the read-accounting table above, where measured K/V element reads match $\lceil n/B_r\rceil\, n\, 2d_k$ exactly at every tile size &mdash; 559,232 at $B_r{=}16$ down to 32,896 at $B_r{=}257$.</p>
+</div>
+
+<div class="key-takeaways">
+<div class="kt-title">Key Takeaways</div>
+<ul>
+<li>FlashAttention performs the same $4n^2 d_k$ attention matmul FLOPs as the naive algorithm (backward: more, via recomputation) &mdash; its entire speedup comes from cutting HBM accesses from $\Theta(n d_k + n^2)$ to $\Theta(n^2 d_k^2 / M)$ and its memory saving from never materializing $S$ or $P$. <span class="tag tag-certain">Certain</span></li>
+<li>Online softmax is exactly batch softmax under any blocking of the row &mdash; the rescale factor $e^{m_{\text{old}}-m_{\text{new}}}$ makes the recurrence associative &mdash; and this associativity is the single identity underlying FlashAttention, split-KV decoding, and Ring Attention. <span class="tag tag-certain">Certain</span></li>
+<li>The backward pass stores only the $O(n)$ logsumexp vector and recomputes score tiles, accepting a ~17% increase in attention matmul FLOPs per training step; on memory-bound hardware, recomputation is cheaper than remembering. <span class="tag tag-certain">Certain</span></li>
+<li>FlashAttention-2's gains were pure scheduling &mdash; fewer non-matmul FLOPs, sequence-length parallelism, split-Q warp partitioning &mdash; for ~2$\times$ over FA-1 and up to 72% end-to-end MFU on A100; FlashAttention-3 rebuilt the pipeline around Hopper's TMA/WGMMA asynchrony plus FP8 with block quantization and incoherent processing, for 1.5&ndash;2$\times$ over FA-2, ~75% H100 utilization in FP16, and ~1.2 PFLOPs/s in FP8. <span class="tag tag-verify">Verify</span></li>
+<li>A kernel is an algorithm plus a schedule, and the schedule is hardware-generation-specific: FA-1&rarr;2&rarr;3 rewrote the same mathematics three times as the bottleneck moved from I/O algorithm to occupancy to pipeline overlap &mdash; expect a fourth rewrite per new architecture. <span class="tag tag-likely">Likely</span></li>
+</ul>
+</div>
+</div>

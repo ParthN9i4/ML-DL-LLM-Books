@@ -1,0 +1,276 @@
+<div class="chapter" id="ch32">
+<div class="chapter-header"><div class="ch-label">Chapter 32</div><h3>Distributed Training</h3></div>
+
+<div class="learning-objectives">
+<div class="lo-title">Learning Objectives</div>
+<ul>
+<li>Derive the ring all-reduce communication volume $2\frac{P-1}{P}S$ per device and show it is bandwidth-optimal and (asymptotically) independent of worker count.</li>
+<li>Derive the memory breakdown of mixed-precision Adam training &mdash; 16 bytes per parameter &mdash; and state exactly what each ZeRO stage shards and what it costs in communication.</li>
+<li>Compute tensor-parallel communication volume per layer and explain why tensor parallelism stays within a node while data parallelism crosses nodes.</li>
+<li>Derive the pipeline bubble fraction $(p-1)/(m+p-1)$ and explain the one-forward-one-backward and interleaved schedules.</li>
+<li>Implement ring all-reduce and a parallelism planner in working code.</li>
+</ul>
+</div>
+
+<div class="read-alongside"><strong>Read alongside</strong> &mdash; The HuggingFace <em>Ultra-Scale Playbook</em> is the single best companion: it walks the same parallelisms with profiler traces from real clusters. Stanford <strong>CS336</strong> covers the systems half of this chapter as a graded assignment. <strong>Raschka</strong> shows the single-node DDP starting point in PyTorch.</div>
+
+<p>Chapters 30 and 31 treated one GPU: the memory wall, kernel fusion, FlashAttention. But no frontier model fits on one device &mdash; a 70B-parameter model needs 1.12 TB just for training state, fourteen 80&nbsp;GB accelerators before a single activation is stored. This chapter is about the four ways to split the work &mdash; data, tensor, pipeline, and expert parallelism &mdash; and the central thesis is that they are not interchangeable. Each one trades a specific resource: data parallelism spends memory to save communication, ZeRO spends communication to save memory, tensor parallelism spends enormous bandwidth to shard compute, pipeline parallelism spends idle &ldquo;bubble&rdquo; time to shard depth. Matching the combination to your interconnect hierarchy is the most expensive decision in the field; getting it wrong can idle a cluster by an order of magnitude. Chapter 33 applies the same reasoning to inference; Chapter 22 supplied the mixture-of-experts models that Section 32.7 distributes.</p>
+
+<h4>32.1 Data Parallelism and Gradient All-Reduce</h4>
+
+<p>Data parallelism (DP) is the baseline: replicate all $N$ parameters on $P$ workers, give each worker a disjoint shard of the batch, and average gradients before the optimizer step. With per-worker batch $B/P$, worker $p$ computes $g_p = \nabla_\theta \mathcal{L}(\theta; x_p)$, and the update uses $\bar g = \frac{1}{P}\sum_p g_p$. Because every worker applies the same update to the same replica, synchronous DP is <em>bitwise-identical in expectation</em> to single-device training at batch $B$ &mdash; the parallelism changes throughput, not the optimization trajectory (up to summation order in floating point, see Chapter 5). <span class="tag tag-certain">Certain</span> The batch-size and learning-rate consequences of growing $B$ with $P$ were Chapter 15's subject.</p>
+
+<p>The cost is one gradient synchronization per step: an <em>all-reduce</em> of $S = N \cdot b$ bytes, where $b$ is the gradient dtype width (2 for bf16). For a 70B model that is 140&nbsp;GB of gradient per step, every step. Two facts rescue DP. First, the all-reduce can overlap with the backward pass: gradients for layer $l$ are final as soon as backprop passes layer $l$, so frameworks bucket parameters (PyTorch DDP defaults to 25&nbsp;MB buckets) and launch reductions on completed buckets while earlier layers are still differentiating. On a well-tuned setup, communication hides almost entirely behind the backward pass. <span class="tag tag-certain">Certain</span> Second, the all-reduce itself can be done with per-worker traffic nearly independent of $P$ &mdash; that is Section 32.2.</p>
+
+<div class="warning-box"><div class="box-title">Common Pitfall</div>
+<p>Gradient accumulation without suppressing synchronization. If you accumulate over $k$ micro-batches by calling <code>backward()</code> $k$ times inside DDP, every call fires the bucketed all-reduce, multiplying communication by $k$ for identical results. PyTorch's <code>model.no_sync()</code> context exists precisely to skip the reduction on the first $k-1$ calls; forgetting it is invisible in the loss curve and can double or triple step time. The dual mistake: with <code>no_sync</code>, remember that accumulated gradients are a <em>sum</em>, so either scale the loss by $1/k$ or the learning rate accordingly &mdash; silently changing the effective step size is a classic source of &ldquo;multi-node runs diverge&rdquo; bugs.</p></div>
+
+<h4>32.2 Collective Primitives</h4>
+
+<div class="definition"><div class="box-title">Definition 32.1 (Collective operations)</div>
+<p>Over $P$ workers each holding a tensor of $S$ bytes: <strong>broadcast</strong> copies one worker's tensor to all; <strong>reduce</strong> sums all tensors onto one worker; <strong>all-reduce</strong> leaves the sum on every worker; <strong>reduce-scatter</strong> leaves the $p$-th $1/P$-shard of the sum on worker $p$; <strong>all-gather</strong> starts from such shards and reassembles the full tensor everywhere; <strong>all-to-all</strong> transposes shards across workers ($P$ shards each, worker $p$ sends its $q$-th shard to worker $q$). The identity that organizes this chapter: <em>all-reduce&nbsp;=&nbsp;reduce-scatter followed by all-gather</em>.</p></div>
+
+<p>The naive all-reduce &mdash; gather everything to a root, sum, broadcast back &mdash; moves $2(P-1)S$ bytes through the root's single link. The <em>ring</em> algorithm removes the bottleneck. Arrange workers in a cycle and split each tensor into $P$ chunks of $S/P$ bytes. <strong>Reduce-scatter phase</strong>, $P-1$ steps: at step $t$, worker $p$ sends chunk $(p-t) \bmod P$ to its right neighbor, which adds it into its own copy. Each chunk accumulates one contribution per hop; after $P-1$ steps, worker $p$ holds the complete sum of chunk $(p+1) \bmod P$. <strong>All-gather phase</strong>, $P-1$ more steps: each worker forwards the completed chunks around the ring, overwriting rather than adding. Every link carries exactly one chunk per step in each phase, in parallel.</p>
+
+<div class="theorem"><div class="box-title">Theorem 32.1 (Ring all-reduce is bandwidth-optimal)</div>
+<p>Ring all-reduce completes with every worker sending (and receiving) exactly $2\frac{P-1}{P}S$ bytes, and no all-reduce whose messages are partial sums of input segments can beat this per-worker bound.</p>
+<p><strong>Proof.</strong> Achievability: each phase has $P-1$ steps and each worker transmits one chunk of $S/P$ bytes per step, giving $2(P-1)\cdot S/P$ &mdash; the artifact counts this exactly. For the lower bound (sketch, after Patarasuk&ndash;Yuan): any correct algorithm implicitly solves reduce-scatter and all-gather. In the gather direction, worker $p$ must end holding the $\frac{P-1}{P}S$ bytes of reduced output it did not itself finish, and since inputs are arbitrary these bytes are incompressible, so it receives at least $\frac{P-1}{P}S$. In the reduce direction, each worker's input must contribute to shards completed elsewhere; summing over workers, at least $\frac{P-1}{P}S$ additional bytes must leave each worker as (partial-sum) payloads. Total per-worker traffic $\ge 2\frac{P-1}{P}S$ in each direction. $\blacksquare$</p></div>
+
+<p>The crucial reading: $2\frac{P-1}{P}S &lt; 2S$ for every $P$, so per-device traffic is <em>bounded by twice the tensor size no matter how many workers join</em>. Scaling from 8 to 8{,}000 GPUs raises per-GPU all-reduce traffic by under 13%. What does grow with $P$ is the latency term: $2(P-1)$ sequential steps, each paying link latency $\alpha$. In the $\alpha$&ndash;$\beta$ cost model, ring all-reduce costs $2(P-1)\alpha + 2\frac{P-1}{P}S\beta$, where $\beta$ is seconds per byte. For large tensors the $\beta$ term dominates and rings win; for small tensors (or huge $P$) the $\alpha$ term dominates, which is why NCCL switches to tree algorithms &mdash; $O(\log P)$ latency at the price of constant-factor bandwidth &mdash; below a size threshold, and why DDP buckets gradients into ~25&nbsp;MB messages rather than reducing per-tensor. <span class="tag tag-certain">Certain</span></p>
+
+<div class="example"><div class="box-title">Example 32.1 (Counting the ring, $P=4$)</div>
+<p>Four workers, $S = 128$ bytes (sixteen fp64 values, four chunks of 32 bytes). Reduce-scatter: 3 steps &times; 32 bytes sent per worker = 96 bytes. All-gather: 3 steps &times; 32 = 96 bytes. Total per worker: $192 = 2\cdot\frac{3}{4}\cdot 128$ bytes, matching the formula exactly &mdash; the artifact asserts this equality for $P \in \{2,4,5,8,16\}$. The naive gather-broadcast pushes $2(P-1)S = 768$ bytes through the root's link: $P$ times worse, and the gap is exactly $P$&times; for every configuration tested.</p></div>
+
+<h4>32.3 ZeRO and FSDP</h4>
+
+<p>DP's memory problem is that every replica stores the full training state. For mixed-precision Adam (Chapters 5 and 13), the per-parameter cost is:</p>
+<p>$$\underbrace{2}_{\text{bf16 weights}} + \underbrace{2}_{\text{bf16 grads}} + \underbrace{4}_{\text{fp32 master}} + \underbrace{4}_{\text{fp32 } m} + \underbrace{4}_{\text{fp32 } v} = 16 \text{ bytes/parameter.}$$</p>
+<p>The fp32 master copy exists because bf16's 8-bit mantissa cannot absorb updates of relative size $\sim\eta\cdot 10^{-3}$ without stagnating (Chapter 5); $m$ and $v$ are Adam's moments. So a 7B model needs 112&nbsp;GB and a 70B model 1.12&nbsp;TB &mdash; before activations, which add a batch-dependent amount on top. <span class="tag tag-certain">Certain</span></p>
+
+<div class="example"><div class="box-title">Example 32.2 (Hand count on a 46-parameter MLP)</div>
+<p>Take an MLP $8\to4\to2$ with biases: $8\cdot4+4+4\cdot2+2 = 46$ parameters. Materialize the six tensors: bf16 weights $2\cdot46=92$ B, bf16 grads 92 B, fp32 master $4\cdot46=184$ B, $m$ 184 B, $v$ 184 B. Total $736 = 16 \times 46$ bytes. The artifact allocates exactly these arrays, sums their <code>nbytes</code>, and asserts 736; a torch cross-check confirms <code>torch.optim.Adam</code> really keeps two fp32 state tensors per parameter (92 state elements for the 46 parameters).</p></div>
+
+<p>ZeRO's observation is that in DP these 16 bytes are <em>replicated</em> $P$ times, yet the optimizer state is only ever used elementwise &mdash; worker $p$ can own the state for $1/P$ of the parameters and update only those. The stages shard progressively:</p>
+
+<table>
+<tr><th>Stage</th><th>Shards</th><th>Bytes/param/device</th><th>Comm volume per step (per device)</th></tr>
+<tr><td>DP (ZeRO-0)</td><td>nothing</td><td>$16$</td><td>$2\frac{P-1}{P}S$ (grad all-reduce)</td></tr>
+<tr><td>ZeRO-1</td><td>optimizer state</td><td>$4 + 12/P$</td><td>$2\frac{P-1}{P}S$ (reduce-scatter grads + all-gather params)</td></tr>
+<tr><td>ZeRO-2</td><td>+ gradients</td><td>$2 + 14/P$</td><td>$2\frac{P-1}{P}S$ &mdash; unchanged</td></tr>
+<tr><td>ZeRO-3</td><td>+ parameters</td><td>$16/P$</td><td>$3\frac{P-1}{P}S$ &mdash; 1.5&times; DP</td></tr>
+</table>
+
+<p>Stages 1 and 2 are nearly free: the all-reduce decomposes as reduce-scatter + all-gather anyway (Definition 32.1), and ZeRO merely inserts the sharded optimizer step between the two halves &mdash; reduce-scatter the gradients, update your shard, all-gather the updated bf16 weights. Same $2\frac{P-1}{P}S$ on the wire. ZeRO-3 additionally shards the weights themselves, so each layer's parameters must be all-gathered just-in-time in the forward pass, again in the backward pass, then freed &mdash; hence the extra $\frac{P-1}{P}S$ and, in practice, sensitivity to the $\alpha$ term because the gathers are per-layer-sized and sit on the critical path unless prefetched. <span class="tag tag-certain">Certain</span> PyTorch FSDP is the native implementation: <code>FULL_SHARD</code> corresponds to ZeRO-3 and <code>SHARD_GRAD_OP</code> to ZeRO-2, with wrapping granularity (usually one transformer block) setting the gather size. <span class="tag tag-verify">Verify</span> against current FSDP docs; the API has churned (FSDP2 shards per-parameter on DTensor).</p>
+
+<p>The planner in the artifact turns the table into decisions: at $P=8$ on 80&nbsp;GB devices, a 7B model is infeasible under plain DP (112&nbsp;GB) but fits under ZeRO-1 at 38.5&nbsp;GB; a 70B model needs ZeRO-3 <em>and</em> $P \ge 64$ (17.5&nbsp;GB at $P=64$, versus 140&nbsp;GB at $P=8$). Sharding only pays down the $12N$ or $14N$ replicated bytes across $P$ &mdash; the $2$&ndash;$4$ bytes/param that remain replicated set a floor that only ZeRO-3, tensor, or pipeline parallelism can breach.</p>
+
+<h4>32.4 Tensor Parallelism</h4>
+
+<p>Tensor parallelism (TP) shards individual weight matrices across $t$ devices so that even one layer's compute and parameters are split. The Megatron scheme pairs a <em>column-split</em> matmul with a <em>row-split</em> one so that only a single synchronization is needed per pair. For the transformer MLP $Y = W_2\,\phi(W_1 x)$ with $W_1 \in \mathbb{R}^{4d\times d}$ split by rows across $t$ devices (each holds $W_1^{(i)} \in \mathbb{R}^{(4d/t)\times d}$) and $W_2$ split by columns to match: each device computes $\phi(W_1^{(i)}x)$ with no communication &mdash; the nonlinearity applies elementwise to a complete shard &mdash; then $W_2^{(i)}\phi(\cdot)$ produces a <em>partial sum</em> of the full output, and one all-reduce over the $B\,n\,d$-element activation finishes the layer. Attention shards by heads with the same pattern: QKV projections column-split (each device owns $h/t$ heads, softmax is per-head so it never crosses devices), output projection row-split, one all-reduce. Per transformer layer: two all-reduces forward (attention, MLP) and two backward, each of $A = B\,n\,d\,b$ bytes. <span class="tag tag-certain">Certain</span></p>
+
+<p>Per-device TP traffic per layer per micro-batch is therefore $4 \cdot 2\frac{t-1}{t} A \approx 8A$. Unlike DP's once-per-step gradient reduction, this sits <em>inside</em> the forward and backward of every layer, on the critical path, largely un-overlappable. Concretely: $d = 8192$, $n = 8192$, $B=1$, bf16 gives $A = 134$&nbsp;MB; with $t=8$, that is $4 \times 1.75 \times 134\text{ MB} \approx 0.94$&nbsp;GB per layer, or $\approx 75$&nbsp;GB across 80 layers &mdash; per micro-batch. Over intra-node NVLink at $\sim$450&nbsp;GB/s per direction (H100 <span class="tag tag-verify">Verify</span> against vendor specs) that is $\sim$0.17&nbsp;s; over a 400&nbsp;Gb/s InfiniBand NIC ($\sim$50&nbsp;GB/s <span class="tag tag-verify">Verify</span>) it is $\sim$1.5&nbsp;s &mdash; roughly a 9&times; penalty on communication that compute cannot hide. This single ratio is why the standard rule holds: <em>TP degree $\le$ GPUs per node (typically 8), always inside the NVLink domain; DP and pipeline parallelism take the slow links.</em> DP tolerates slow links because its volume is per-step and overlappable; TP does not because its volume is per-layer and blocking. <span class="tag tag-certain">Certain</span></p>
+
+<h4>32.5 Sequence and Context Parallelism</h4>
+
+<p>Two gaps remain in TP. First, inside a TP group the LayerNorm and dropout regions operate on <em>replicated</em> full activations &mdash; wasted memory $\times t$. Megatron-style <em>sequence parallelism</em> shards those regions along the sequence axis and replaces each TP all-reduce with an all-gather (entering the matmul region) plus a reduce-scatter (leaving it). Since an all-reduce is exactly that pair, total communication volume is unchanged, while the replicated activations shrink by $t$. It is a strict win and modern stacks enable it by default. <span class="tag tag-likely">Likely</span></p>
+
+<p>Second, very long contexts make the $O(n)$ activations and $O(n^2)$ attention of a single device prohibitive even with TP. <em>Context parallelism</em> (Ring Attention) shards the sequence itself across $c$ devices: each holds $n/c$ queries permanently, while key/value blocks circulate around a ring, and each device accumulates its queries' attention output blockwise using the online-softmax rescaling of Chapter 31 &mdash; FlashAttention's tiling argument, lifted from SRAM tiles to devices. Communication per ring step is the $KV$ block ($2\cdot\frac{n}{c}\,d\,b$ bytes) and overlaps with the attention compute of the current block, so for long enough $n$ the ring is compute-bound. Causal masking makes late-position devices do more work than early ones; striped/zigzag sharding rebalances. <span class="tag tag-certain">Certain</span></p>
+
+<h4>32.6 Pipeline Parallelism and Bubbles</h4>
+
+<p>Pipeline parallelism (PP) cuts the model by <em>depth</em>: stage $i$ of $p$ holds layers $iL/p$ to $(i+1)L/p$ and forwards activations to stage $i+1$. Communication is tiny &mdash; one boundary activation of $B\,n\,d\,b$ bytes per micro-batch between adjacent stages, point-to-point, ideal for slow inter-node links. The cost is idleness: with one batch, stage $p-1$ waits for $p-1$ forward hops before doing anything, and stage 0 waits again during the backward sweep.</p>
+
+<p>Split the batch into $m$ micro-batches, each taking $t_f + t_b$ per stage. Useful work per stage is $m(t_f+t_b)$; the pipeline drains and fills over $(p-1)(t_f+t_b)$ of unavoidable idle time, so total time is $(m+p-1)(t_f+t_b)$ and</p>
+<p>$$\text{bubble fraction} \;=\; \frac{(p-1)(t_f+t_b)}{(m+p-1)(t_f+t_b)} \;=\; \frac{p-1}{m+p-1}.$$</p>
+<p>Driving the bubble down means $m \gg p$ &mdash; but GPipe, which runs all $m$ forwards then all $m$ backwards, must hold activations for all $m$ in-flight micro-batches, and Chapter 30's arithmetic says activations are the scarce resource. The <em>one-forward-one-backward</em> (1F1B) schedule fixes memory, not the bubble: after warm-up, each stage alternates one forward with one backward, so a micro-batch's activations are freed as soon as its backward completes and at most $p$ micro-batches are ever in flight &mdash; peak activation memory drops from $O(m)$ to $O(p)$ while the bubble fraction stays exactly $(p-1)/(m+p-1)$. The <em>interleaved</em> schedule then attacks the bubble itself: give each device $v$ non-contiguous model chunks (device 0 holds layers 1&ndash;4 and 33&ndash;36, say), so a micro-batch clears each chunk in $t_f/v$, and fill/drain time shrinks by $v$: bubble $\approx \frac{p-1}{v\,m + p - 1}$, at the price of $v\times$ more inter-stage communication and a more intricate schedule. Zero-bubble schedules go further by splitting the backward pass into input-gradient and weight-gradient halves and using the latter as bubble filler, reaching near-zero bubble at matched memory. <span class="tag tag-likely">Likely</span></p>
+
+<div class="example"><div class="box-title">Example 32.3 (Bubble arithmetic)</div>
+<p>$p = 8$ stages, $m = 32$ micro-batches: bubble $= 7/39 = 17.9\%$ &mdash; nearly a fifth of the cluster idle. Doubling to $m=64$: $7/71 = 9.9\%$. Interleaving with $v=4$ at $m=32$: $7/(4\cdot32+7) = 5.2\%$. To halve a bubble you double $m$ (needs batch size, hurts at fixed tokens-per-step) or double $v$ (needs communication); nothing is free.</p></div>
+
+<h4>32.7 Expert Parallelism</h4>
+
+<p>Mixture-of-experts layers (Chapter 22) add a fourth axis: place different experts on different devices (EP degree $e$), since each token activates only $k$ of $E$ experts. Routing turns a local matmul into communication: after the router picks top-$k$ experts per token, an <em>all-to-all</em> ships each token's $d$-vector to the devices owning its experts, the expert MLPs run, and a second all-to-all ships results back &mdash; two all-to-alls per MoE layer, each moving up to $k\,B\,n\,d\,b / e$ bytes per device outbound. Unlike all-reduce, all-to-all traffic is data-dependent: a hot expert overflows its capacity buffer and tokens get dropped or rerouted, so the capacity factor is a real hyperparameter, and load-balancing losses (Chapter 22) are as much a systems necessity as a modeling one. EP composes naturally with DP (experts sharded where replicas once were) and prefers fast links for the same reason TP does: the all-to-all is on the critical path. <span class="tag tag-certain">Certain</span></p>
+
+<h4>32.8 Composing the Parallelisms</h4>
+
+<p>A frontier run uses several axes at once; the world size factors as $P_{\text{total}} = t \cdot p \cdot P_{\text{DP}}$ (times context and expert degrees where used). The composition rule follows directly from each axis's traffic pattern and the interconnect hierarchy:</p>
+
+<table>
+<tr><th>Axis</th><th>Traffic</th><th>When</th><th>Placement</th></tr>
+<tr><td>Tensor (+seq.)</td><td>$\sim 8\frac{t-1}{t}A$ per layer, blocking</td><td>layer too big / activations too big</td><td>innermost, within NVLink node</td></tr>
+<tr><td>Context</td><td>$KV$ ring per attention, overlappable</td><td>long sequences</td><td>node or adjacent nodes</td></tr>
+<tr><td>Pipeline</td><td>one activation per micro-batch, P2P</td><td>model depth exceeds a node</td><td>across nodes</td></tr>
+<tr><td>Data / ZeRO</td><td>$2$&ndash;$3\frac{P-1}{P}S$ per step, overlappable</td><td>always, for throughput</td><td>outermost, across nodes</td></tr>
+<tr><td>Expert</td><td>2 all-to-alls per MoE layer</td><td>MoE models</td><td>fast links preferred</td></tr>
+</table>
+
+<p>Worked composition for a 70B dense model on 512&nbsp;&times;&nbsp;80&nbsp;GB GPUs: $t=8$ (one node) cuts per-device weights+grads+state to 140&nbsp;GB; $p=4$ brings it to 35&nbsp;GB, leaving room for activations; $P_{\text{DP}} = 512/(8\cdot4) = 16$ replicas with ZeRO-1 sharding the remaining optimizer state. The alternative &mdash; no PP, FSDP/ZeRO-3 at $P_{\text{DP}}=64$ &mdash; is also feasible (17.5&nbsp;GB/device by the artifact's planner) and is often preferred below ~100B for its simplicity; above that, per-layer all-gathers on inter-node links start losing to PP's point-to-point trickle. Which wins is cluster-specific &mdash; the field genuinely splits, with Megatron-style 3D favored on InfiniBand-rich clusters and FSDP favored on Ethernet or smaller runs; a profile of your own interconnect settles it. <span class="tag tag-contested">Contested</span> The one non-negotiable: never let TP cross the node boundary. Running $t=16$ across two nodes puts four blocking all-reduces per layer onto links $\sim$9&times; slower, and step time degrades by close to that factor. <span class="tag tag-likely">Likely</span></p>
+
+<h4>32.9 Failures at Scale</h4>
+
+<p>Synchronous training has no partial credit: one failed worker stalls all $P$. Failure rates compound linearly, so if a single GPU-plus-links has mean time between failures $M_1$, the cluster fails every $M_1/P$. At $M_1 = 5$ years and $P = 16{,}384$, that is one failure every $\sim$2.7 hours. Meta's Llama&nbsp;3 405B report is the public datapoint: 419 unexpected interruptions over 54 days of pretraining on 16K H100s &mdash; about one every 3 hours, ~78% attributed to hardware, GPUs and HBM leading. <span class="tag tag-verify">Verify</span> against the Llama 3 paper's reliability section.</p>
+
+<p>The defenses are checkpointing, redundancy, and detection. Checkpoint interval is an optimization, not a habit: writing costs $\delta$, and a crash loses on average half an interval $\tau$, so expected overhead per unit time is $\delta/\tau + \tau/(2M)$, minimized at the Young&ndash;Daly interval $\tau^{*} = \sqrt{2\delta M}$. With $\delta = 5$ min and $M = 3$ h, $\tau^{*} = \sqrt{2 \cdot 300 \cdot 10800}\,\text{s} \approx 42$ min. Fast distributed checkpointing (each rank writes its shard; asynchronous drain to remote storage) pushes $\delta$ down and with it the whole overhead curve. Beyond clean crashes lurk <em>silent data corruptions</em> &mdash; faulty ALUs that miscompute without raising errors, producing NaNs or, worse, quietly wrong gradients; detection requires redundant computation or algebraic checks, and large labs report SDC rates high enough to matter at $10^4$-GPU scale. <span class="tag tag-likely">Likely</span> Straggler mitigation, spare-node hot-swap, and elastic restart round out the toolkit; every one is amortized bookkeeping against the $M/P$ clock.</p>
+
+<div class="artifact-box"><div class="box-title">Artifact 32.1 &mdash; Ring All-Reduce and a ZeRO Planner, From Scratch</div>
+<p>The sandbox cannot launch multiple processes, so <code>torch.distributed</code> is out; instead the $P$ workers are $P$ numpy arrays in one process, and every byte that would cross a link is counted explicitly &mdash; the algorithm and the counts are exactly NCCL-ring's, only the transport is simulated. The module implements both ring phases with explicit chunk indices, asserts exact agreement with a direct sum (integer-valued data, so summation order cannot hide errors), asserts the per-worker wire count equals $2\frac{P-1}{P}S$ <em>exactly</em> for five $(P, S)$ pairs, and shows by counting that gather-then-broadcast moves $P\times$ more through the root's link. The planner then prices DP and ZeRO-1/2/3 per device, with the 16-bytes-per-parameter Adam breakdown asserted against a hand count on a 46-parameter MLP and cross-checked against <code>torch.optim.Adam</code>'s actual state tensors.</p>
+<pre><code>"""Artifact 32.1 -- Ring all-reduce from scratch, plus a ZeRO parallelism planner.
+
+torch.distributed cannot launch multiple processes in this sandbox, so the P
+"workers" are simulated as P numpy arrays inside one process, and every byte
+that would cross the wire is counted explicitly.  The algorithm and the byte
+counts are exactly what NCCL's ring would do; only the transport is fake.
+"""
+import numpy as np
+
+try:
+    import torch
+except ImportError:
+    torch = None
+
+# ----------------------------- ring all-reduce ------------------------------
+
+def ring_allreduce(bufs):
+    """All-reduce (sum) across P simulated workers arranged in a ring.
+
+    bufs : list of P 1-D numpy arrays of equal length n, with P | n.
+    Mutates bufs in place; afterwards every worker holds sum_p bufs[p].
+    Returns sent[p] = bytes worker p transmitted on its outgoing link.
+    """
+    P, n = len(bufs), bufs[0].size
+    assert n % P == 0, "pad the tensor so P divides its length"
+    chunks = [np.split(b, P) for b in bufs]          # views into each buffer
+    sent = [0] * P
+
+    # Phase 1: reduce-scatter, P-1 steps.  At step t worker p sends chunk
+    # (p - t) mod P to its right neighbour p+1, which adds it in.  After the
+    # last step, worker p owns the fully reduced chunk (p + 1) mod P.
+    for t in range(P - 1):
+        msgs = []
+        for p in range(P):
+            c = (p - t) % P
+            msgs.append(((p + 1) % P, c, chunks[p][c].copy()))
+            sent[p] += chunks[p][c].nbytes
+        for dst, c, payload in msgs:                 # deliver only after all send
+            chunks[dst][c] += payload
+
+    # Phase 2: all-gather, P-1 steps.  At step t worker p forwards the
+    # completed chunk (p + 1 - t) mod P to its right neighbour, overwriting.
+    for t in range(P - 1):
+        msgs = []
+        for p in range(P):
+            c = (p + 1 - t) % P
+            msgs.append(((p + 1) % P, c, chunks[p][c].copy()))
+            sent[p] += chunks[p][c].nbytes
+        for dst, c, payload in msgs:
+            chunks[dst][c][:] = payload
+    return sent
+
+
+def naive_allreduce_root_bytes(P, nbytes):
+    """Gather-to-root then broadcast: bytes crossing the ROOT's single link.
+
+    Root receives (P-1) full tensors, then sends (P-1) full copies back out.
+    That link is the bottleneck; everyone else moves only 2*nbytes.
+    """
+    return 2 * (P - 1) * nbytes
+
+
+# --------------------------- ZeRO memory planner ----------------------------
+
+# Mixed-precision Adam, bytes per parameter (fp16/bf16 compute, fp32 state):
+#   2 (bf16 weights) + 2 (bf16 grads) + 4 (fp32 master) + 4 (m) + 4 (v) = 16.
+W_LO, G_LO, OPT = 2, 2, 12          # OPT = fp32 master copy + m + v
+
+def per_device_bytes(N, P, stage):
+    """Per-device bytes for N params, DP degree P, ZeRO stage 0..3.
+    Excludes activations, buffers, and framework overhead."""
+    if stage == 0:  return N * (W_LO + G_LO + OPT)           # plain DP
+    if stage == 1:  return N * (W_LO + G_LO + OPT / P)       # shard optimizer
+    if stage == 2:  return N * (W_LO + (G_LO + OPT) / P)     # + shard grads
+    if stage == 3:  return N * (W_LO + G_LO + OPT) / P       # + shard weights
+    raise ValueError(stage)
+
+def plan(N, P_list, budget_gb, label):
+    print(f"\n--- planner: {label}, N = {N:.1e} params, budget {budget_gb} GB/device ---")
+    print(f"{'DP':&gt;5} | " + " | ".join(f"{s:&gt;12}" for s in
+          ["DP (ZeRO-0)", "ZeRO-1", "ZeRO-2", "ZeRO-3"]))
+    for P in P_list:
+        row = []
+        for stage in range(4):
+            gb = per_device_bytes(N, P, stage) / 1e9
+            row.append(f"{gb:8.1f} {'ok ' if gb &lt;= budget_gb else 'XXX'}")
+        print(f"{P:&gt;5} | " + " | ".join(f"{r:&gt;12}" for r in row))
+
+
+# --------------------------------- checks -----------------------------------
+
+if __name__ == "__main__":
+    rng = np.random.default_rng(0)
+
+    # (a) exact correctness: integer-valued float64 so summation order is exact
+    for P, n in [(2, 8), (4, 16), (5, 40), (8, 64), (16, 4096)]:
+        data = [rng.integers(-1000, 1000, n).astype(np.float64) for _ in range(P)]
+        truth = np.sum(data, axis=0)
+        bufs = [d.copy() for d in data]
+        sent = ring_allreduce(bufs)
+        for b in bufs:
+            assert np.array_equal(b, truth), "ring result != direct sum"
+
+        # (b) bytes on wire per worker == 2*(P-1)/P * S, exactly, every worker
+        S = data[0].nbytes
+        expect = 2 * (P - 1) * S // P
+        assert all(s == expect for s in sent), (sent, expect)
+
+        # (c) gather+broadcast bottleneck moves strictly more than a ring worker
+        naive = naive_allreduce_root_bytes(P, S)
+        assert naive &gt; expect and naive == P * expect
+        print(f"P={P:&gt;3} S={S:&gt;6}B  ring/worker={expect:&gt;6}B  "
+              f"= 2(P-1)/P*S exactly; naive root link={naive:&gt;7}B  ({P}x worse)")
+
+    # (d) 16 bytes/param, hand-counted on a concrete 2-layer MLP (8-&gt;4-&gt;2):
+    #     W1 8x4 + b1 4 + W2 4x2 + b2 2  -&gt;  32+4+8+2 = 46 parameters.
+    shapes = [(4, 8), (4,), (2, 4), (2,)]
+    n_params = sum(int(np.prod(s)) for s in shapes)
+    assert n_params == 46
+    hand = 0
+    for s in shapes:                       # materialize all six tensors and count
+        hand += np.zeros(s, np.float16).nbytes      # bf16/fp16 weights
+        hand += np.zeros(s, np.float16).nbytes      # low-precision grads
+        hand += 3 * np.zeros(s, np.float32).nbytes  # fp32 master + m + v
+    assert hand == 16 * n_params == per_device_bytes(n_params, 1, 0) == 736
+    print(f"\nAdam mixed-precision hand count: {n_params} params -&gt; {hand} bytes "
+          f"= 16 x {n_params}  [exact]")
+
+    # torch cross-check: Adam really does keep two fp32 state tensors per param
+    if torch is not None:
+        tp = [torch.nn.Parameter(torch.randn(*s)) for s in shapes]
+        opt = torch.optim.Adam(tp)
+        sum((p ** 2).sum() for p in tp).backward()
+        opt.step()
+        st = sum(v[k].numel() for v in opt.state.values()
+                 for k in ("exp_avg", "exp_avg_sq"))
+        assert st == 2 * n_params
+        print(f"torch.optim.Adam state elements: {st} = 2 x {n_params}  [matches]")
+    else:
+        print("[skipped: torch not installed]")
+
+    # (e) the planner on two real model sizes, 80 GB devices (GB = 1e9 bytes)
+    plan(7e9,  [8, 64, 512], 80, "7B model")
+    plan(70e9, [8, 64, 512], 80, "70B model")
+    print("\nAll assertions passed.")
+</code></pre>
+<p>Running it prints one line per configuration confirming the exact wire count &mdash; e.g. <code>P=  8 S=   512B  ring/worker=   896B  = 2(P-1)/P*S exactly; naive root link=   7168B  (8x worse)</code> &mdash; then the Adam hand count (<code>46 params -&gt; 736 bytes = 16 x 46 [exact]</code>, torch state <code>92 = 2 x 46 [matches]</code>), and the planner tables: for the 7B model, plain DP shows <code>112.0 XXX</code> at every DP degree while ZeRO-1 at $P=8$ shows <code>38.5 ok</code>; for the 70B model only ZeRO-3 at $P \ge 64$ is feasible (<code>17.5 ok</code> at 64, <code>2.2 ok</code> at 512). It finishes with <code>All assertions passed</code> in about 13&nbsp;s, nearly all of it torch import.</p>
+</div>
+
+<div class="key-takeaways">
+<div class="kt-title">Key Takeaways</div>
+<ul>
+<li>Ring all-reduce moves exactly $2\frac{P-1}{P}S$ bytes per worker &mdash; bandwidth-optimal and under $2S$ for any worker count; only the $2(P-1)\alpha$ latency term grows with scale, which is why small messages get trees and gradients get bucketed. <span class="tag tag-certain">Certain</span></li>
+<li>Mixed-precision Adam costs 16 bytes per parameter (2+2 low-precision weights/grads, 12 fp32 state); ZeRO-1/2 shard 12&ndash;14 of those bytes at zero extra communication, ZeRO-3 shards all 16 for 1.5&times; the wire volume. <span class="tag tag-certain">Certain</span></li>
+<li>Tensor parallelism pays $\approx 8\frac{t-1}{t}\,B\,n\,d\,b$ bytes per layer of blocking traffic, so it lives inside the NVLink domain; data and pipeline parallelism, with per-step overlappable or point-to-point traffic, take the inter-node links. <span class="tag tag-certain">Certain</span></li>
+<li>The pipeline bubble is $\frac{p-1}{m+p-1}$; 1F1B cuts activation memory from $O(m)$ to $O(p)$ without touching the bubble, interleaving with $v$ chunks divides the bubble by $\approx v$ for $v\times$ the communication. <span class="tag tag-certain">Certain</span></li>
+<li>At $10^4$-GPU scale the cluster fails every few hours ($M_1/P$), so checkpoint at the Young&ndash;Daly interval $\sqrt{2\delta M}$ and expect silent data corruption to be a real line item, per public frontier-run reports. <span class="tag tag-verify">Verify</span></li>
+</ul>
+</div>
+</div>

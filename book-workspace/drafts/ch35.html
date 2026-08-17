@@ -1,0 +1,352 @@
+<div class="chapter" id="ch35">
+<div class="chapter-header"><div class="ch-label">Chapter 35</div><h3>Diffusion, Flow Matching, and Non-Autoregressive Generation</h3></div>
+
+<div class="learning-objectives">
+<div class="lo-title">Learning Objectives</div>
+<ul>
+<li>Derive the forward noising process, its closed-form marginal $x_t = \sqrt{\bar\alpha_t}\,x_0 + \sqrt{1-\bar\alpha_t}\,\epsilon$, and the simplified noise-prediction loss, and connect it to denoising score matching via Tweedie's formula.</li>
+<li>State the probability-flow ODE and explain why it shares every marginal $p_t$ with the reverse SDE, with deterministic (DDIM-style) sampling as its discretization.</li>
+<li>Derive conditional flow matching and rectified flow, and explain why a straighter probability path permits fewer sampling steps at fixed discretization error.</li>
+<li>Explain classifier-free guidance as score extrapolation and quantify its quality&ndash;diversity trade.</li>
+<li>Implement DDPM and conditional flow matching in working code on an analytic 2D target, verifying the learned score and velocity against closed forms.</li>
+</ul>
+</div>
+
+<div class="read-alongside"><strong>Read alongside</strong> &mdash; Murphy, <em>Probabilistic Machine Learning: Advanced Topics</em>, for the full measure-theoretic treatment of diffusion, score matching, and SDE samplers; Prince, <em>Understanding Deep Learning</em>, whose diffusion diagrams are the best visual companion to the algebra below.</div>
+
+<p>Everything before this chapter generated data one token at a time under the autoregressive factorization of Chapter 23, paying the serial-decoding costs itemized in Chapter 33. This chapter develops the alternative: generate <em>everything at once, badly</em>, then spend iterations refining it. Diffusion models (Section 35.2&ndash;35.4) implement this as learned denoising; flow matching (Section 35.5) implements it as learned transport along a chosen probability path. The central claim, argued in Section 35.5 and tested empirically in Artifact 35.1, is that these are the same object under reparameterization &mdash; flow matching displaced diffusion in frontier image models because its default path is <em>straighter</em>, so ODE solvers need fewer steps, not because the theory changed. The latent-variable machinery comes from Chapter 9, the backbone architectures from Chapters 18 and 20, and the few-step frontier (Section 35.9) is this decade's answer to the inference economics of Chapter 33.</p>
+
+<h4>35.1 From Autoencoders to Diffusion</h4>
+<p>The VAE of Chapter 9 asks a decoder to map a low-dimensional Gaussian latent to a data sample in <em>one</em> function evaluation, and its Gaussian likelihood averages over everything the latent fails to specify &mdash; hence blurry samples. GANs sharpen this with an adversarial objective at the price of an unstable min-max game with no monitorable loss. Diffusion's move is to decompose one impossible inverse problem into a thousand trivial ones: corrupt data with a fixed, known noising process until it is indistinguishable from a Gaussian, then learn only the tiny conditional denoising step at each noise level. Each step is a <em>regression</em> with an analytically known target, so training inherits the stability of supervised learning &mdash; a mean-squared error that goes down &mdash; while sampling composes hundreds of steps into an expressive map. That trade &mdash; stable training, expensive sampling &mdash; is the defining economics of this model family, and Sections 35.4, 35.5, and 35.9 are all, at bottom, attacks on the sampling bill. <span class="tag tag-certain">Certain</span></p>
+
+<h4>35.2 The Forward Process</h4>
+
+<div class="definition"><div class="box-title">Definition 35.1 (Variance-preserving forward process)</div>
+<p>Fix a schedule $\beta_1,\dots,\beta_T \in (0,1)$. The forward (noising) Markov chain on data $x_0 \sim p_{\text{data}}$ is
+$$x_k = \sqrt{1-\beta_k}\,x_{k-1} + \sqrt{\beta_k}\,\epsilon_k, \qquad \epsilon_k \sim \mathcal{N}(0, I),$$
+i.e. $q(x_k \mid x_{k-1}) = \mathcal{N}\!\big(\sqrt{1-\beta_k}\,x_{k-1},\, \beta_k I\big)$. Write $\alpha_k = 1-\beta_k$ and $\bar\alpha_k = \prod_{j\le k}\alpha_j$.</p></div>
+
+<p>The shrink factor $\sqrt{1-\beta_k}$ is what makes the process <em>variance-preserving</em>: if $\mathrm{Var}[x_{k-1}] = I$ then $\mathrm{Var}[x_k] = (1-\beta_k)I + \beta_k I = I$, so activations neither explode nor vanish across a thousand steps &mdash; the same signal-propagation discipline as Chapter 12, applied to a stochastic process. The practical payoff of this specific chain is that the $k$-step marginal collapses to a single Gaussian:</p>
+
+<div class="theorem"><div class="box-title">Theorem 35.1 (Closed-form marginal)</div>
+<p>$q(x_k \mid x_0) = \mathcal{N}\!\big(\sqrt{\bar\alpha_k}\,x_0,\; (1-\bar\alpha_k) I\big)$, equivalently $x_k = \sqrt{\bar\alpha_k}\,x_0 + \sqrt{1-\bar\alpha_k}\,\epsilon$ with $\epsilon \sim \mathcal{N}(0,I)$.</p>
+<p><strong>Proof.</strong> Induction on $k$. Trivial at $k=0$. Assume $x_{k-1} = \sqrt{\bar\alpha_{k-1}}x_0 + \sqrt{1-\bar\alpha_{k-1}}\,\epsilon'$. Then
+$x_k = \sqrt{\alpha_k \bar\alpha_{k-1}}\,x_0 + \sqrt{\alpha_k(1-\bar\alpha_{k-1})}\,\epsilon' + \sqrt{\beta_k}\,\epsilon_k$. The two independent Gaussian terms sum to a Gaussian with variance $\alpha_k(1-\bar\alpha_{k-1}) + \beta_k = \alpha_k - \alpha_k\bar\alpha_{k-1} + 1 - \alpha_k = 1 - \bar\alpha_k$ per coordinate. $\blacksquare$</p></div>
+
+<p>This is the single most load-bearing formula in the chapter: training never simulates the chain. It samples $k$ uniformly, jumps straight to $x_k$ in one line, and regresses. The signal-to-noise ratio $\mathrm{SNR}(k) = \bar\alpha_k/(1-\bar\alpha_k)$ decreases monotonically from $\approx 10^4$ to $\approx 10^{-4}$ under the standard linear schedule $\beta_k \in [10^{-4}, 0.02]$, $T=1000$, so by $k=T$ the marginal is numerically indistinguishable from $\mathcal{N}(0,I)$ and sampling can start from pure noise. Schedule design (linear, cosine, log-SNR-uniform) is exactly the choice of how to allocate model capacity across noise levels. <span class="tag tag-certain">Certain</span></p>
+
+<h4>35.3 Score Matching and the Reverse Process</h4>
+<p>To generate, we must reverse the chain, and the reversal is governed by the <em>score</em> $\nabla_x \log p_t(x)$ of each noised marginal. The bridge between "predict the noise" and "know the score" is a conditional-expectation identity often called Tweedie's formula:</p>
+
+<div class="theorem"><div class="box-title">Theorem 35.2 (Denoising score matching / Tweedie)</div>
+<p>Let $p_t$ be the marginal of $x_t = \alpha_t x_0 + \sigma_t \epsilon$ with $x_0 \sim p_{\text{data}}$, $\epsilon \sim \mathcal{N}(0,I)$ independent. Then
+$$\nabla_x \log p_t(x) \;=\; -\frac{\mathbb{E}[\epsilon \mid x_t = x]}{\sigma_t},$$
+and consequently the minimizer of the noise-prediction loss $\mathcal{L}_{\text{simple}}(\theta) = \mathbb{E}_{x_0,\epsilon,t}\big[\|\epsilon_\theta(x_t,t) - \epsilon\|_2^2\big]$ satisfies $\epsilon_{\theta^*}(x,t) = \mathbb{E}[\epsilon\mid x_t=x]$, so $s_{\theta^*}(x,t) = -\epsilon_{\theta^*}(x,t)/\sigma_t$ is the exact score.</p>
+<p><strong>Proof.</strong> $p_t(x) = \int p_{\text{data}}(x_0)\, \mathcal{N}(x;\alpha_t x_0, \sigma_t^2 I)\, dx_0$. Differentiating under the integral, $\nabla_x \mathcal{N}(x;\alpha_t x_0,\sigma_t^2 I) = \frac{\alpha_t x_0 - x}{\sigma_t^2}\,\mathcal{N}(\cdot)$, so
+$\nabla_x \log p_t(x) = \mathbb{E}\!\left[\frac{\alpha_t x_0 - x}{\sigma_t^2} \,\Big|\, x_t = x\right] = -\frac{\mathbb{E}[\epsilon \mid x_t=x]}{\sigma_t}$,
+using $x = \alpha_t x_0 + \sigma_t\epsilon$. The second claim is the standard fact that the $L^2$-optimal predictor of $\epsilon$ given $x_t$ is the conditional mean (Chapter 6). $\blacksquare$</p></div>
+
+<p>$\mathcal{L}_{\text{simple}}$ is the loss of Ho et al.'s DDPM; it is a fixed reweighting of the variational bound one would derive Chapter-9-style, and the reweighting empirically <em>helps</em> perceptual quality by not over-weighting near-zero noise levels. <span class="tag tag-certain">Certain</span> With the score in hand, Anderson's time-reversal theorem gives the generative dynamics: if the forward process is the SDE $dx = f(x,t)\,dt + g(t)\,dw$, the reverse-time process
+$$dx = \big[f(x,t) - g(t)^2 \nabla_x \log p_t(x)\big]dt + g(t)\,d\bar w$$
+has the same marginals traversed backward. DDPM's ancestral sampler &mdash; at each step, form $\hat x_0 = (x_k - \sqrt{1-\bar\alpha_k}\,\epsilon_\theta)/\sqrt{\bar\alpha_k}$, then sample the Gaussian posterior step toward $k' \lt k$ &mdash; is precisely an Euler&ndash;Maruyama-style discretization of this reverse SDE. <span class="tag tag-certain">Certain</span></p>
+
+<div class="example"><div class="box-title">Example 35.1 (Score and optimal noise prediction by hand)</div>
+<p>Take 1D data $x_0 \sim \mathcal{N}(2, 0.25)$ and a step with $\bar\alpha = 0.64$, so $\sqrt{\bar\alpha} = 0.8$, $\sigma^2 = 0.36$, $\sigma = 0.6$. By Theorem 35.1 the marginal is $\mathcal{N}(0.8\cdot 2,\; 0.64\cdot 0.25 + 0.36) = \mathcal{N}(1.6,\, 0.52)$. At $x = 2.5$:
+score $= -(2.5-1.6)/0.52 = -1.7308$; optimal noise prediction $\epsilon^* = -\sigma \cdot \text{score} = 0.6 \times 1.7308 = 1.0385$. Cross-check via the posterior over clean data: $\mathbb{E}[x_0\mid x] = 2 + \frac{0.8\cdot 0.25}{0.52}(2.5-1.6) = 2.3462$, and indeed $0.8 \times 2.3462 + 0.6 \times 1.0385 = 1.8769 + 0.6231 = 2.5 = x$: the denoised mean and the predicted noise reassemble the observation exactly.</p></div>
+
+<h4>35.4 The Probability-Flow ODE and Deterministic Samplers</h4>
+
+<div class="theorem"><div class="box-title">Theorem 35.3 (Probability-flow ODE)</div>
+<p>The deterministic ODE
+$$\frac{dx}{dt} = f(x,t) - \tfrac{1}{2}g(t)^2 \nabla_x \log p_t(x)$$
+has the same time-$t$ marginals $p_t$ as the forward SDE $dx = f\,dt + g\,dw$ (and hence as the reverse SDE).</p>
+<p><strong>Proof sketch.</strong> The SDE's marginals obey the Fokker&ndash;Planck equation $\partial_t p = -\nabla\!\cdot\!(f p) + \tfrac{1}{2}g^2 \Delta p$. Rewrite the diffusion term as a transport term: $\tfrac{1}{2}g^2\Delta p = \nabla\!\cdot\!\big(\tfrac{1}{2}g^2 p\, \nabla \log p\big)$, using $\nabla p = p\nabla\log p$. Then $\partial_t p = -\nabla\!\cdot\!\big[(f - \tfrac{1}{2}g^2\nabla\log p)\,p\big]$, which is the continuity equation of the stated ODE: a deterministic velocity field transporting exactly the same density. $\blacksquare$</p></div>
+
+<p>The consequence is practical, not decorative. The same trained network $\epsilon_\theta$ can be sampled stochastically (reverse SDE; DDPM ancestral) or deterministically (probability-flow ODE; DDIM with $\eta=0$ is its discretization &mdash; both live in one sampler with a noise-injection knob $\eta$, as in Artifact 35.1). Determinism buys three things: fewer steps for a given accuracy, because ODE solvers of higher order exist and there is no injected noise to average away; an invertible map, so real images can be <em>encoded</em> to noise and edited; and a well-defined notion of a sample's trajectory, which few-step distillation (Section 35.9) needs as a training target. The cost of every sampler, stochastic or not, is measured in <em>NFE</em> &mdash; number of function evaluations of the network &mdash; and the discretization error of any solver is controlled by the curvature of the trajectories it integrates. That observation is the entire motivation for the next section. <span class="tag tag-certain">Certain</span></p>
+
+<h4>35.5 Flow Matching and Rectified Flow</h4>
+<p>Flow matching starts from the continuity equation directly: pick <em>any</em> path of densities $p_t$ from noise ($t{=}0$) to data ($t{=}1$), realized by a velocity field $u_t$, and regress a network $v_\theta$ onto $u_t$. The marginal field $u_t$ is intractable &mdash; it involves an expectation over the whole dataset &mdash; but a conditional construction sidesteps this exactly as Theorem 35.2 sidestepped the intractable score:</p>
+
+<div class="definition"><div class="box-title">Definition 35.2 (Conditional flow matching, linear path)</div>
+<p>Draw $x_0 \sim \mathcal{N}(0,I)$ (noise), $x_1 \sim p_{\text{data}}$, $t \sim \mathrm{U}[0,1]$, and set $x_t = (1-t)x_0 + t x_1$. The conditional target velocity is the constant $u_t(x_t \mid x_0, x_1) = x_1 - x_0$, and the CFM loss is
+$$\mathcal{L}_{\text{CFM}}(\theta) = \mathbb{E}_{x_0, x_1, t}\big[\|v_\theta(x_t, t) - (x_1 - x_0)\|_2^2\big].$$</p></div>
+
+<div class="theorem"><div class="box-title">Theorem 35.4 (CFM trains the marginal field)</div>
+<p>$\nabla_\theta \mathcal{L}_{\text{CFM}} = \nabla_\theta \mathcal{L}_{\text{FM}}$ where $\mathcal{L}_{\text{FM}}(\theta) = \mathbb{E}_{t, x_t \sim p_t}\|v_\theta(x_t,t) - u_t(x_t)\|_2^2$ and $u_t(x) = \mathbb{E}[x_1 - x_0 \mid x_t = x]$ is the marginal velocity generating $p_t$.</p>
+<p><strong>Proof.</strong> Expand both squares. The $\|v_\theta\|^2$ terms are identical in distribution. The cross terms agree by the tower rule: $\mathbb{E}\langle v_\theta(x_t,t), x_1 - x_0\rangle = \mathbb{E}\big\langle v_\theta(x_t,t), \mathbb{E}[x_1-x_0 \mid x_t]\big\rangle = \mathbb{E}\langle v_\theta, u_t(x_t)\rangle$. The remaining terms ($\|x_1-x_0\|^2$ vs. $\|u_t\|^2$) are $\theta$-independent constants. So the two losses differ by a constant &mdash; the conditional variance of the target &mdash; and share gradients. $\blacksquare$</p></div>
+
+<p>That constant matters for reading loss curves: the CFM loss plateaus at the irreducible conditional variance of $x_1 - x_0$ given $x_t$, not at zero (1.886 in Artifact 35.1's run, against a noise-prediction plateau of 0.253 &mdash; both are floors, not failures). Sampling is a forward-Euler (or higher-order) integration of $dx/dt = v_\theta(x,t)$ from Gaussian noise.</p>
+
+<h5>35.5.1 The equivalence, and why straightness wins</h5>
+<p>Now the chapter's thesis. For a Gaussian path $x_t = a_t x_1 + b_t x_0$, the marginal velocity, the score, and the noise/data predictions are all affine functions of one another at each $t$: $u_t(x) = \frac{\dot a_t}{a_t}x + b_t\big(\dot b_t - \frac{\dot a_t b_t}{a_t}\big)\nabla_x \log p_t(x)$, and each is recoverable from $\mathbb{E}[x_1 \mid x_t]$. A diffusion model and a flow-matching model trained on the same data learn the <em>same</em> conditional expectation in different clothes; the choices that remain are the schedule $(a_t, b_t)$, the prediction target (which sets the loss weighting across $t$), and the sampler. <span class="tag tag-certain">Certain</span> What flow matching changed in practice is the default path: the linear interpolant's conditional trajectories are straight lines, and its marginal trajectories are far straighter than the strongly curved variance-preserving spirals of DDPM. Straightness is the whole game for step count: forward Euler on a trajectory with constant velocity is <em>exact in one step</em>, and its global error otherwise scales with the trajectory's curvature. Rectified flow makes this quantitative and iterable: define straightness as $S = \int_0^1 \mathbb{E}\|x_1 - x_0 - v(x_t,t)\|_2^2\,dt$; after training, re-pair each noise sample with the data point its ODE actually reaches ("reflow") and retrain on the new coupling. Each reflow round provably does not increase transport cost and empirically slashes curvature, which is why one or two rounds enable few-step sampling. <span class="tag tag-likely">Likely</span> Frontier image and video systems &mdash; Stable Diffusion 3's rectified-flow transformer and Flux among them &mdash; train with this objective. <span class="tag tag-verify">Verify</span> The theory did not change; the parameterization with the smaller discretization error won.</p>
+
+<div class="warning-box"><div class="box-title">Common Pitfall</div>
+<p>Convention collisions between the two formalisms produce code that runs and silently generates garbage. DDPM indexes time so that $k{=}0$ is <em>data</em> ($\bar\alpha_0 = 1$); the linear-path flow matching above puts <em>noise</em> at $t{=}0$. Port a sampler between the two without flipping time and you integrate toward the prior, collapsing every sample to a fuzzy blob near the origin. Two adjacent bugs from the same family: converting noise prediction to score with the wrong sign or scale (it is $s = -\epsilon_\theta/\sigma_t$, not $-\epsilon_\theta/\sigma_t^2$ &mdash; the $\sigma_t^2$ variant comes from conflating score with $\nabla_x \log \mathcal{N}$'s raw residual), and evaluating the flow-matching conditional expectation at $t{=}1$ exactly, where the $1/(1-t)$ in $\mathbb{E}[x_0 \mid x_t]$ divides by zero &mdash; hence the $t \sim \mathrm{U}[10^{-3}, 1-10^{-3}]$ clamp in Artifact 35.1.</p></div>
+
+<h4>35.6 Classifier-Free Guidance</h4>
+<p>Conditional generation trains $\epsilon_\theta(x_t, t, c)$ on (data, condition) pairs, randomly dropping $c$ (10&ndash;20% of batches) so the same network also learns the unconditional score. At sampling time, classifier-free guidance extrapolates:
+$$\tilde\epsilon_w = \epsilon_\theta(x_t, \varnothing) + w\big(\epsilon_\theta(x_t, c) - \epsilon_\theta(x_t, \varnothing)\big), \qquad w \ge 1.$$
+In score terms, $\tilde s = s(x\mid c) + (w-1)\nabla_x \log p_t(c \mid x)$ by Bayes' rule &mdash; guidance adds a push up the gradient of an <em>implicit</em> classifier's confidence, which is why it needs no separately trained classifier. The trade is explicit in the formula: $w$ sharpens the conditional distribution toward high-likelihood-under-$c$ regions, raising fidelity and prompt adherence while shrinking diversity, and large $w$ (typical text-to-image defaults sit near $w \approx 5$&ndash;$8$ <span class="tag tag-verify">Verify</span>) produces the familiar oversaturated, contrast-crushed look. Two working caveats. First, the guided field is generally <em>not</em> the score of any normalized distribution along the whole trajectory, so "sampling from $p(x\mid c)^w p(x)^{1-w}$" is a heuristic description, not a theorem. <span class="tag tag-likely">Likely</span> Second, guidance doubles NFE (two forward passes per step) unless distilled into the student network &mdash; which is standard in few-step systems. The same extrapolation applies verbatim to velocity fields: replace $\epsilon$ with $v$ everywhere. <span class="tag tag-certain">Certain</span></p>
+
+<h4>35.7 Architectures: U-Net to DiT</h4>
+<p>The denoiser is architecture-agnostic in principle &mdash; it is a map $(x_t, t, c) \mapsto \mathbb{R}^{\dim x}$ &mdash; and the field has used two. The U-Net (from Chapter 16's convolutional lineage) processes the image at multiple resolutions with skip connections between mirrored down/up stages and self-attention at coarse resolutions; timestep and condition enter via added embeddings and cross-attention. The Diffusion Transformer (DiT) discards this entirely: patchify the (latent) image as in Chapter 20's ViT, run a plain transformer, and inject $t$ and $c$ through adaLN-Zero &mdash; a conditioning MLP that regresses per-block scale/shift/gate parameters, with gates initialized to zero so every block starts as identity (the Chapter 12 signal-propagation trick, again). DiT's decisive property is that sample quality tracks total forward FLOPs across depth/width/patch-size trades, reproducing transformer scaling behavior (Chapter 24) in a domain U-Nets never exhibited cleanly; DiT-XL/2 reached FID 2.27 on class-conditional ImageNet 256&times;256 with guidance. <span class="tag tag-verify">Verify</span> Current frontier text-to-image stacks (SD3, Flux) use multimodal DiT variants in which text and image tokens share attention. <span class="tag tag-verify">Verify</span></p>
+
+<h4>35.8 Latent Diffusion</h4>
+<p>Running a thousand denoiser evaluations at 1024&times;1024&times;3 is economically absurd, and perceptually most of those bits are texture the decoder can hallucinate. Latent diffusion therefore trains a VAE-style autoencoder (Chapter 9, upgraded with perceptual and adversarial losses so reconstructions stay sharp) and runs the entire diffusion in its latent space. Stable Diffusion's original recipe compresses 512&times;512&times;3 to 64&times;64&times;4 &mdash; a factor-8 spatial downsampling, 48&times; fewer elements &mdash; before any denoising happens; later systems widened the latent channel count (e.g. 16) to raise the reconstruction ceiling. <span class="tag tag-verify">Verify</span> For a DiT backbone the leverage is quadratic-plus: token count falls 64&times; with the spatial factor, and attention cost falls with its square (Chapter 18). The division of labor is clean and worth internalizing: the autoencoder owns imperceptible high-frequency detail; diffusion owns semantic composition. The same pattern &mdash; do the hard generative work in a learned compressed space &mdash; recurs in video models and in the discrete-token systems of Section 35.10. <span class="tag tag-certain">Certain</span></p>
+
+<h4>35.9 Few-Step Generation</h4>
+<p>Between 2022 and today the sampling bill fell from ~1000 NFE to 1&ndash;4 with modest quality loss, through three overlapping strategies. <em>Trajectory distillation:</em> progressive distillation halves step count repeatedly by teaching a student to jump two teacher ODE steps at once; adversarial distillation (SDXL-Turbo lineage) adds a discriminator to sharpen 1&ndash;4-step outputs. <em>Consistency models</em> train a network mapping any point on a probability-flow trajectory directly to its endpoint, enforcing self-consistency between adjacent trajectory points &mdash; usable as distillation or trained from scratch; simplified continuous-time variants (sCM) closed most of the gap to full samplers at 2 NFE. <span class="tag tag-verify">Verify</span> <em>Direct few-step objectives:</em> MeanFlow (2025) reparameterizes the target as the <em>average</em> velocity over an interval rather than the instantaneous velocity, satisfying an identity that links the two, and reached FID 3.43 on ImageNet 256&times;256 in a single NFE trained from scratch &mdash; no teacher, no distillation. <span class="tag tag-verify">Verify</span> Successors refining the MeanFlow objective pushed 1-NFE FID to the mid-2s by early 2026, at which point one-step generation stopped being a stunt and became a design point. <span class="tag tag-verify">Verify</span> The conceptual through-line: every one of these methods presupposes the deterministic trajectory structure of Section 35.4 &mdash; you cannot distill or shortcut a trajectory that is not well-defined &mdash; and every one benefits from the straighter paths of Section 35.5. The frontier question is no longer "can we sample in one step" but how much mode coverage one step silently sacrifices, which standard FID measures poorly. <span class="tag tag-contested">Contested</span> Matched-compute evaluations with coverage-sensitive metrics (recall, per-mode statistics as in Artifact 35.1) would settle it; today's evidence says the gap is real but shrinking.</p>
+
+<h4>35.10 Diffusion Language Models</h4>
+<p>Text lives on a discrete alphabet, so Gaussian corruption does not apply directly; the dominant discrete corruption is <em>masking</em>: the forward process replaces tokens with <code>[MASK]</code> at a rate increasing in $t$, and the model learns to unmask &mdash; a time-indexed generalization of BERT-style infilling whose reverse process fills in many positions per step, in parallel, with revision of earlier choices. The pitch against Chapter 23's autoregression is throughput and bidirectional editing; the cost is that exact likelihood factorization is lost and per-step parallel predictions ignore within-step dependencies. The field moved fast: LLaDA showed 8B-parameter masked diffusion approaching comparable autoregressive models; Mercury Coder (Feb 2025) shipped commercially at ~1,100 tokens/s on H100; Gemini Diffusion (May 2025) reported 1,479 tokens/s with coding scores matching its AR counterpart (HumanEval 89.6% vs. 90.2%); Seed Diffusion (Aug 2025) reported 2,146 tokens/s on H20 GPUs for code at competitive quality. All of these are vendor-reported speeds on vendor-chosen hardware. <span class="tag tag-verify">Verify</span> The consolidating recipe in early 2026 is to initialize from a pretrained AR model and continue training with the diffusion objective, plus block-wise hybrids that are AR across blocks and diffusion within them &mdash; recovering KV-cache-style reuse (Chapter 33) that pure diffusion forfeits. <span class="tag tag-likely">Likely</span> Whether diffusion displaces autoregression for general-purpose LLMs is genuinely contested: the pro case is a 5&ndash;10&times; latency advantage exactly where inference economics bind, the con case is that AR still holds the quality lead at matched scale and enjoys a decade of tooling. <span class="tag tag-contested">Contested</span> Our position: diffusion wins niches where parallel decoding and infilling dominate (code, editing, constrained generation) while AR remains the general-purpose default; a public, matched-compute scaling-law comparison (Chapter 24 methodology) would settle it, and none exists yet.</p>
+
+<div class="artifact-box"><div class="box-title">Artifact 35.1 &mdash; DDPM and Flow Matching on an Analytic Target</div>
+<p>Both generative families, built from scratch in NumPy &mdash; the MLPs, backprop, Adam, and samplers &mdash; on a 3-mode 2D Gaussian mixture chosen because the exact score of every noised marginal <em>and</em> the exact flow-matching velocity field have closed forms (Gaussian mixtures stay Gaussian mixtures under both paths). The DDPM side trains $\epsilon_\theta$ against Theorem 35.1's one-line marginal and samples through a unified DDIM sampler whose $\eta$ knob interpolates ancestral SDE sampling ($\eta{=}1$) and the probability-flow ODE ($\eta{=}0$) of Theorem 35.3. The flow-matching side trains $v_\theta$ on Definition 35.2's linear path and integrates with forward Euler. Hard assertions: (a) the learned score and velocity match the analytic fields on a density-weighted grid; (b) sample means, covariances, and mode weights match the target; (c) flow matching crosses a fixed energy-distance threshold in at least 2&times; fewer NFE than ancestral DDPM; (d) the hand-written backprop matches torch autograd.</p>
+<pre><code>"""Artifact 35.1 -- DDPM and conditional flow matching from scratch on an
+analytic 2D Gaussian-mixture target.
+
+Everything is plain NumPy: the MLPs, the backprop, the Adam updates, the
+samplers. The target is a 3-component isotropic Gaussian mixture, chosen
+because BOTH the exact score of every noised marginal AND the exact
+flow-matching velocity field are available in closed form, so the learned
+networks can be checked against ground truth -- not against a vibe.
+
+Self-checks (hard assertions):
+  (a) learned score (from eps-prediction) matches the analytic score on a
+      density-weighted grid at two noise levels, rel. error &lt; 0.15; same
+      for the learned FM velocity at t=0.5.
+  (b) samples from both methods match the target's mean, covariance
+      (Frobenius rel. error &lt; 0.15) and mode weights (abs error &lt; 0.06).
+  (c) FM crosses a fixed energy-distance threshold in &gt;=2x fewer function
+      evaluations than ancestral DDPM, and beats DDPM head-to-head at 2
+      and 4 NFE. Full NFE table printed.
+  (d) NumPy backprop gradients match torch autograd to &lt; 1e-5 (cross-check).
+"""
+import os, time
+for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+    os.environ.setdefault(_v, "1")   # tiny matmuls: BLAS threads only spin
+import numpy as np
+
+rng = np.random.default_rng(0)
+t0 = time.time()
+
+# ---------------- target: 3-mode isotropic Gaussian mixture ----------------
+W  = np.array([0.5, 0.3, 0.2])                       # mode weights
+MU = np.array([[-2.5, 0.0], [2.5, 1.5], [1.0, -2.5]])  # mode means
+S2 = np.array([0.45, 0.55, 0.35]) ** 2               # per-mode variances (iso)
+
+def sample_target(n, rg):
+    k = rg.choice(3, size=n, p=W)
+    return MU[k] + np.sqrt(S2[k])[:, None] * rg.standard_normal((n, 2))
+
+def resp(x, m, v):        # posterior mode responsibilities under N(m_k, v_k I)
+    lg = -np.sum((x[:, None, :] - m[None]) ** 2, -1) / (2 * v) - np.log(v)
+    lg = lg + np.log(W); lg -= lg.max(1, keepdims=True)
+    r = np.exp(lg); return r / r.sum(1, keepdims=True)
+
+def mixture_score(x, m, v):   # exact grad log p for mixture N(m_k, v_k I)
+    r = resp(x, m, v)
+    return np.einsum('nk,nkd-&gt;nd', r / v, m[None] - x[:, None, :])
+
+def mixture_logdens(x, m, v):  # log p_t up to const, for grid weighting
+    lg = -np.sum((x[:, None, :] - m[None]) ** 2, -1) / (2 * v) - np.log(v)
+    return np.log(np.exp(lg + np.log(W)).sum(1))
+
+def fm_marginal_velocity(x, t):
+    """Exact E[x1 - x0 | x_t] for path x_t=(1-t)x0 + t x1, x0~N(0,I), x1~mix."""
+    c = t * t * S2 + (1 - t) ** 2                    # per-mode marginal var
+    r = resp(x, t * MU, c)
+    Ex1 = MU[None] + (t * S2 / c)[:, None] * (x[:, None, :] - t * MU[None])
+    Ex0 = (x[:, None, :] - t * Ex1) / (1 - t)                       # E[x0|x,k]
+    return np.einsum('nk,nkd-&gt;nd', r, Ex1 - Ex0)
+
+# ---------------- tiny MLP + manual backprop + Adam ----------------
+def timefeat(t):              # Fourier features of scalar time in [0,1]
+    c = 2 * np.pi * t[:, None] * np.array([1., 2., 4., 8.])
+    return np.concatenate([t[:, None], np.sin(c), np.cos(c)], 1)   # 9 feats
+
+class MLP:                    # 11 -&gt; 64 -&gt; 64 -&gt; 2, tanh hidden, linear out
+    def __init__(self, rg, sizes=(11, 64, 64, 2)):
+        self.Ws = [rg.standard_normal((a, b)) * np.sqrt(1.0 / a)
+                   for a, b in zip(sizes[:-1], sizes[1:])]
+        self.bs = [np.zeros(b) for b in sizes[1:]]
+        self.m = [np.zeros_like(p) for p in self.Ws + self.bs]
+        self.v = [np.zeros_like(p) for p in self.Ws + self.bs]
+        self.step = 0
+
+    def forward(self, X):
+        self.hs = [X]
+        for i, (Wt, b) in enumerate(zip(self.Ws, self.bs)):
+            X = X @ Wt + b
+            if i &lt; len(self.Ws) - 1: X = np.tanh(X)
+            self.hs.append(X)
+        return X
+
+    def train_batch(self, X, Y, lr):        # MSE loss; returns loss value
+        out = self.forward(X); n = len(X)
+        g = 2 * (out - Y) / n                       # dL/dout
+        gW, gb = [None] * len(self.Ws), [None] * len(self.bs)
+        for i in reversed(range(len(self.Ws))):
+            gW[i] = self.hs[i].T @ g; gb[i] = g.sum(0)
+            if i: g = (g @ self.Ws[i].T) * (1 - self.hs[i] ** 2)
+        self.step += 1; b1, b2 = 0.9, 0.999          # Adam
+        for j, (p, gr) in enumerate(zip(self.Ws + self.bs, gW + gb)):
+            self.m[j] = b1 * self.m[j] + (1 - b1) * gr
+            self.v[j] = b2 * self.v[j] + (1 - b2) * gr ** 2
+            mh = self.m[j] / (1 - b1 ** self.step)
+            vh = self.v[j] / (1 - b2 ** self.step)
+            p -= lr * mh / (np.sqrt(vh) + 1e-8)
+        return np.mean((out - Y) ** 2)
+
+# ---------------- DDPM: schedule, training, ancestral/DDIM sampler ---------
+T = 1000
+beta = np.linspace(1e-4, 0.02, T)
+abar = np.concatenate([[1.0], np.cumprod(1 - beta)])   # abar[k], k=0..T
+
+net_eps, net_v = MLP(rng), MLP(rng)
+ITERS = 4000
+lr_at = lambda it: 3e-3 if it &lt; 2000 else (1e-3 if it &lt; 3200 else 3e-4)
+def main():
+    for it in range(ITERS):                                 # DDPM training
+        x0 = sample_target(512, rng)
+        k = rng.integers(1, T + 1, 512)
+        eps = rng.standard_normal((512, 2))
+        a = abar[k][:, None]
+        xt = np.sqrt(a) * x0 + np.sqrt(1 - a) * eps         # closed-form marginal
+        loss_d = net_eps.train_batch(np.concatenate([xt, timefeat(k / T)], 1),
+                                     eps, lr_at(it))
+    for it in range(ITERS):                                 # flow-matching training
+        x1 = sample_target(512, rng)
+        x0 = rng.standard_normal((512, 2))
+        t = rng.uniform(1e-3, 1 - 1e-3, 512)[:, None]
+        xt = (1 - t) * x0 + t * x1                          # linear (rectified) path
+        loss_f = net_v.train_batch(np.concatenate([xt, timefeat(t[:, 0])], 1),
+                                   x1 - x0, lr_at(it))
+    print(f"final losses  DDPM eps-MSE {loss_d:.4f} | FM velocity-MSE {loss_f:.4f}")
+
+    def ddim_sample(n, nfe, eta, rg):       # eta=1: ancestral DDPM; eta=0: PF-ODE
+        x = rg.standard_normal((n, 2))
+        seq = np.linspace(T, 0, nfe + 1).astype(int)
+        for k, kp in zip(seq[:-1], seq[1:]):
+            a, ap = abar[k], abar[kp]
+            e = net_eps.forward(np.concatenate([x, timefeat(np.full(n, k / T))], 1))
+            x0h = (x - np.sqrt(1 - a) * e) / np.sqrt(a)
+            s2 = (eta ** 2) * (1 - ap) / (1 - a) * (1 - a / ap) if kp else 0.0
+            x = (np.sqrt(ap) * x0h + np.sqrt(max(1 - ap - s2, 0.0)) * e
+                 + np.sqrt(s2) * rg.standard_normal((n, 2)))
+        return x
+
+    def fm_sample(n, nfe, rg):              # forward-Euler on dx/dt = v_theta(x,t)
+        x, dt = rg.standard_normal((n, 2)), 1.0 / nfe
+        for i in range(nfe):
+            t = np.full(n, i * dt + dt / 2)      # midpoint time label, still 1 NFE
+            x += dt * net_v.forward(np.concatenate([x, timefeat(t)], 1))
+        return x
+
+    # ---------------- (a) learned score / velocity vs analytic -----------------
+    g1 = np.linspace(-4, 4, 41)
+    grid = np.stack(np.meshgrid(g1, g1), -1).reshape(-1, 2)
+
+    def wrel(err_vec, ref_vec, logw):       # density-weighted relative L2 error
+        w = np.exp(logw - logw.max())
+        num = np.sum(w * np.sum(err_vec ** 2, 1))
+        den = np.sum(w * np.sum(ref_vec ** 2, 1))
+        return np.sqrt(num / den)
+
+    print("\n(a) learned vs analytic fields (density-weighted rel. L2 on grid)")
+    for k in (int(0.25 * T), int(0.55 * T)):
+        a = abar[k]
+        m_t, v_t = np.sqrt(a) * MU, a * S2 + (1 - a)
+        s_true = mixture_score(grid, m_t, v_t)
+        e = net_eps.forward(np.concatenate([grid, timefeat(np.full(len(grid), k / T))], 1))
+        s_hat = -e / np.sqrt(1 - a)                     # score from eps-prediction
+        r = wrel(s_hat - s_true, s_true, mixture_logdens(grid, m_t, v_t))
+        print(f"  DDPM score, abar={a:.3f}: rel err {r:.4f}")
+        assert r &lt; 0.15, f"score mismatch {r}"
+    tv = 0.5
+    v_true = fm_marginal_velocity(grid, tv)
+    v_hat = net_v.forward(np.concatenate([grid, timefeat(np.full(len(grid), tv))], 1))
+    lw = mixture_logdens(grid, tv * MU, tv * tv * S2 + (1 - tv) ** 2)
+    rv = wrel(v_hat - v_true, v_true, lw)
+    print(f"  FM velocity, t=0.5   : rel err {rv:.4f}")
+    assert rv &lt; 0.15, f"velocity mismatch {rv}"
+
+    # ---------------- (b) sample statistics vs target --------------------------
+    mean_true = W @ MU
+    cov_true = (np.einsum('k,kd,ke-&gt;de', W, MU, MU)
+                + (W @ S2) * np.eye(2) - np.outer(mean_true, mean_true))
+    def check_stats(x, name):
+        dm = np.abs(x.mean(0) - mean_true).max()
+        C = np.cov(x.T)
+        dc = np.linalg.norm(C - cov_true) / np.linalg.norm(cov_true)
+        hit = np.argmin(np.sum((x[:, None, :] - MU[None]) ** 2, -1), 1)
+        dw = np.abs(np.bincount(hit, minlength=3) / len(x) - W).max()
+        print(f"  {name}: |dmean| {dm:.3f}  cov rel-F {dc:.3f}  |dweights| {dw:.3f}")
+        assert dm &lt; 0.15 and dc &lt; 0.15 and dw &lt; 0.06, name
+    print("\n(b) sample moments vs target (4096 samples each)")
+    check_stats(ddim_sample(4096, 200, 1.0, rng), "DDPM 200-step ancestral")
+    check_stats(fm_sample(4096, 32, rng), "FM   32-step Euler     ")
+
+    # ---------------- (c) energy distance vs NFE -------------------------------
+    def energy_dist(x, y):                  # sqrt(2E|X-Y| - E|X-X'| - E|Y-Y'|)
+        d = lambda a, b: np.sqrt(((a[:, None, :] - b[None]) ** 2).sum(-1) + 1e-12)
+        return np.sqrt(max(2 * d(x, y).mean() - d(x, x).mean() - d(y, y).mean(), 0))
+
+    ref = sample_target(2048, rng)
+    floor = energy_dist(sample_target(2048, rng), ref)     # sampling-noise floor
+    print(f"\n(c) energy distance to 2048 target samples (floor ~{floor:.4f})")
+    print("  NFE | DDPM ancestral | DDPM PF-ODE(DDIM) | flow matching")
+    ed, NFES = {}, (1, 2, 4, 8, 16, 50, 200)
+    for nfe in NFES:
+        ed[('d', nfe)] = energy_dist(ddim_sample(2048, nfe, 1.0, rng), ref)
+        ed[('o', nfe)] = energy_dist(ddim_sample(2048, nfe, 0.0, rng), ref)
+        ed[('f', nfe)] = energy_dist(fm_sample(2048, nfe, rng), ref)
+        print(f"  {nfe:3d} |     {ed[('d', nfe)]:.4f}     |      {ed[('o', nfe)]:.4f}"
+              f"       |    {ed[('f', nfe)]:.4f}")
+    thr = 0.2                       # quality threshold ~ a few times the floor
+    first = lambda tag: next(n for n in NFES if ed[(tag, n)] &lt; thr)
+    nf, nd = first('f'), first('d')
+    print(f"  =&gt; energy distance &lt; {thr}: FM at {nf} NFE, ancestral DDPM at {nd}")
+    assert ed[('f', 2)] &lt; ed[('d', 2)] and ed[('f', 4)] &lt; ed[('d', 4)], "low-NFE"
+    assert 2 * nf &lt;= nd, "FM should need materially (&gt;=2x) fewer NFE"
+
+    # ---------------- (d) cross-check NumPy backprop against torch -------------
+    try:
+        import torch
+        X = rng.standard_normal((16, 11)); Y = rng.standard_normal((16, 2))
+        net = MLP(np.random.default_rng(7))
+        tW = [torch.tensor(w, requires_grad=True) for w in net.Ws]
+        tb = [torch.tensor(b, requires_grad=True) for b in net.bs]
+        h = torch.tensor(X)
+        for i in range(3):
+            h = h @ tW[i] + tb[i]
+            if i &lt; 2: h = torch.tanh(h)
+        (((h - torch.tensor(Y)) ** 2).sum() / 16).backward()  # match manual scaling
+        out = net.forward(X); g = 2 * (out - Y) / 16     # replicate manual backward
+        gW = [None] * 3
+        for i in reversed(range(3)):
+            gW[i] = net.hs[i].T @ g
+            if i: g = (g @ net.Ws[i].T) * (1 - net.hs[i] ** 2)
+        r = max(np.abs(gW[i] - tW[i].grad.numpy()).max() for i in range(3))
+        print(f"\n(d) max |NumPy grad - torch grad| = {r:.2e}"); assert r &lt; 1e-5
+    except ImportError:
+        print("\n(d) [skipped: torch not installed]")
+
+    print(f"\nall assertions passed  ({time.time() - t0:.1f}s total)")
+
+
+if __name__ == "__main__":
+    main()
+</code></pre>
+<p>Running it takes about 39 s on a single CPU core and prints the full verification: learned-vs-analytic relative errors of 0.080 and 0.041 for the DDPM score at $\bar\alpha = 0.524$ and $0.046$, and 0.058 for the flow-matching velocity at $t{=}0.5$ &mdash; both networks recover the true fields to a few percent. Sample moments land within tolerance for both samplers (covariance Frobenius error 0.031 for 200-step DDPM, 0.009 for 32-step Euler). The NFE table is the chapter's thesis in numbers: at 2 NFE, flow matching reaches energy distance 0.162 while ancestral DDPM sits at 0.805; DDPM needs 8 steps to cross the 0.2 threshold that flow matching crosses at 2. At 16+ NFE the methods converge toward the 0.033 sampling-noise floor &mdash; same model class, same data, same endpoint; the straight path just gets there 4&times; sooner. The torch gradient check agrees to 2.2&times;10<sup>&minus;16</sup>.</p></div>
+
+<div class="key-takeaways"><div class="kt-title">Key Takeaways</div>
+<ul>
+<li>The forward chain's closed-form marginal $x_t = \sqrt{\bar\alpha_t}x_0 + \sqrt{1-\bar\alpha_t}\epsilon$ makes training a one-line regression, and Tweedie's formula makes the trained noise predictor an exact score estimator: $s = -\epsilon_\theta/\sigma_t$. <span class="tag tag-certain">Certain</span></li>
+<li>The probability-flow ODE shares every marginal with the reverse SDE (a two-line Fokker&ndash;Planck rewrite), giving deterministic sampling, invertible encoding, and the trajectory structure all few-step methods rely on. <span class="tag tag-certain">Certain</span></li>
+<li>Diffusion and flow matching learn the same conditional expectation under different parameterizations; flow matching's linear path wins on step count because Euler error scales with trajectory curvature &mdash; measured here as 2 vs. 8 NFE to equal sample quality. <span class="tag tag-certain">Certain</span></li>
+<li>Classifier-free guidance is score extrapolation through an implicit classifier; it buys fidelity and prompt adherence at a measurable cost in diversity, and it is a heuristic field, not the score of a normalized distribution. <span class="tag tag-likely">Likely</span></li>
+<li>The frontier has moved to 1&ndash;4-step generation (consistency models, MeanFlow-family objectives) and to diffusion language models decoding at 1,000&ndash;2,000+ tokens/s in vendor reports; whether the latter displace autoregression beyond code and editing niches remains open. <span class="tag tag-verify">Verify</span></li>
+</ul>
+</div>
+</div>

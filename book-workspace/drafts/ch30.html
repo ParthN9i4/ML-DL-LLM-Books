@@ -1,0 +1,291 @@
+<div class="chapter" id="ch30">
+<div class="chapter-header"><div class="ch-label">Chapter 30</div><h3>The GPU Execution Model and the Memory Wall</h3></div>
+
+<div class="learning-objectives">
+<div class="lo-title">Learning Objectives</div>
+<ul>
+<li>Describe the GPU execution hierarchy &mdash; streaming multiprocessors, warps, tensor cores, and the register / shared-memory / L2 / HBM ladder &mdash; with the approximate bandwidth of each level.</li>
+<li>Compute the arithmetic intensity of matmul, elementwise operations, softmax, normalization, and attention, and place each on a roofline.</li>
+<li>Predict the wall-clock time of a transformer layer from first principles &mdash; $t = \max(\text{FLOPs}/\pi,\ \text{bytes}/\beta)$ &mdash; and validate the prediction against measurement.</li>
+<li>Explain kernel fusion and quantify what fusing a chain of $k$ elementwise operations saves.</li>
+<li>Implement an empirical roofline analyzer in working code.</li>
+</ul>
+</div>
+
+<div class="read-alongside"><strong>Read alongside</strong> &mdash; The HuggingFace <em>Ultra-Scale Playbook</em> is the practitioner's companion for all of Part VI: it works the same bandwidth arithmetic on real training clusters. Stanford <strong>CS336</strong> (Language Modeling from Scratch) covers rooflines, kernels, and profiling in its systems lectures, with assignments that measure what this chapter derives.</div>
+
+<p>Every cost model so far in this book has been denominated in FLOPs: the $C \approx 6ND$ of Chapter 24, the per-layer counts of Chapter 18, the optimizer overheads of Chapter 13. That currency is only convertible to wall-clock time when arithmetic is the binding constraint, and on a modern accelerator it almost never is. An H100 can execute roughly 295 bf16 FLOPs in the time it takes to move one byte to or from its own memory <span class="tag tag-verify">Verify</span>; any operation performing fewer FLOPs per byte &mdash; which is every common deep-learning operation except large matrix multiplication &mdash; is limited by bandwidth, not arithmetic. This chapter builds the execution model and the roofline framework that make such statements precise, derives the arithmetic intensity of the transformer's constituent operations, and validates the method empirically. Chapters 31&ndash;34 are applications: FlashAttention, distributed training, inference serving, and quantization are all, at bottom, campaigns against the memory wall.</p>
+
+<h4>30.1 GPU Architecture for ML Engineers</h4>
+
+<p>A GPU is not a fast CPU; it is a different answer to the question of what to do with a fixed transistor and power budget. A CPU spends its budget making a few instruction streams fast: deep caches, branch prediction, out-of-order execution. A GPU spends it on arithmetic units and hides latency with parallelism instead of avoiding it with caches. The programming model reflects this. A <em>kernel</em> is launched as a grid of <em>thread blocks</em>; each block is assigned to one <em>streaming multiprocessor</em> (SM) and stays there until it finishes. An H100 SXM has 132 SMs <span class="tag tag-verify">Verify</span>, each containing 128 FP32 ALUs, four schedulers, and four fourth-generation tensor cores.</p>
+
+<h5>30.1.1 Warps and SIMT</h5>
+
+<p>Within a block, threads are grouped into <em>warps</em> of 32 that execute in lockstep: one instruction, 32 data lanes (SIMT &mdash; single instruction, multiple threads). A warp is the true unit of execution and of memory access; when its 32 threads touch 32 consecutive 4-byte words, the hardware <em>coalesces</em> them into one wide transaction, and when they do not, bandwidth is wasted on unused bytes. Divergent branches within a warp serialize: both sides execute, with lanes masked off. Each SM scheduler holds many resident warps and issues from whichever is ready, so a warp stalled on a ~500-cycle HBM load <span class="tag tag-likely">Likely</span> costs nothing if another warp can issue &mdash; latency is <em>hidden</em>, not eliminated. This only works if enough warps are resident, which is the occupancy question of Section 30.5.</p>
+
+<h5>30.1.2 Tensor cores: the 15&times; asymmetry</h5>
+
+<p>Tensor cores are systolic units that execute small matrix multiply-accumulates as single warp-level instructions. They are the only reason the headline numbers exist: the H100's bf16 tensor-core peak is 989 TFLOP/s dense, while its conventional FP32 vector ALUs peak near 67 TFLOP/s <span class="tag tag-verify">Verify</span> &mdash; a factor of ~15. (Vendor marketing quotes 1,979 TFLOP/s, which assumes 2:4 structured sparsity; use dense numbers unless your weights are actually sparse.) The asymmetry has a hard consequence: only operations expressible as dense matrix multiplication can use the fast path. Softmax, normalization, activations, and optimizer updates run on the slow vector units &mdash; and, as we will see, they don't even saturate those, because they starve on bandwidth first.</p>
+
+<h4>30.2 The Memory Hierarchy and Its Bandwidths</h4>
+
+<p>The numbers that govern everything are the bandwidths of the memory ladder. Capacities shrink and bandwidths grow roughly an order of magnitude per level as you climb toward the ALUs.</p>
+
+<table>
+<tr><th>Level (H100 SXM)</th><th>Capacity</th><th>Bandwidth</th><th>Scope</th></tr>
+<tr><td>Registers</td><td>256 KB/SM (~33 MB total)</td><td>~100s of TB/s aggregate <span class="tag tag-likely">Likely</span></td><td>per thread</td></tr>
+<tr><td>Shared memory / L1</td><td>up to 228 KB/SM <span class="tag tag-verify">Verify</span></td><td>~30 TB/s aggregate <span class="tag tag-likely">Likely</span></td><td>per block</td></tr>
+<tr><td>L2 cache</td><td>50 MB <span class="tag tag-verify">Verify</span></td><td>~5&ndash;10 TB/s (measured) <span class="tag tag-likely">Likely</span></td><td>device</td></tr>
+<tr><td>HBM3</td><td>80 GB</td><td>3.35 TB/s <span class="tag tag-verify">Verify</span></td><td>device</td></tr>
+<tr><td>NVLink 4 (to peers)</td><td>&mdash;</td><td>900 GB/s <span class="tag tag-verify">Verify</span></td><td>node</td></tr>
+<tr><td>PCIe Gen5 (to host)</td><td>&mdash;</td><td>~128 GB/s <span class="tag tag-verify">Verify</span></td><td>host</td></tr>
+</table>
+
+<p>Three readings of this table matter. First, "device memory" is the <em>slow</em> memory: HBM is where your tensors live, and it feeds the ALUs at roughly 1/300th of the rate they can consume operands. Fast kernels are therefore exercises in staging: copy a tile from HBM into shared memory once, reuse it many times from registers. Second, shared memory is software-managed &mdash; a scratchpad the kernel explicitly fills &mdash; unlike CPU caches; this is what makes the tiling of Section 30.5 possible. Third, energy tells the same story as time: an off-chip DRAM access costs on the order of 100&times; the energy of a floating-point multiply-add <span class="tag tag-likely">Likely</span> (Horowitz's classic 2014 accounting), so the memory wall is also a power wall.</p>
+
+<h4>30.3 The Roofline Model</h4>
+
+<div class="definition"><div class="box-title">Definition 30.1 (Arithmetic intensity)</div><p>For a kernel that performs $W$ floating-point operations and moves $Q$ bytes between device memory and the chip, the <em>arithmetic intensity</em> is $I = W/Q$ FLOPs per byte. $Q$ counts actual traffic &mdash; reads plus writes, including intermediate tensors &mdash; not the size of the mathematical inputs.</p></div>
+
+<div class="definition"><div class="box-title">Definition 30.2 (Machine balance)</div><p>For a machine with peak arithmetic throughput $\pi$ (FLOP/s) and memory bandwidth $\beta$ (bytes/s), the <em>balance point</em> is $B^* = \pi/\beta$ (FLOPs per byte). H100: $989 \times 10^{12} / 3.35 \times 10^{12} \approx 295$ for bf16 tensor-core work <span class="tag tag-verify">Verify</span>; for FP32 vector work the relevant roof is $67/3.35 \approx 20$.</p></div>
+
+<div class="theorem"><div class="box-title">Theorem 30.1 (Roofline bound)</div><p>A kernel with work $W$ and traffic $Q$ satisfies
+$$t \;\ge\; \max\!\left(\frac{W}{\pi},\ \frac{Q}{\beta}\right), \qquad\text{equivalently}\qquad \frac{W}{t} \;\le\; \min\left(\pi,\ I\beta\right).$$
+If $I &lt; B^*$ the kernel is <em>memory-bound</em>: no optimization of its arithmetic can bring it to peak. If $I \ge B^*$ it is <em>compute-bound</em>.</p>
+<p><strong>Proof.</strong> The arithmetic units require at least $W/\pi$ seconds to issue $W$ operations; the memory system requires at least $Q/\beta$ seconds to move $Q$ bytes. Both are necessary, and even with perfect overlap of compute and data movement the runtime is at least the larger. Dividing $W$ by the bound gives the throughput form, since $W/(Q/\beta) = I\beta$. $\blacksquare$</p></div>
+
+<p>The bound assumes perfect overlap, so it is optimistic; real kernels also pay launch overhead (~microseconds per kernel <span class="tag tag-likely">Likely</span>), imperfect coalescing, and synchronization. But it is astonishingly predictive in the regime that matters, and its two failure directions are informative: a kernel far below <em>both</em> roofs is limited by something else &mdash; latency, occupancy, or overhead &mdash; which is exactly what a profiler should then be asked about.</p>
+
+<div class="example"><div class="box-title">Example 30.1 (Bias + GeLU on an H100, by hand)</div><p>Apply bias and GeLU to a $1024 \times 1024$ bf16 activation. Traffic: read $1024^2 \times 2 = 2.10$ MB, write $2.10$ MB, so $Q = 4.19 \times 10^6$ bytes (the bias vector's 2 KB is noise). Work: with the tanh approximation, roughly 10 FLOPs per element, $W \approx 1.05 \times 10^7$. Intensity: $I = W/Q = 10/4 = 2.5$ FLOPs/byte, against $B^* \approx 295$. Times: $t_{\text{mem}} = 4.19\times10^6 / 3.35\times10^{12} = 1.25\ \mu s$; $t_{\text{comp}} = 1.05\times10^7 / 6.7\times10^{13} = 0.16\ \mu s$ (vector roof). The memory term dominates 8:1 even against the slow ALUs &mdash; and 118:1 against a hypothetical tensor-core path. Making GeLU's arithmetic 10&times; faster would change nothing. <span class="tag tag-verify">Verify</span> (H100 constants; the arithmetic is exact.)</p></div>
+
+<h4>30.4 Arithmetic Intensity of Common Operations</h4>
+
+<p>For a general matmul $(M\times K)(K \times N)$ in bf16, $W = 2MNK$ and the compulsory traffic is $Q = 2(MK + KN + MN)$ bytes, so
+$$I_{\text{matmul}} = \frac{MNK}{MK + KN + MN}\ \text{FLOPs/byte} \;\xrightarrow{\;M=N=K=n\;}\; \frac{n}{3}.$$
+Intensity grows <em>linearly</em> with size: matmul is the one operation that can outrun any balance point. On an H100, square bf16 matmuls become compute-bound at $n/3 \ge 295$, i.e. $n \gtrsim 885$. At the other extreme, a matrix&ndash;vector product ($N=1$) has $I = MK/(MK+K+M) \approx 1$: two FLOPs touch every weight once, and no blocking can create reuse that the computation does not contain. Everything else in a transformer sits at the bottom of the same scale:</p>
+
+<table>
+<tr><th>Operation (bf16)</th><th>$W$ per element</th><th>$Q$ per element</th><th>$I$ (FLOPs/byte)</th><th>H100 verdict</th></tr>
+<tr><td>Square matmul, $n = 4096$</td><td>&mdash;</td><td>&mdash;</td><td>$n/3 \approx 1365$</td><td>compute-bound</td></tr>
+<tr><td>Matmul, $n = 512$</td><td>&mdash;</td><td>&mdash;</td><td>$\approx 171$</td><td>memory-bound</td></tr>
+<tr><td>Matvec (decode GEMM, $B{=}1$)</td><td>2 per weight</td><td>2 per weight</td><td>$\approx 1$</td><td>memory-bound, 300&times; under</td></tr>
+<tr><td>Elementwise add / mul</td><td>1</td><td>6</td><td>$\approx 0.17$</td><td>memory-bound</td></tr>
+<tr><td>GeLU / SiLU</td><td>~10</td><td>4</td><td>$\approx 2.5$</td><td>memory-bound</td></tr>
+<tr><td>Softmax (fused, per row)</td><td>~5</td><td>4</td><td>$\approx 1.25$</td><td>memory-bound</td></tr>
+<tr><td>LayerNorm / RMSNorm (fused)</td><td>~7</td><td>4</td><td>$\approx 1.75$</td><td>memory-bound</td></tr>
+<tr><td>Attention $QK^\top$, unfused</td><td>&mdash;</td><td>&mdash;</td><td>$\approx d_h$ (64&ndash;128)</td><td>memory-bound</td></tr>
+</table>
+
+<p>The attention row deserves its derivation, because it motivates all of Chapter 31. Computing $S = QK^\top$ for one head costs $W = 2n^2 d_h$ FLOPs; materializing $S$ to HBM writes $2n^2$ bytes, which dominates the traffic once $n \gg d_h$, giving $I \approx d_h$. With $d_h = 64$&ndash;$128$, unfused attention runs at a fixed intensity <em>below</em> the H100 balance point no matter how long the sequence is &mdash; and the softmax over $n^2$ scores then re-reads and re-writes the whole matrix at $I \approx 1$. Attention as naively implemented is a bandwidth program with some arithmetic attached. FlashAttention's insight (Chapter 31) is that never materializing $S$ removes the $n^2$ traffic entirely, restoring $I \propto n$.</p>
+
+<h5>30.4.1 Predicting a transformer layer</h5>
+
+<p>A transformer layer with width $d$ and a $4d$ MLP has $12d^2$ parameters ($4d^2$ in $Q,K,V,O$; $8d^2$ in the MLP), hence $24d^2$ bytes of bf16 weights and $W = 24d^2$ GEMM FLOPs per token (Chapter 18). Two regimes follow immediately from Theorem 30.1. In <strong>prefill / training</strong>, $t$ tokens are processed per weight-read, so the GEMMs run at intensity $\approx t$ per weight-byte and are compute-bound for $t \gtrsim 300$: predict $t_{\text{layer}} \approx 24td^2/(\text{MFU}\cdot\pi)$, where MFU (model FLOPs utilization) of 40&ndash;60% is typical of well-tuned training <span class="tag tag-likely">Likely</span>. In <strong>batch-1 decode</strong>, each generated token reads every weight once: $I \approx 1$, memory-bound by 300&times;, and the prediction collapses to $t \approx \text{weight bytes}/\beta$ &mdash; arithmetic is irrelevant.</p>
+
+<div class="example"><div class="box-title">Example 30.2 (Decode latency of a 70B model, by hand)</div><p>A 70B-parameter dense model in bf16 occupies $70\times10^9 \times 2 = 140$ GB. Generating one token requires streaming essentially all weights through the ALUs once, so on H100-class HBM at $\beta = 3.35$ TB/s <span class="tag tag-verify">Verify</span>: $t \ge 140/3350\ \text{s} = 41.8$ ms per token, i.e. at most $\approx 24$ tokens/s single-stream &mdash; regardless of compute. Check the compute term: $W \approx 2 \times 70\times10^9 = 1.4\times10^{11}$ FLOPs per token, $t_{\text{comp}} = 1.4\times10^{11}/9.89\times10^{14} = 0.14$ ms &mdash; 296&times; smaller, confirming $I \approx 1$ vs. $B^* = 295$. This single division explains why inference servers batch requests, cache KV, and decode speculatively (Chapter 33), and why quantization to 4 bits quadruples decode speed before it does anything else (Chapter 34).</p></div>
+
+<p>The measured leg of objective 3 is Artifact 30.1: this book's build environment has no GPU, so the artifact makes these predictions for the CPU it runs on and validates them against wall-clock &mdash; large matmuls land within a few percent of the compute roof, and the memory-bound suite lands on the bandwidth roof. The method transfers verbatim to any GPU; only the two measured ceilings change.</p>
+
+<h4>30.5 Occupancy, Tiling, Tensor Cores</h4>
+
+<p>Why does matmul <em>achieve</em> its high intensity? The computation has $O(n^3)$ work on $O(n^2)$ data, but a naive triple loop still streams operands from HBM. The classical fix is <em>tiling</em>: each thread block computes a $T \times T$ output tile by iterating over the $K$ dimension in chunks, staging $T \times T_k$ slabs of $A$ and $B$ in shared memory; every staged element is reused $T$ times from on-chip storage, so HBM traffic per output falls by a factor of $T$ and effective intensity grows $\propto T$. Registers add a second tiling level: each thread accumulates a small sub-tile in registers, reusing shared-memory operands again. The ladder of Section 30.2 exists precisely to make this two-level reuse possible, and Hopper adds hardware to feed it (TMA asynchronous bulk copies into shared memory; warp-group MMA instructions that read tiles directly from shared memory) <span class="tag tag-verify">Verify</span>.</p>
+
+<p><em>Occupancy</em> is the fraction of an SM's warp slots (64 on H100 <span class="tag tag-verify">Verify</span>) that are resident. Since latency hiding requires ready warps, too-low occupancy leaves the memory pipeline idle between stalls. But occupancy trades against tiling: registers and shared memory are shared resources, so bigger tiles (more reuse, higher $I$) mean fewer resident blocks. Peak-performance kernels often run at 25&ndash;50% occupancy with large tiles <span class="tag tag-likely">Likely</span> &mdash; occupancy is a means (enough parallelism to hide latency), not an end, and "increase occupancy" is bad advice for a compute-bound GEMM. Tensor cores add a final constraint: they consume operands in fixed small-matrix shapes, so problem dimensions that are not multiples of the tile granularity waste lanes on padding &mdash; one reason vocabulary sizes and hidden widths are chosen divisible by 64 or 128 (Chapter 23).</p>
+
+<h4>30.6 Kernel Fusion and Compilers</h4>
+
+<p>Consider a chain of $k$ elementwise operations applied to a tensor of $n$ elements &mdash; say scale, add-bias, activation, dropout-mask. Executed as $k$ separate kernels, each reads and writes $n$ elements: $Q_{\text{unfused}} = 2kn \cdot s$ bytes for element size $s$. Fused into one kernel, each element is read once, transformed $k$ times in registers, and written once: $Q_{\text{fused}} = 2ns$. The FLOPs are identical; the traffic falls by $k$; and since every such chain sits far below $B^*$, Theorem 30.1 predicts a speedup approaching $k\times$. Fusion is not an optimization of arithmetic at all &mdash; it is a refusal to launder intermediate values through HBM. The same logic yields fused softmax and normalization (one read, one write, per-row statistics kept on-chip, giving the "fused" intensities in the table above), GEMM <em>epilogue</em> fusion (bias and activation applied to the output tile while it is still in registers, making the elementwise work free), and, at the far end, FlashAttention, which fuses two matmuls and a softmax into one kernel (Chapter 31).</p>
+
+<p>Doing this by hand for every operator chain is why compilers took over. <code>torch.compile</code> traces the graph and emits fused Triton kernels for elementwise-and-reduction regions; XLA does the equivalent for JAX. What compilers still cannot generally do is invent FlashAttention-grade algorithmic restructurings &mdash; fusing <em>across</em> a matmul requires changing the order of reductions and re-deriving numerical stability, which is Chapter 31's subject. Artifact 30.1 demonstrates fusion's limit case honestly: on its CPU, blockwise "fusion" of a 4-op chain yields only 1.33&times; because NumPy's per-element instruction overhead becomes the new roof &mdash; whereas <code>torch.softmax</code>, internally fused and threaded, beats the unfused NumPy softmax by 3.0&times; on identical data. Fusion buys exactly the distance between the traffic roof and the next constraint.</p>
+
+<h4>30.7 Profiling: What to Measure and What Lies</h4>
+
+<p>Three instruments, in order of increasing honesty: <code>nvidia-smi</code>, wall-clock timing, and a kernel profiler (Nsight Compute, <code>torch.profiler</code>). The first lies the most: its "GPU utilization" reports the fraction of time <em>any</em> kernel was resident, so a memory-bound kernel using 0.3% of peak FLOP/s shows 100% utilization. The number that tracks the roofline is <strong>MFU</strong> &mdash; achieved model FLOP/s divided by $\pi$ &mdash; which you compute yourself from token throughput and the analytic FLOP count (Chapter 24's $6ND$). Similarly, compare achieved bandwidth against the <em>measured</em> ceiling, not the spec sheet: a copy microbenchmark typically reaches only 85&ndash;93% of quoted HBM bandwidth <span class="tag tag-likely">Likely</span>, and that measured number is the fair denominator &mdash; Artifact 30.1's first act is to measure both ceilings rather than trust any datasheet.</p>
+
+<div class="warning-box"><div class="box-title">Common Pitfall</div><p>Timing GPU code without synchronization. Kernel launches are asynchronous: <code>t0 = time.time(); y = model(x); t1 = time.time()</code> measures the time to <em>enqueue</em> work, often microseconds for a computation taking milliseconds &mdash; a 1000&times; error that has produced many published "speedups." Call <code>torch.cuda.synchronize()</code> before reading both timestamps, or use CUDA events. Two further lies to control: the first call pays compilation, autotuning, and memory-pool growth (always warm up, then report a robust statistic &mdash; the artifact uses best-of-$k$, since interference on a shared machine is one-sided), and sustained runs downclock under power and thermal limits, so a 30-second benchmark can report 10&ndash;15% slower steady-state than a 100 ms burst <span class="tag tag-likely">Likely</span>.</p></div>
+
+<h4>30.8 The Hardware Landscape</h4>
+
+<p>Numbers as of August 2026, from vendor datasheets; every figure below drifts with hardware generations and should be re-verified before use <span class="tag tag-verify">Verify</span>. Dense (non-sparse) throughputs throughout.</p>
+
+<table>
+<tr><th>Accelerator</th><th>bf16 dense</th><th>Memory</th><th>Bandwidth</th><th>$B^*$ (FLOPs/byte)</th></tr>
+<tr><td>NVIDIA H100 SXM</td><td>989 TFLOP/s</td><td>80 GB HBM3</td><td>3.35 TB/s</td><td>295</td></tr>
+<tr><td>NVIDIA H200 SXM</td><td>989 TFLOP/s</td><td>141 GB HBM3e</td><td>4.8 TB/s</td><td>206</td></tr>
+<tr><td>NVIDIA B200</td><td>2250 TFLOP/s</td><td>180&ndash;192 GB HBM3e</td><td>~8 TB/s</td><td>~281</td></tr>
+<tr><td>Google TPU v5p</td><td>459 TFLOP/s</td><td>95 GB HBM2e</td><td>2.77 TB/s</td><td>166</td></tr>
+</table>
+
+<p>Two structural observations survive any refresh of this table. First, the balance point sits between roughly 150 and 300 bf16 FLOPs/byte across vendors and generations &mdash; the H200 is literally an H100 with a better memory system, and it was a successful product precisely because decode is memory-bound. Second, compute has historically grown faster than bandwidth (the "memory wall" named by Wulf and McKee in 1994 <span class="tag tag-certain">Certain</span>), and lower-precision formats sharpen it further: FP8 and FP4 double and quadruple $\pi$ while $\beta$ stands still, pushing $B^*$ past 1000 on Blackwell's FP4 path <span class="tag tag-verify">Verify</span>. Every technique in the next four chapters &mdash; fused attention, overlap of communication with compute, batched and speculative decoding, weight quantization &mdash; is a response to the same inequality.</p>
+
+<div class="artifact-box">
+<div class="box-title">Artifact 30.1 &mdash; An Empirical Roofline Analyzer</div>
+<p>This environment has no GPU, so the artifact builds a genuine roofline for the CPU it runs on rather than pantomiming one: it measures the machine's two ceilings (streaming bandwidth via 512 MiB copies sized past the 260 MiB L3; peak FLOP/s via a large sgemm), computes the arithmetic intensity of seven operations from their FLOP and byte counts, classifies each against the measured balance point, predicts runtimes via Theorem 30.1, and asserts that the classifications and compute-bound predictions hold. It then demonstrates fusion by cache-blocking a four-op elementwise chain. The identical procedure applies to any GPU &mdash; replace the two ceiling measurements and rerun.</p>
+<pre><code>"""Artifact 30.1 -- An empirical roofline analyzer for the machine it runs on.
+
+No GPU exists in this environment, so we build the roofline for the CPU,
+honestly: measure the two ceilings (streaming memory bandwidth via large
+array copies, peak FLOP/s via large sgemm), compute each operation's
+arithmetic intensity AI = FLOPs / bytes moved, classify it as compute- or
+memory-bound against the measured machine balance point B* = peak/BW, and
+predict its runtime as  t = max(FLOPs/peak, bytes/BW).  The identical
+procedure applies verbatim to any GPU -- only the two ceiling measurements
+change.  Pure NumPy core; torch appears only as a cross-check.
+"""
+import time
+import numpy as np
+
+rng = np.random.default_rng(0)
+
+def tmin(f, reps=3):
+    """Best-of-reps wall clock. Warm up twice first (page faults, BLAS
+    thread pool spin-up, caches). Min, not mean: noise on a shared VM is
+    one-sided -- interference only ever makes you slower."""
+    f(); f()
+    ts = []
+    for _ in range(reps):
+        t0 = time.perf_counter(); f(); ts.append(time.perf_counter() - t0)
+    return min(ts)
+
+# ---------------------------------------------------------------- ceilings
+def measure_bandwidth():
+    """STREAM-style copy, 512 MiB arrays (this VM has a 260 MiB L3, so the
+    1 GiB working set streams from DRAM). Convention:
+    count bytes read + bytes written, so a copy moves 2x the array size."""
+    x = rng.random(2**27, dtype=np.float32); y = np.empty_like(x)
+    t = tmin(lambda: np.copyto(y, x), reps=7)
+    return 2 * x.nbytes / t                      # bytes/s
+
+def measure_peak_flops():
+    """Peak = best achieved large-sgemm rate. n=3072 is big enough to
+    amortize overheads; 2n^3 = 58 GFLOP per call."""
+    n = 3072
+    a = rng.standard_normal((n, n), dtype=np.float32); b = a.copy()
+    t = tmin(lambda: a @ b, reps=3)
+    return 2 * n**3 / t                          # FLOP/s
+
+BW   = measure_bandwidth()
+PEAK = measure_peak_flops()
+BSTAR = PEAK / BW                                # machine balance, FLOPs/byte
+print(f"memory bandwidth (copy, r+w) : {BW/1e9:8.1f} GB/s")
+print(f"peak compute (sgemm 3072^3)  : {PEAK/1e9:8.1f} GFLOP/s")
+print(f"MACHINE BALANCE POINT B*     : {BSTAR:8.1f} FLOPs/byte")
+
+# ---------------------------------------------------------------- op suite
+# Each op: (name, callable-on-prealloc-buffers, flops, bytes moved by the
+# implementation as written).  exp counted as 1 FLOP (roofline convention;
+# its true cost shows up as memory-bound ops running above prediction).
+R, C = 16384, 8192                                # 512 MiB: larger than L3
+X  = rng.random((R, C), dtype=np.float32)   # uniform: cheap to generate
+T  = np.empty_like(X); OUT = np.empty_like(X)
+n1 = 2**27                                        # 512 MiB per fp32 array
+xa = rng.random(n1, dtype=np.float32)
+za = rng.random(n1, dtype=np.float32); ya = np.empty_like(xa)
+G  = {n: rng.standard_normal((n, n), dtype=np.float32) for n in (512, 1024, 2048)}
+GB = {n: G[n].copy() for n in G}
+nv = 16384                                        # 1 GiB matrix: DRAM-resident
+Av = rng.random((nv, nv), dtype=np.float32)
+xv = rng.random(nv, dtype=np.float32)
+
+def softmax_rows():        # 5 unfused kernels, 7 full passes over R*C floats
+    m = X.max(axis=1, keepdims=True)             # read X
+    np.subtract(X, m, out=T)                     # read X, write T
+    np.exp(T, out=T)                             # read T, write T
+    s = T.sum(axis=1, keepdims=True)             # read T
+    np.divide(T, s, out=OUT)                     # read T, write OUT
+
+def layernorm_rows():      # 5 unfused kernels, 8 full passes
+    mu = X.mean(axis=1, keepdims=True)           # read X
+    np.subtract(X, mu, out=T)                    # read X, write T (T = x-mu)
+    np.multiply(T, T, out=OUT)                   # read T, write OUT (scratch)
+    v = OUT.mean(axis=1, keepdims=True)          # read OUT
+    np.multiply(T, 1.0/np.sqrt(v + 1e-5), out=OUT)  # read T, write OUT
+
+ops = []                   # (name, fn, flops, bytes)
+for n in (512, 1024, 2048):
+    ops.append((f"matmul {n}^3", (lambda n=n: G[n] @ GB[n]), 2*n**3, 12*n**2))
+ops.append((f"matvec {nv}^2", (lambda: Av @ xv), 2*nv**2, 4*(nv**2 + 2*nv)))
+ops.append(("triad y=2x+z", (lambda: np.add(np.multiply(xa, 2.0, out=ya), za, out=ya)),
+            2*n1, 12*n1))
+ops.append((f"softmax {R}x{C}", softmax_rows, 5*R*C, 7*4*R*C))
+ops.append((f"layernorm {R}x{C}", layernorm_rows, 7*R*C, 8*4*R*C))
+
+print(f"\n{'op':&lt;20}{'AI':&gt;7}{'bound':&gt;9}{'pred ms':&gt;9}{'meas ms':&gt;9}"
+      f"{'meas/pred':&gt;10}{'%peak':&gt;7}")
+results = []
+for name, fn, flops, byts in ops:
+    ai    = flops / byts
+    bound = "compute" if ai &gt;= BSTAR else "memory"
+    pred  = max(flops / PEAK, byts / BW)          # the roofline prediction
+    meas  = tmin(fn)
+    frac  = flops / meas / PEAK                   # fraction of peak achieved
+    results.append((name, ai, bound, pred, meas, frac))
+    print(f"{name:&lt;20}{ai:&gt;7.2f}{bound:&gt;9}{pred*1e3:&gt;9.2f}{meas*1e3:&gt;9.2f}"
+          f"{meas/pred:&gt;10.2f}{100*frac:&gt;6.1f}%")
+
+# ------------------------------------------------------------- assertions
+for name, ai, bound, pred, meas, frac in results:
+    if bound == "memory":
+        # A memory-bound op must be nowhere near the compute ceiling...
+        assert frac &lt; 0.35, f"{name}: 'memory-bound' but hit {frac:.0%} of peak"
+        # ...and land within [1/3x, 4x] of the bandwidth prediction (above
+        # 1x means unmodeled cost: exp, reduction overhead; below 1x means
+        # a multithreaded BLAS kernel beat our single-thread copy ceiling,
+        # as sgemv does here -- read-only streams parallelize well).
+        assert 1/3 &lt;= meas/pred &lt;= 4.0, f"{name}: ratio {meas/pred:.2f}"
+    else:
+        # A compute-bound op must run near the ceiling: within factor 1.7.
+        assert frac &gt;= 0.35, f"{name}: 'compute-bound' at {frac:.0%} of peak"
+        assert 1/1.7 &lt;= meas/pred &lt;= 1.7, f"{name}: ratio {meas/pred:.2f}"
+print("\nall classification + prediction assertions passed")
+
+# ---------------------------------------------------- fusion, demonstrated
+# Chain of 4 elementwise ops on 512 MiB: y = relu(2x+1) * 3.
+# Unfused: 4 kernels, each a full read+write pass over HBM-resident data.
+# 'Fused': one loop over 256 KiB cache-resident blocks -- exactly what a
+# fused GPU kernel (or torch.compile) does with registers/shared memory.
+def unfused():
+    np.multiply(xa, 2.0, out=ya); np.add(ya, 1.0, out=ya)
+    np.maximum(ya, 0.0, out=ya);  np.multiply(ya, 3.0, out=ya)
+def fused(blk=2**16):
+    scratch = np.empty(blk, dtype=np.float32)
+    for i in range(0, n1, blk):
+        s = scratch[: n1 - i] if n1 - i &lt; blk else scratch
+        np.multiply(xa[i:i+blk], 2.0, out=s); np.add(s, 1.0, out=s)
+        np.maximum(s, 0.0, out=s);            np.multiply(s, 3.0, out=ya[i:i+blk])
+tu, tf = tmin(unfused), tmin(fused)
+print(f"\nfusion: unfused {tu*1e3:6.1f} ms ({8*4*n1/tu/1e9:.1f} GB/s of traffic)"
+      f" | fused {tf*1e3:6.1f} ms | speedup {tu/tf:.2f}x")
+assert tf &lt; tu, "fusion must win: same FLOPs, 4x less DRAM traffic"
+
+# ------------------------------------------------------ torch cross-check
+try:
+    import torch
+except ImportError:
+    torch = None
+if torch is not None:
+    xt = torch.from_numpy(X)
+    t = tmin(lambda: torch.softmax(xt, dim=1))
+    print(f"torch.softmax (internally fused/threaded): {t*1e3:.1f} ms vs "
+          f"numpy unfused {results[-2][4]*1e3:.1f} ms")
+else:
+    print("[skipped: torch not installed]")
+
+if __name__ == "__main__":
+    print(f"\nsummary: every op with AI below B*={BSTAR:.0f} FLOPs/byte was "
+          "memory-bound in measurement; only large matmul was compute-bound.")</code></pre>
+<p>On this book's 4-core build VM the run measures $\beta = 19.8$ GB/s, $\pi = 494$ GFLOP/s, and prints <code>MACHINE BALANCE POINT B* : 24.9 FLOPs/byte</code>. The $2048^3$ matmul ($I = 341$) is predicted at 34.8 ms and measured at 35.1 ms &mdash; a ratio of 1.01 at 98.9% of peak &mdash; while every op with $I &lt; B^*$ achieved under 5.2% of peak FLOP/s, exactly as classified: matvec measured 22.5 ms against a 54.2 ms single-thread prediction (multithreaded BLAS beat the one-thread copy ceiling, ratio 0.41), and softmax ran 2.33&times; over its bandwidth prediction (the unmodeled cost of <code>exp</code> and reduction overhead). The fusion demo saves traffic for a 1.33&times; speedup before NumPy's per-element overhead becomes the binding roof, while the fused, threaded <code>torch.softmax</code> cross-check runs in 148 ms against unfused NumPy's 441 ms. All assertions pass in about 29 s.</p>
+</div>
+
+<div class="key-takeaways">
+<div class="kt-title">Key Takeaways</div>
+<ul>
+<li>Runtime obeys $t \ge \max(W/\pi, Q/\beta)$: an operation whose arithmetic intensity $I = W/Q$ is below the machine balance $B^* = \pi/\beta$ is memory-bound, and no arithmetic optimization can save it. <span class="tag tag-certain">Certain</span></li>
+<li>On current accelerators $B^*$ is roughly 150&ndash;300 bf16 FLOPs/byte (H100: $\approx$295), and every common deep-learning operation except sufficiently large matmul sits far below it &mdash; elementwise, softmax, and normalization near $I \approx 1$, unfused attention at $I \approx d_h$. <span class="tag tag-verify">Verify</span></li>
+<li>Matmul intensity grows with size ($n/3$ for square bf16), which is why tiling through shared memory and registers &mdash; and the tensor cores it feeds &mdash; can reach peak; batch-1 decode is a matvec at $I \approx 1$ and is bounded by weight bytes over bandwidth (~42 ms/token for 70B bf16 on H100-class HBM). <span class="tag tag-verify">Verify</span></li>
+<li>Fusing a $k$-op elementwise chain cuts HBM traffic by $k\times$ at identical FLOPs; fusion, epilogues, and FlashAttention are all the same idea &mdash; keep intermediates on-chip. <span class="tag tag-certain">Certain</span></li>
+<li>Profile against measured ceilings, not spec sheets or "GPU utilization": compute MFU from analytic FLOPs, synchronize before timing, warm up, and expect ~85&ndash;93% of quoted bandwidth to be attainable. <span class="tag tag-likely">Likely</span></li>
+</ul>
+</div>
+</div>

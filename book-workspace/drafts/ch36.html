@@ -1,0 +1,256 @@
+<div class="chapter" id="ch36">
+<div class="chapter-header"><div class="ch-label">Chapter 36</div><h3>Agents, Tool Use, and Long-Horizon Training</h3></div>
+
+<div class="learning-objectives">
+<div class="lo-title">Learning Objectives</div>
+<ul>
+<li>Model task success as per-step reliability compounded over horizon length, compute the per-step accuracy $p = s^{1/H}$ required for end-to-end success $s$, and state where the independence assumption fails in both directions.</li>
+<li>Explain tool calling as constrained generation and identify the training data that makes it reliable.</li>
+<li>Explain reinforcement learning for multi-turn agents: credit assignment over trajectories, and why verifiable environments dominate current results.</li>
+<li>Explain context management for long horizons &mdash; compaction, memory, sub-agents &mdash; and their measured failure modes.</li>
+<li>Implement an agent loop with horizon-scaling measurement in working code.</li>
+</ul>
+</div>
+
+<div class="read-alongside"><strong>Read alongside</strong> &mdash; Stanford <strong>CS336</strong> for the post-training and RL infrastructure that agent training sits on; <strong>Chakraborty</strong>, <em>Introduction to Large Language Models</em>, for the NLP-side framing of tool-augmented generation; <strong>G&eacute;ron</strong> for the end-to-end evaluation discipline that agent systems need more than any other ML artifact.</div>
+
+<p>An agent is a language model in a loop: emit an action, observe the result, repeat. That single change &mdash; from one forward pass to a sequence of dependent decisions &mdash; replaces the question "how accurate is the model?" with "how does accuracy compound?" This chapter is organized around one piece of arithmetic: if each step succeeds with probability $p$ and a task needs $H$ steps, success is roughly $p^H$, which collapses fast. Every real intervention either raises $p$ (better training, Sections 36.3&ndash;36.6) or breaks $H$ into verifiable segments with retry (Sections 36.2, 36.5); prompt scaffolding that does neither moves nothing. The training machinery comes from Chapters 27 and 28 (GRPO, test-time compute); the measurement crisis of Chapter 29 returns here in aggravated form; long-context limits from Chapter 19 become the mechanism of a specific failure mode. Chapter 37 takes up what agents mean for safety.</p>
+
+<h4>36.1 What an Agent Is</h4>
+
+<div class="definition"><div class="box-title">Definition 36.1 (LLM agent)</div>
+<p>An LLM agent is a policy $\pi_\theta(a_t \mid h_t)$ where the action $a_t$ is a generated token sequence parsed into either a tool call or a final answer, the environment executes tool calls and returns an observation $o_t$, and the context evolves as $h_{t+1} = h_t \oplus (a_t, o_t)$. The <em>scaffold</em> is the surrounding code: the parser, the tool implementations, and the rule for constructing $h_t$ from the history. Formally this is a partially observed MDP in which the model's context window is the (truncated) state estimate.</p></div>
+
+<p>What distinguishes this from chat is that environment state persists and actions are consequential: a wrong file write at step 3 is still on disk at step 40. The scaffold is not neutral plumbing &mdash; the choice of what enters $h_t$ <em>is</em> a choice of policy class, which is why "context management" (Section 36.4) is an architectural decision, not an implementation detail.</p>
+
+<div class="theorem"><div class="box-title">Theorem 36.1 (Horizon compounding and geometric retry)</div>
+<p>Let a task require $H$ sequential steps, each succeeding independently with probability $p$, with the task succeeding iff every step succeeds. Then (i) end-to-end success is $S(H) = p^H$; (ii) achieving $S(H) \ge s$ requires $p \ge s^{1/H} = e^{\ln s / H} \approx 1 + \frac{\ln s}{H}$; (iii) if a sound verifier checks each step and failed steps are retried with independent attempts, up to $r$ retries, the task succeeds with probability $\big(1-(1-p)^{r+1}\big)^H$.</p>
+<p><strong>Proof.</strong> (i) is a product of independent events. (ii) follows by monotonicity of $x \mapsto x^H$ and taking logarithms; the approximation is the first-order expansion of $e^{\ln s/H}$. (iii) A step now fails only if all $r+1$ independent attempts fail, probability $(1-p)^{r+1}$; apply (i) with the effective per-step success $q = 1-(1-p)^{r+1}$. $\blacksquare$</p></div>
+
+<p>The continuous version: a constant failure hazard $\lambda$ per unit of task length gives $S(T) = e^{-\lambda T}$, and the task length at which success is 50% is $T_{50} = \ln 2/\lambda$. This is not just a toy: METR reports that measured agent success versus human task duration is well fit by exactly this exponential decay ($R^2 \approx 0.80$) <span class="tag tag-likely">Likely</span>, which licenses reading their horizon measurements (Section 36.7) through Theorem 36.1: doubling the horizon is the same event as halving the per-minute hazard.</p>
+
+<div class="example"><div class="box-title">Example 36.1 (Reliability arithmetic)</div>
+<p>A 99%-reliable step over 50 steps: $0.99^{50} = e^{50\ln 0.99} = e^{-0.5025} \approx 0.605$. Sixty percent &mdash; from a step accuracy that would look superb in isolation. Required accuracy for 90% success at $H=64$: $p = 0.9^{1/64}$, and $\ln 0.9 = -0.10536$, so $p = e^{-0.10536/64} = e^{-0.001646} \approx 0.99836$. With retry: $p=0.9$, $r=2$ gives $q = 1 - 0.1^3 = 0.999$ and $q^{64} = e^{64 \ln 0.999} = e^{-0.0640} \approx 0.938$. All three numbers are reproduced by Monte Carlo in Artifact 36.1.</p></div>
+
+<h5>36.1.1 Where independence fails, in both directions</h5>
+
+<p>The model $p^H$ assumes each step is a fresh coin flip. It fails <em>pessimistically</em> &mdash; real agents do better than $\bar p^H$ computed from the average observed per-step error rate &mdash; for two reasons: errors cluster in already-doomed trajectories, so the marginal step-error rate double-counts failures; and models increasingly notice and repair their own mistakes within a step, which is an implicit retry loop. METR attributes much of the measured horizon growth precisely to "greater reliability and ability to adapt to mistakes" <span class="tag tag-likely">Likely</span>. It fails <em>optimistically</em> when errors corrupt persistent state: a wrong value written to disk, a polluted context, a stale assumption &mdash; these raise the hazard of every subsequent step, so success falls below $p^H$ even when the per-step error rate measured on fresh state equals $p$. Artifact 36.1 measures both directions in one sandbox: the corrupted-state regime lands 7&ndash;8 pooled standard errors <em>below</em> $p^H$, while the naive per-line accuracy of that same regime under-predicts its success by five orders of magnitude.</p>
+
+<h4>36.2 ReAct, Planning, Reflection</h4>
+
+<p>ReAct (Yao et al., 2022) interleaves free-text reasoning with actions, so each tool call conditions on an explicit deliberation; it beat act-only baselines on the 2022-era question-answering and text-game tasks it was proposed on <span class="tag tag-certain">Certain</span>. Reflexion (Shinn et al., 2023) adds verbal self-critique persisted across episode attempts &mdash; literally the retry branch of Theorem 36.1 with the model itself as a weak verifier. Plan-and-execute scaffolds decompose the task up front, then execute the pieces.</p>
+
+<p>Run these through the compounding lens and the accounting is short. A scaffold helps iff it (a) raises per-step $p$ &mdash; reasoning-before-acting did, for models that had never been trained to deliberate &mdash; or (b) inserts verification that converts one $H$-step episode into segments with independent retry. Scaffolds that do neither &mdash; role prompts, restated plans, reflection with no new information &mdash; leave the curve where it was. And the (a)-type gains are being absorbed into the policy: models RL-trained to reason (Chapter 28) internalized the ReAct trick, and elaborate prompt scaffolds buy progressively less on top of them <span class="tag tag-likely">Likely</span>. Reflection without ground truth can even hurt: without external feedback, models are more likely to talk themselves out of correct answers than into them (Huang et al., 2023) <span class="tag tag-likely">Likely</span>. The durable residue of this literature is not the prompts; it is the loop structure &mdash; act, observe, verify &mdash; which survives as scaffolding's legitimate job: exposing verifiable segment boundaries.</p>
+
+<h4>36.3 Tool Calling and Structured Output</h4>
+
+<p>A tool call is a structured emission: the model must produce a tool name and arguments conforming to a schema. Constrained decoding makes the <em>syntax</em> exact: compile the JSON schema (or any context-free grammar) into a state machine, and at each decoding step mask the logits of tokens that cannot continue a valid string. Invalid output becomes impossible by construction, at negligible cost. What masking cannot buy is <em>semantics</em>: the right tool, the right arguments, the decision to call a tool at all. Constraints can even hurt content &mdash; forcing generation into a rigid format measurably degrades reasoning performance on some tasks (Tam et al., 2024) <span class="tag tag-likely">Likely</span> &mdash; which is why production systems let the model reason freely, then constrain only the emission.</p>
+
+<h5>36.3.1 The training data that makes it reliable</h5>
+
+<p>Semantic reliability comes from data. Toolformer (Schick et al., 2023) bootstrapped it self-supervised: insert candidate API calls into pretraining text, keep the ones whose results reduce the model's perplexity on subsequent tokens. Gorilla (Patil et al., 2023) trained on API documentation paired with generated calls. Current practice is synthetic at scale: thousands of simulated tools and rubric- or execution-filtered multi-turn trajectories, including simulated users &mdash; Kimi K2's report describes an agentic-data pipeline of this shape <span class="tag tag-verify">Verify</span>. Three data properties matter most: schema diversity (so the model binds to the schema in context rather than memorized APIs), <em>error-recovery traces</em> (a model shown only successful calls has never learned what to do with a stack trace), and negative examples of when not to call a tool. Function-calling accuracy is tracked publicly by the Berkeley Function Calling Leaderboard; treat any specific score as perishable <span class="tag tag-verify">Verify</span>.</p>
+
+<div class="warning-box"><div class="box-title">Common Pitfall</div>
+<p><strong>Retry without independence.</strong> Theorem 36.1(iii) requires the $r+1$ attempts to be independent. A loop that catches a failed tool call and re-issues the <em>same request with unchanged context at temperature 0</em> produces perfectly correlated attempts: the effective per-step success stays $p$, not $1-(1-p)^{r+1}$, and the retry code is dead weight that merely multiplies latency. The same bug in softer form: swallowing the tool's error message, so the retried attempt cannot condition on what failed. Working retries change something &mdash; sample at $\tau &gt; 0$, feed the error text into context, or escalate to a different plan &mdash; and Artifact 36.1's verifier branch matches the geometric prediction only because its attempts are independent draws.</p></div>
+
+<h4>36.4 Retrieval and Its Limits</h4>
+
+<p>An agent has three places to keep knowledge: in weights, in context, and in the environment (retrievable on demand). Retrieval-as-a-tool handles the knowledge side well &mdash; facts, docs, code search &mdash; but it does not solve the harder problem, which is <em>state</em>: what the agent has done, decided, and committed to so far. Two measured limits shape everything here. First, models use long contexts unevenly: retrieval accuracy over in-context documents is strongly position-dependent, best at the edges and worst in the middle (Liu et al., 2023) <span class="tag tag-certain">Certain</span>. Second, effective per-step accuracy degrades as context grows and fills with stale tool output &mdash; which is exactly the rising-hazard regime of Section 36.1.1: long-context degradation is <em>how</em> state corruption manifests in practice.</p>
+
+<p>The three context-management responses, with their failure modes: <em>Compaction</em> summarizes old turns to bound $|h_t|$; its measured failure is silent constraint loss &mdash; a requirement stated once, early, is summarized away and later actions violate it, with no error signal at the moment of loss. <em>Memory tools</em> move state out of context into the environment (files, notes, databases), trading recall cost for durability &mdash; state in the environment can be re-read and checked; state in a summary cannot. <em>Sub-agents</em> give each subtask a fresh, short context (Section 36.8), at the price of a lossy hand-off in each direction. The long-horizon benchmark literature measures the aggregate effect: agents on multi-hundred-step tasks with 200k+ token trajectories fall far below humans (UltraHorizon), and iterated-change benchmarks report agents degrading within a handful of sequential revision requests unless an external feedback signal (a test suite) re-anchors them, which the StaminaBench authors report improves performance up to twelvefold <span class="tag tag-verify">Verify</span>. The pattern is consistent: externalized, checkable state beats remembered state.</p>
+
+<h4>36.5 Environments and Verifiable Rewards</h4>
+
+<div class="definition"><div class="box-title">Definition 36.2 (Verifiable environment)</div>
+<p>A training or evaluation environment is <em>verifiable</em> if the reward is computed by a programmatic oracle $R(\tau) \in \{0,1\}$ &mdash; unit tests, exact-match answers, a compiler, a checkable game state &mdash; whose satisfaction is (ideally) achievable only by actually solving the task. Verifiability is a property of the checker, not the task: the same coding task is verifiable under a hidden test suite and gameable under "does the diff look right to a reward model."</p></div>
+
+<p>Chapter 27 explained why learned reward models buckle under optimization pressure; agents make it worse, because a multi-turn policy explores an enormous trajectory space and will find the reward's blind spots. This is measured, not hypothetical: long-horizon coding evaluations report reward hacking in a nontrivial fraction of rollouts &mdash; the SWE-Marathon authors report 13.8% <span class="tag tag-verify">Verify</span> &mdash; and SpecBench reports that the gap between visible-test and held-out-test pass rates <em>grows</em> with task size, by roughly 28 percentage points per tenfold increase in code volume <span class="tag tag-verify">Verify</span>. Hence the shape of current results: the tasks where agent RL demonstrably works &mdash; competition math, code against test suites (DeepSeek-R1's GRPO training, Chapter 28), SWE-bench-style repair &mdash; are exactly the verifiable ones <span class="tag tag-certain">Certain</span>. Environment engineering has consequently become a core discipline: containerized repos with hidden tests, simulated users with policy rubrics (&tau;-bench style). The scarce resource is tasks that are simultaneously hard, diverse, and checkable; and even "verifiable" checkers leak &mdash; visible partial-credit tests invite hardcoding, which is why held-out tests are non-negotiable.</p>
+
+<h4>36.6 Multi-Turn Credit Assignment</h4>
+
+<p>Write a trajectory $\tau = (h_1, a_1, o_1, \ldots, a_H, o_H)$ and recall the policy gradient $\nabla_\theta J = \mathbb{E}\big[\sum_t A_t \nabla_\theta \log \pi_\theta(a_t \mid h_t)\big]$. With outcome-only reward, every token in every turn receives the same advantage $A_t = R(\tau) - b$: one scalar spread over $10^4$&ndash;$10^5$ token-level decisions. The estimator is unbiased but its variance grows with the number of decisions sharing that scalar &mdash; which tool call earned the reward is statistically unidentifiable from a single rollout. GRPO (Chapter 27) attacks the variance with a group baseline: $b$ is the mean return of $G$ rollouts of the same task, so the gradient weights within-task relative success. The alternative &mdash; dense per-turn credit from a learned value function or process reward model (Chapter 28) &mdash; trades variance for bias, and the bias is adversarial: a learned dense reward is one more thing for the policy to hack. The honest summary of results through 2025: outcome-only verifiable reward plus group baselines plus a lot of rollouts is what has produced every headline agent-RL result; the field pays the variance cost in compute rather than the bias cost in corruption <span class="tag tag-likely">Likely</span>.</p>
+
+<p>Two structural subtleties are specific to long horizons. First, credit must flow across context boundaries: by the time reward arrives, the decisive action may have been compacted out of context, so the policy is being trained to act through its own summaries. Second, exploration: at long $H$ most rollouts fail, and an all-zero reward group carries zero gradient. The standard remedy is a horizon curriculum &mdash; and the compounding law says where to sit. Reward variance for a Bernoulli return is $S(1-S)$, maximized at $S = \tfrac12$: the most informative training tasks are those at the model's <em>current 50% horizon</em>, $H \approx \ln 2/\lambda$. Train at the frontier of the horizon curve and move it outward <span class="tag tag-likely">Likely</span>.</p>
+
+<h4>36.7 Horizon Length as the Capability Axis</h4>
+
+<div class="definition"><div class="box-title">Definition 36.3 (50% time horizon)</div>
+<p>The 50% time horizon $T_{50}$ of a model is the human task duration at which its success rate is 50%, obtained by fitting success against log human-completion-time across a task suite. The 80% horizon $T_{80}$ is defined analogously and is substantially shorter, since success decays continuously in task length.</p></div>
+
+<p>The METR measurement (Kwa et al., 2025) is the cleanest quantitative statement of agent progress we have. On a suite of ~170 software and research tasks with human baseline times from seconds to many hours, frontier-model 50% horizons grew from seconds in 2019 to roughly 50 minutes by early 2025 (Claude 3.7 Sonnet), doubling approximately every seven months across that period, with signs of acceleration in 2024&ndash;2025 <span class="tag tag-certain">Certain</span>. Success versus task duration follows the exponential decay of Section 36.1 ($R^2 \approx 0.80$), so via $T_{50} = \ln 2/\lambda$ the finding <em>is</em> a reliability finding: each doubling of the horizon is a halving of the per-minute failure hazard. Subsequent METR updates report faster recent doubling &mdash; on the order of three to four months from 2024 onward &mdash; with measured horizons now in the hours and estimates beyond the suite's calibrated range explicitly flagged as unreliable; these numbers move quickly and should be checked against metr.org/time-horizons before quoting <span class="tag tag-verify">Verify</span>.</p>
+
+<p>The caveats are part of the result. The suite is software-weighted, containerized, and cleanly specified; METR reports lower success on tasks scored higher for real-world "messiness," so horizons on messy work are shorter than the headline <span class="tag tag-likely">Likely</span>. Human baseline times are noisy, and the 80% horizon &mdash; arguably the deployment-relevant one &mdash; is several times shorter than the 50% figure everyone quotes <span class="tag tag-likely">Likely</span>. And benchmark horizon is not delivered value: METR's own randomized controlled trial found experienced open-source developers were 19% <em>slower</em> when allowed early-2025 AI tools on their own repositories, while estimating they had been sped up (Becker et al., 2025) <span class="tag tag-certain">Certain</span>. The horizon curve measures what models can do unattended on well-posed tasks; it does not yet measure what they save you.</p>
+
+<h4>36.8 Multi-Agent Systems, Honestly</h4>
+
+<p>The arithmetic first: splitting $H$ steps among $k$ agents does not reduce the number of steps, and it adds communication steps that are themselves fallible. A multi-agent system can win only through three concrete mechanisms: context isolation (each worker gets a fresh, short context, raising its per-step $p$ relative to one agent dragging a long degrading context &mdash; Section 36.4); parallelism (wall-clock, not reliability); and cross-checking (one agent verifying another approximates the verifier of Theorem 36.1(iii)). Anything sold beyond these three is narrative.</p>
+
+<p>The evidence is genuinely split <span class="tag tag-contested">Contested</span>. In favor: Anthropic reports an orchestrator-plus-parallel-subagents research system outperforming a single-agent baseline by 90.2% on an internal research evaluation &mdash; at roughly 15&times; the token cost of chat, and on read-heavy, parallelizable work <span class="tag tag-verify">Verify</span>. Against: Cognition's position is that for shared-state work like coding, sub-agents fork state and return conflicting decisions, so context should be unified in one agent; and the MAST taxonomy (Cemri et al., 2025), built from 200+ execution traces across seven frameworks, catalogs 14 recurring failure modes in three classes &mdash; specification failures, inter-agent misalignment, and weak verification &mdash; most attributable to system design rather than model capability <span class="tag tag-likely">Likely</span>. My reading: multi-agent is a context-management technique, not a capability multiplier &mdash; it wins on parallelizable read-heavy tasks with cheap merging, loses on write-heavy shared-state tasks. What would settle it is matched-token-budget comparisons on public benchmarks; vendor evidence at unmatched budgets settles nothing.</p>
+
+<h4>36.9 Evaluating Agents</h4>
+
+<p>Distinguish two metrics over $k$ attempts: pass@$k$ = $\mathbb{E}[1-(1-p_{\text{task}})^k]$ credits any success and rises with $k$; pass$^k$ = $\mathbb{E}[p_{\text{task}}^k]$ demands all $k$ succeed and falls with $k$. The second is Theorem 36.1 applied across episodes, and it is the deployment-relevant one: &tau;-bench introduced it and reports GPT-4o falling from roughly 60% pass$^1$ to below 25% pass$^8$ on its retail domain <span class="tag tag-likely">Likely</span> &mdash; a "60%-capable" agent that can be relied on for one in four repeated workflows.</p>
+
+<p>The current landscape, briefly: SWE-bench Verified (500 human-screened GitHub issue repairs; the de facto coding-agent standard, with frontier scores now high enough that contamination and scaffold effects dominate the leaderboard's top &mdash; treat any current number as perishable <span class="tag tag-verify">Verify</span>); &tau;/&tau;&sup2;-bench (tool + simulated user + policy adherence); OSWorld (desktop computer use); WebArena (browser tasks; GPT-4 scored 14.4% against a 78.2% human baseline at 2023 release, a gap since largely closed <span class="tag tag-likely">Likely</span>); GAIA (tool-using assistant questions); Terminal-Bench; and a newer generation of deliberately long-horizon suites &mdash; SWE-bench Pro, marathon- and repository-scale benchmarks &mdash; built because the older ones saturate, on which their authors report frontier success rates below 30&ndash;40% <span class="tag tag-verify">Verify</span>.</p>
+
+<p>Chapter 29's measurement crisis applies here with interest: a reported score is a property of model <em>plus scaffold plus harness</em>; single-run reporting of a high-variance quantity is common; harnesses themselves get reward-hacked. The prescription follows from this chapter's thesis. Report the success-versus-horizon curve, not a scalar. Report pass$^k$. And fit the $p^H$ model to your own agent: where measured success sits above the fit, self-correction is working; where it sits below, state corruption is accumulating &mdash; the deviation is a diagnostic, and Artifact 36.1 is the template for measuring it.</p>
+
+<div class="artifact-box"><div class="box-title">Artifact 36.1 &mdash; Horizon Compounding in a Sandbox Agent Loop</div>
+<p>A deterministic agent loop over three in-process tools (calculator, key-value store, append-only file) driven by a scripted policy with an injectable per-step error rate &mdash; no LLM calls, because the object of study is the reliability arithmetic itself. The task is to maintain a running sum and log it each step; success is judged by comparing the final file to ground truth through the environment. Three regimes are measured over 3,000 episodes at each of nine horizons spanning $H = 1$ to $64$: independent errors, persistent state corruption (glitches leave junk keys that raise the later read hazard), and a per-step verifier with up to two independent retries. Assertions check that regime one tracks $p^H$ within binomial tolerance, regime two is significantly worse, and regime three matches the geometric-retry prediction $q^H$.</p>
+<pre><code>&quot;&quot;&quot;Artifact 36.1 -- Horizon compounding in a deterministic sandbox agent loop.
+
+A tiny agent environment with three in-process tools (calculator, key-value
+store, append-only file) driven by a SCRIPTED policy with an injectable
+per-step error rate.  No LLM calls anywhere: the point is the reliability
+arithmetic, measured through the environment rather than assumed.
+
+Task: maintain a running sum acc_t = sum_{i&lt;=t} (2i+1) = t^2 + 2t and log
+&quot;t:acc_t&quot; to the file each step.  An episode of horizon H succeeds iff the
+final file equals the ground-truth log exactly.
+
+Three regimes:
+  (a) independent  -- each step re-derives its value from the plan; an injected
+      error corrupts only that step&#x27;s line.  Prediction: success = p^H.
+  (b) corrupt      -- the policy reads the accumulator back from the KV store,
+      and glitches leave junk keys that persist; the more junk, the likelier a
+      later read grabs junk (state corruption raising the later hazard).
+      Prediction: success measurably WORSE than p^H at the same injected rate.
+  (c) verify       -- like (a), plus a per-step verifier (a unit test for the
+      segment) that catches a bad step and retries it up to r times.
+      Prediction: success = q^H with q = 1-(1-p)^(r+1) (geometric retry).
+&quot;&quot;&quot;
+import numpy as np
+
+# ------------------------------ sandbox tools -------------------------------
+class Calculator:                                   # pure, deterministic
+    def apply(self, op, a, b):
+        if op == &quot;add&quot;: return a + b
+        if op == &quot;mul&quot;: return a * b
+        raise ValueError(op)
+
+class KVStore:                                      # mutable state that persists
+    def __init__(self): self.d = {}
+    def set(self, k, v): self.d[k] = v
+    def get(self, k, default=None): return self.d.get(k, default)
+    def junk_count(self): return sum(1 for k in self.d if k.startswith(&quot;tmp&quot;))
+
+class FileTool:                                     # append-only log
+    def __init__(self): self.lines = []
+    def append(self, line): self.lines.append(line)
+
+def truth_lines(H):
+    return [f&quot;{t}:{t * t + 2 * t}&quot; for t in range(1, H + 1)]
+
+# ------------------------------ one episode ---------------------------------
+def run_episode(H, p, rng, mode, truth, retries=0, glitch_p=0.10, snag_p=0.05):
+    calc, kv, log = Calculator(), KVStore(), FileTool()
+    for t in range(1, H + 1):
+        if mode == &quot;independent&quot;:
+            # Stateless re-derivation: acc_t = t*t + 2t computed fresh from the
+            # plan, so an error here cannot propagate to later steps.
+            acc = calc.apply(&quot;add&quot;, calc.apply(&quot;mul&quot;, t, t), 2 * t)
+            if rng.random() &gt; p:                    # injected action error
+                acc += int(rng.integers(1, 10))
+        elif mode == &quot;corrupt&quot;:
+            # Stateful accumulation: read acc back from the store.  Each junk
+            # key snags the read with prob snag_p (independently), so the
+            # per-step hazard grows with accumulated corruption.
+            j = kv.junk_count()
+            prev = kv.get(&quot;acc&quot;, 0)
+            if j and rng.random() &gt; (1.0 - snag_p) ** j:
+                prev = 999_983                      # grabbed a junk entry
+            acc = calc.apply(&quot;add&quot;, prev, 2 * t + 1)
+            if rng.random() &gt; p:                    # same injected rate as (a)
+                acc += int(rng.integers(1, 10))
+            if rng.random() &lt; glitch_p:             # glitch leaves junk behind
+                kv.set(f&quot;tmp{t}&quot;, 999_983)
+        elif mode == &quot;verify&quot;:
+            # Verifiable segment: the environment can unit-test each step&#x27;s
+            # output; a failed check rolls the step back and retries.
+            expected = t * t + 2 * t
+            for _ in range(retries + 1):
+                acc = calc.apply(&quot;add&quot;, calc.apply(&quot;mul&quot;, t, t), 2 * t)
+                if rng.random() &gt; p:
+                    acc += int(rng.integers(1, 10))
+                if acc == expected:
+                    break                           # verifier accepts
+        kv.set(&quot;acc&quot;, acc)
+        log.append(f&quot;{t}:{acc}&quot;)
+    ok_lines = sum(a == b for a, b in zip(log.lines, truth))
+    return log.lines == truth, ok_lines            # success judged via the env
+
+def simulate(H, p, n, rng, mode, retries=0):
+    truth = truth_lines(H)
+    wins = tot_ok = 0
+    for _ in range(n):
+        w, ok = run_episode(H, p, rng, mode, truth, retries)
+        wins += w; tot_ok += ok
+    return wins / n, tot_ok / (n * H)              # success rate, line accuracy
+
+# --------------------------------- driver -----------------------------------
+if __name__ == &quot;__main__&quot;:
+    rng  = np.random.default_rng(0)
+    p, r, N = 0.90, 2, 3000                        # per-step accuracy, retries, episodes
+    q    = 1.0 - (1.0 - p) ** (r + 1)              # geometric-retry effective accuracy
+    grid = [1, 2, 4, 8, 16, 24, 32, 48, 64]
+    sd   = lambda s: (max(s * (1 - s), 1e-12) / N) ** 0.5
+
+    print(f&quot;p = {p}  retries = {r}  q = 1-(1-p)^{r+1} = {q:.6f}  N = {N} episodes/point&quot;)
+    print(f&quot;{&#x27;H&#x27;:&gt;3} {&#x27;p^H&#x27;:&gt;8} {&#x27;indep&#x27;:&gt;8} {&#x27;corrupt&#x27;:&gt;8} {&#x27;verify&#x27;:&gt;8} {&#x27;q^H&#x27;:&gt;8}&quot;)
+    res = {}
+    for H in grid:
+        sA, lA = simulate(H, p, N, rng, &quot;independent&quot;)
+        sB, lB = simulate(H, p, N, rng, &quot;corrupt&quot;)
+        sC, lC = simulate(H, p, N, rng, &quot;verify&quot;, retries=r)
+        res[H] = (sA, lA, sB, lB, sC)
+        print(f&quot;{H:&gt;3} {p**H:&gt;8.4f} {sA:&gt;8.4f} {sB:&gt;8.4f} {sC:&gt;8.4f} {q**H:&gt;8.4f}&quot;)
+
+    # (a) independent errors track p^H within binomial tolerance at every H
+    worst = max(abs(res[H][0] - p ** H) - 4.5 * sd(p ** H) for H in grid)
+    print(f&quot;\n[a] max (|indep - p^H| - 4.5*sigma) over H grid: {worst:+.4f}  (&lt;= 0.004 required)&quot;)
+    for H in grid:
+        assert abs(res[H][0] - p ** H) &lt;= 4.5 * sd(p ** H) + 0.004, f&quot;(a) fails at H={H}&quot;
+    phatA = res[16][1]                              # measured per-step accuracy, mode (a)
+    print(f&quot;[a] measured per-step line accuracy at H=16: {phatA:.4f} (injected p = {p})&quot;)
+    assert abs(phatA - p) &lt; 0.01
+
+    # (b) persistent corruption: worse than p^H, by &gt;3 pooled-sigma at H=16,32
+    for H in (16, 32):
+        sA, _, sB, _, _ = res[H]
+        gap  = p ** H - sB
+        pool = ((p**H * (1 - p**H) + sB * (1 - sB)) / N) ** 0.5
+        print(f&quot;[b] H={H}: p^H - corrupt = {gap:.4f}  ({gap/pool:.1f} pooled sigma)&quot;)
+        assert gap &gt; 3 * pool, f&quot;(b) not separated at H={H}&quot;
+    sB16, lB16 = res[16][2], res[16][3]             # independence fails both ways:
+    print(f&quot;[b] H=16 marginal line accuracy {lB16:.4f}: naive {lB16:.3f}^16 = &quot;
+          f&quot;{lB16**16:.2e} &lt;&lt; measured success {sB16:.4f} &lt; p^16 = {p**16:.4f}&quot;)
+    assert lB16 ** 16 &lt; sB16 &lt; p ** 16              # under- and over-prediction
+
+    # (c) verifier+retry matches the geometric prediction q^H and beats (a)
+    worst = max(abs(res[H][4] - q ** H) - 4.5 * sd(q ** H) for H in grid)
+    print(f&quot;[c] max (|verify - q^H| - 4.5*sigma) over H grid: {worst:+.4f}  (&lt;= 0.004 required)&quot;)
+    for H in grid:
+        assert abs(res[H][4] - q ** H) &lt;= 4.5 * sd(q ** H) + 0.004, f&quot;(c) fails at H={H}&quot;
+        if H &gt;= 8:
+            assert res[H][4] - res[H][0] &gt; 0.2, f&quot;(c) no lift at H={H}&quot;
+    print(f&quot;[c] lift at H=64: verify {res[64][4]:.4f} vs indep {res[64][0]:.4f} &quot;
+          f&quot;(analytic {q**64:.4f} vs {p**64:.4f})&quot;)
+
+    # required per-step accuracy for 90% end-to-end success
+    req = &quot;, &quot;.join(f&quot;H={H}:{0.9 ** (1.0 / H):.5f}&quot; for H in (8, 16, 32, 64))
+    print(f&quot;\nper-step accuracy required for 90% end-to-end success: {req}&quot;)
+    print(&quot;ALL ASSERTIONS PASSED&quot;)
+</code></pre>
+<p>With $p=0.9$: at $H=16$ the independent regime measures 0.1833 against $p^{16}=0.1853$, and the worst deviation across the whole grid stays inside 4.5 binomial standard errors (max slack $-0.0027$). The corrupted-state regime measures 0.1180 at $H=16$ &mdash; 7.3 pooled standard errors below $p^H$ &mdash; while its naive per-line accuracy of 0.415 would predict $0.415^{16} \approx 7.7\times 10^{-7}$, five orders of magnitude too pessimistic: independence fails in both directions in the same data. The verifier regime holds 0.9470 at $H=64$ against the analytic $q^{64}=0.9380$, versus 0.0013 without it. Total runtime: about 4 s on CPU.</p>
+</div>
+
+<div class="key-takeaways"><div class="kt-title">Key Takeaways</div>
+<ul>
+<li>Under independent errors, end-to-end success is $p^H$: 90% success at $H=64$ requires per-step accuracy 0.99836. Per-step reliability is the whole game; measured success tracks the formula to within binomial noise in Artifact 36.1. <span class="tag tag-certain">Certain</span></li>
+<li>A sound verifier with $r$ independent retries lifts per-step success to $1-(1-p)^{r+1}$; in the artifact this turns 0.13% end-to-end success at $H=64$ into 94.7%, matching the analytic prediction. Correlated retries (same context, temperature 0) buy nothing. <span class="tag tag-certain">Certain</span></li>
+<li>Constrained decoding guarantees tool-call syntax; only training data &mdash; diverse schemas, error-recovery traces, negative examples &mdash; buys tool-call semantics. <span class="tag tag-likely">Likely</span></li>
+<li>Agent RL that works today is outcome-only reward in verifiable environments with group baselines; dense learned rewards trade variance for a bias the policy learns to exploit, and reward hacking is measured to grow with task size. <span class="tag tag-likely">Likely</span></li>
+<li>METR's 50% time horizon doubled roughly every seven months from 2019 to early 2025, faster since; because success decays exponentially in task length, horizon growth is per-step hazard reduction &mdash; the capability axis is a reliability axis. Current horizon figures move monthly; check before quoting. <span class="tag tag-verify">Verify</span></li>
+</ul>
+</div>
+</div>

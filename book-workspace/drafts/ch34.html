@@ -1,0 +1,311 @@
+<div class="chapter" id="ch34">
+<div class="chapter-header"><div class="ch-label">Chapter 34</div><h3>Quantization, Distillation, and Compression</h3></div>
+
+<div class="learning-objectives">
+<div class="lo-title">Learning Objectives</div>
+<ul>
+<li>Derive symmetric and asymmetric affine quantization and per-tensor versus per-group scaling, and compute the exact memory footprint of each setting in bits per weight.</li>
+<li>Explain the emergent-outlier phenomenon in large-model activations and how mixed-precision decomposition and activation-aware scaling each address it.</li>
+<li>Derive the GPTQ layerwise update from the optimal brain quantization framework and explain why it beats round-to-nearest.</li>
+<li>Explain quantization-aware training, the straight-through estimator, and what ternary models have and have not demonstrated.</li>
+<li>Implement GPTQ from scratch in working code, including the Cholesky-form inverse-Hessian error propagation.</li>
+</ul>
+</div>
+
+<div class="read-alongside"><strong>Read alongside</strong> &mdash; Stanford <strong>CS336</strong> covers inference-time quantization in its systems lectures and is the closest course treatment of this chapter. The HuggingFace <strong>Ultra-Scale Playbook</strong> is the best practical reference for mixed-precision and FP8 training mechanics. <strong>Raschka</strong>, <em>Build a Large Language Model (From Scratch)</em>, has a concrete walk through of loading and running quantized weights.</div>
+
+<p>Chapter 30 established that decoding is bandwidth-bound: every generated token streams the full parameter set through HBM, so latency is bytes divided by bandwidth. Chapter 33 attacked the problem by batching and caching; this chapter attacks the bytes. Cutting weights from 16 bits to 4 cuts decode latency by nearly 4&times; before any kernel cleverness, which is why weight-only 4-bit quantization is the most deployed inference optimization in existence. The central claim: 4-bit weights are nearly free, 2-bit weights are not, and activation quantization is harder than weight quantization <em>despite using more bits</em> &mdash; and all three facts have the same cause, a handful of high-magnitude outlier feature channels that emerge in large transformers. We build the standard fixes (GPTQ, AWQ, rotations), then treat training-time quantization (QAT, FP8, ternary models), KV-cache quantization, and the two non-quantization compression axes, distillation and pruning. Part VIII, especially Chapter 40, returns to quantization as an <em>enabler</em> for encrypted inference.</p>
+
+<h4>34.1 Quantization Fundamentals</h4>
+
+<div class="definition">
+<div class="box-title">Definition 34.1 (Affine quantization)</div>
+<p>A $b$-bit affine quantizer maps a real $w$ to an integer code $q \in \{0,\dots,2^b-1\}$ via a scale $s&gt;0$ and zero-point $z$:
+$$q = \mathrm{clip}\!\left(\mathrm{round}(w/s) + z,\; 0,\; 2^b-1\right), \qquad \hat w = s\,(q - z).$$
+The quantizer is <em>symmetric</em> when $z$ is fixed at the midpoint (equivalently, signed codes with $\hat w = s\,q$, $q \in \{-2^{b-1},\dots,2^{b-1}-1\}$) and <em>asymmetric</em> when $z$ is fit to the data. For a tensor with values in $[w_{\min}, w_{\max}]$, the standard asymmetric fit is $s = (w_{\max}-w_{\min})/(2^b-1)$, $z = \mathrm{round}(-w_{\min}/s)$; the symmetric fit is $s = \max|w| / (2^{b-1}-1)$.</p>
+</div>
+
+<p>Rounding to the nearest grid point bounds the elementwise error by $s/2$, so everything reduces to making $s$ small over the values that matter. Under the standard model of rounding error as uniform over a step, error variance is $s^2/12$ &mdash; decent for weights, badly wrong for activations (Section 34.2). Symmetric quantization wastes grid on skewed data; asymmetric costs a zero-point per unit and a subtraction per dequantize. Weights are near-symmetric, so both are used; post-SiLU activations are skewed, so asymmetric wins there.</p>
+
+<p>The remaining design axis is <em>granularity</em>: how many elements share one $(s,z)$ pair. Storing scales in FP16 and zero-points in $b$ bits, the exact footprint per weight is:</p>
+
+<table>
+<tr><th>Granularity</th><th>Scales stored</th><th>Effective bits/weight</th><th>4-bit example</th></tr>
+<tr><td>Per-tensor</td><td>1</td><td>$b + o(1)$</td><td>4.00</td></tr>
+<tr><td>Per-channel (row of $W \in \mathbb{R}^{d_{\text{out}}\times d_{\text{in}}}$)</td><td>$d_{\text{out}}$</td><td>$b + 32/d_{\text{in}}$</td><td>4.008 at $d_{\text{in}}{=}4096$</td></tr>
+<tr><td>Per-group, size $g$ along $d_{\text{in}}$</td><td>$d_{\text{out}} d_{\text{in}}/g$</td><td>$b + 32/g$</td><td>4.25 at $g{=}128$</td></tr>
+</table>
+
+<p>Per-group at $g=128$ is the deployed default (GPTQ and AWQ checkpoints both use it): 4.25 effective bits shrinks a 7B-parameter model from 13.5&thinsp;GB in FP16 to about 3.6&thinsp;GB, a 3.76&times; reduction in the bytes every decode step must move. <span class="tag tag-certain">Certain</span> The reason finer granularity helps so much is that one scale must span the whole range of its unit; a single large value inside the unit stretches $s$ and coarsens the grid for everyone else. That is the outlier problem in miniature, and it deserves a worked number.</p>
+
+<div class="example">
+<div class="box-title">Example 34.1 (One outlier stretches the grid)</div>
+<p>Quantize $w = (0.1, -0.2, 0.5, 3.2)$ to $b=4$ bits, asymmetric, one shared scale. Range $= 3.4$, so $s = 3.4/15 = 0.2267$, $z = \mathrm{round}(0.2/s) = 1$. Codes: $0.1 \to \mathrm{round}(0.441)+1 = 1 \to \hat w = 0$; $-0.2 \to 0 \to -0.227$; $0.5 \to 3 \to 0.453$; $3.2 \to 15 \to 3.173$. Errors: $(0.100, 0.027, 0.047, 0.027)$ &mdash; the <em>small</em> weight takes the largest error. Drop the outlier and requantize the remaining three: $s = 0.7/15 = 0.0467$, max possible error $s/2 = 0.023$, and $0.1 \to 0.093$ (error $0.007$, 14&times; smaller). One value in the unit degraded every other value by roughly the ratio of ranges, $3.4/0.7 \approx 4.9$. Groups bound the blast radius of an outlier to $g$ elements.</p>
+</div>
+
+<h4>34.2 Outlier Features</h4>
+
+<p>Weights of trained transformers are well-behaved: approximately Gaussian per channel, range a few standard deviations, no heavy tail. Activations are not. Dettmers et al. (2022, LLM.int8()) documented that beyond roughly 6.7B parameters, transformer residual streams develop a small set of feature <em>channels</em> &mdash; the same coordinate indices across tokens and layers &mdash; with magnitudes up to ~20&times; the typical scale, and that these channels are functionally load-bearing: zeroing them collapses perplexity. <span class="tag tag-likely">Likely</span> (the phenomenon replicates across model families; the sharp "emergence at 6.7B" threshold is softer in later measurements, which tie outliers to attention sinks and LayerNorm dynamics rather than scale per se). By Example 34.1's arithmetic, a 20&times; outlier channel inside a per-tensor activation scale destroys the effective resolution of every other channel &mdash; which is why naive W8A8 INT8 inference works up to a few billion parameters and then abruptly stops working, while 4-bit <em>weight-only</em> quantization keeps working: the outliers live in the activations, which weight-only schemes leave in FP16.</p>
+
+<p>Two families of fixes, both of which reappear throughout the chapter:</p>
+
+<p><strong>Mixed-precision decomposition.</strong> LLM.int8() splits the GEMM by column: the ~0.1% of channels whose activation magnitude exceeds a threshold are computed in FP16, the rest in INT8, and the partial products are summed. Exact where it matters, but the scatter/gather is slow in practice &mdash; the paper itself reports small-batch overhead &mdash; and serving stacks largely abandoned this route. <span class="tag tag-verify">Verify</span></p>
+
+<p><strong>Scale migration.</strong> Since $Wx = (W\,\mathrm{diag}(s))(\mathrm{diag}(s)^{-1}x)$ for any positive per-channel scale $s$, difficulty can be moved between activations and weights without changing the function. SmoothQuant picks $s_j = \max|x_j|^{\alpha} / \max|w_{\cdot j}|^{1-\alpha}$ to shave activation outliers down into the (well-behaved, easy to absorb) weights, enabling W8A8. AWQ (Section 34.3) runs the same identity in the opposite direction &mdash; scaling salient weight columns <em>up</em> so the quantization grid resolves them finely. The artifact measures this directly: with 4 of 256 activation channels scaled 50&times;, those channels carry <strong>97.6%</strong> of the layer's weight-quantization output error energy, and a per-channel scale with $\alpha=0.25$ cuts output MSE 3.9&times;.</p>
+
+<div class="warning-box">
+<div class="box-title">Common Pitfall</div>
+<p>Per-tensor symmetric absmax calibration on activations. The scale $s = \max|x|/127$ is set by the single largest outlier in the calibration batch; with a 20&times; outlier channel, typical activations land in the bottom ~6 of 127 levels and many round to exactly zero. The failure is silent &mdash; no NaNs, no errors, just a model that generates fluent garbage. Symptoms: INT8 works on the small model and fails on the big one from the same codebase. Fixes, in increasing order of effort: per-token or per-channel scales, percentile clipping instead of absmax, scale migration, rotations.</p>
+</div>
+
+<h4>34.3 Weight-Only PTQ: RTN, GPTQ, AWQ</h4>
+
+<p>Post-training quantization (PTQ) takes a trained checkpoint and a few hundred calibration sequences; no gradients, no labels. The baseline is <em>round-to-nearest</em> (RTN): fit a grid per group, round every weight independently. RTN at 4 bits with $g=128$ is already close to lossless on models above ~7B (typically a few tenths of a point of perplexity): everything fancier is fighting for the remaining gap, and for the 3- and 2-bit regimes where RTN falls apart. <span class="tag tag-likely">Likely</span></p>
+
+<p>RTN's error is suboptimal for a reason you can state exactly: it minimizes weight-space error $\|W - \hat W\|_F^2$, but the quantity that matters is layer-output error $\|WX - \hat W X\|_F^2$ over the actual input distribution, and inputs are correlated. Rounding error committed on one weight can be partially cancelled by adjusting other weights that multiply correlated inputs. GPTQ (Frantar et al., 2022) is the algorithm that does this cancellation exactly, one column at a time, and it descends from optimal brain damage/surgeon via <em>optimal brain quantization</em> (OBQ).</p>
+
+<h5>34.3.1 The optimal update</h5>
+
+<p>Fix a row $w \in \mathbb{R}^{d_{\text{in}}}$ of $W$ and calibration inputs $X \in \mathbb{R}^{d_{\text{in}} \times n}$. Perturbing $w$ by $\delta$ changes the layerwise loss by $\delta^\top H \delta$ with Hessian $H = XX^\top$ &mdash; the loss is exactly quadratic, so this is not a Taylor approximation. Quantizing coordinate $j$ forces $\delta_j = \hat w_j - w_j$; the question is how to set the other coordinates.</p>
+
+<div class="theorem">
+<div class="box-title">Theorem 34.1 (OBQ compensation step)</div>
+<p>Let $H \succ 0$ and fix $\delta_j = \varepsilon$. The minimizer of $\delta^\top H \delta$ subject to that constraint is
+$$\delta^\star = \frac{\varepsilon}{[H^{-1}]_{jj}}\, H^{-1} e_j, \qquad \text{with cost} \qquad \delta^{\star\top} H \delta^\star = \frac{\varepsilon^2}{[H^{-1}]_{jj}}.$$</p>
+<p><strong>Proof.</strong> Lagrangian $\mathcal{L} = \delta^\top H \delta - 2\lambda(e_j^\top \delta - \varepsilon)$. Stationarity gives $H\delta = \lambda e_j$, so $\delta = \lambda H^{-1} e_j$. The constraint $e_j^\top \delta = \lambda [H^{-1}]_{jj} = \varepsilon$ fixes $\lambda = \varepsilon/[H^{-1}]_{jj}$. Substituting, $\delta^\top H \delta = \lambda^2 e_j^\top H^{-1} H H^{-1} e_j = \lambda^2 [H^{-1}]_{jj} = \varepsilon^2/[H^{-1}]_{jj}$. $\blacksquare$</p>
+</div>
+
+<p>So the optimal move is: commit the rounding error $\varepsilon$ on coordinate $j$, then <em>spread</em> a compensating update $\varepsilon\,[H^{-1}]_{F,j}/[H^{-1}]_{jj}$ across the not-yet-quantized coordinates $F$. The cost formula also says which coordinate to quantize next (the one minimizing $\varepsilon_j^2/[H^{-1}]_{jj}$) &mdash; that greedy ordering is OBQ, and it is $O(d_{\text{in}}^3)$ <em>per row</em>, hopeless for $d_{\text{in}} = 12{,}288$.</p>
+
+<h5>34.3.2 GPTQ's three simplifications</h5>
+
+<p>GPTQ makes OBQ linear-algebra-cheap with three observations. First, quantize columns in a <em>fixed</em> left-to-right order for all rows: empirically the greedy order buys little on large layers, and a fixed order means every row does the same sequence of Schur complements. Second, since $H = XX^\top$ is shared by all $d_{\text{out}}$ rows, the compensation directions can be precomputed once: taking the Cholesky factorization $H^{-1} = T^\top T$ with $T$ upper-triangular, row $j$ of $T$ is exactly the (rescaled) inverse-Hessian row needed at step $j$ <em>after</em> coordinates $1,\dots,j-1$ have been eliminated &mdash; the sequence of Schur-complement inverses, packaged in one $O(d_{\text{in}}^3)$ factorization. The update becomes: for each column $j$, quantize, then
+$$W_{:,\,j+1:} \;\mathrel{-}=\; \frac{(w_j - \hat w_j)}{T_{jj}}\; T_{j,\,j+1:},$$
+applied to all rows at once as a rank-1 GEMM. Third, batch the rank-1 updates into blocks of 128 columns so the work is GEMM-bound rather than bandwidth-bound. Total cost is $O(d^3)$ per layer; the paper quantizes OPT-175B in about 4 GPU-hours on a single A100. <span class="tag tag-verify">Verify</span> A practical necessity the theorem hides: $H$ is near-singular whenever calibration is thin or inputs are low-rank, so implementations add damping $H \mathrel{+}= \lambda\,\mathrm{mean}(\mathrm{diag}\,H)\,I$ with $\lambda \approx 0.01$ before the Cholesky; skip it and the factorization fails or the propagated updates explode.</p>
+
+<p>Why does this beat RTN? Not by choosing better grids &mdash; GPTQ uses the same grid RTN would. It wins purely through propagation: each rounding error is partially refunded by later columns. The artifact isolates exactly this by running GPTQ with the update step disabled (identical grid, identical order) and measuring layer-output MSE on correlated calibration data: at 4/3/2 bits GPTQ achieves 0.67&times;/0.68&times;/0.68&times; the RTN error, while the no-propagation ablation is bit-for-bit identical to RTN. The relative gain is strikingly stable across bit widths; the <em>absolute</em> stakes are not, which is why GPTQ-vs-RTN matters little at 4 bits and enormously at 2.</p>
+
+<h5>34.3.3 AWQ</h5>
+
+<p>AWQ (Lin et al., 2023) starts from a measurement: protecting the ~1% of weight channels with the largest average activation magnitude (keeping them FP16) recovers most of RTN's quality loss, but mixed precision is hardware-hostile. The fix is the scale-migration identity from Section 34.2, run toward the weights: multiply salient input-channel columns of $W$ by $s_j = \mathbb{E}[|x_j|]^{\alpha}$ (with $\alpha$ grid-searched per layer against reconstruction error), divide the activations correspondingly &mdash; in practice folded into the previous layer &mdash; and quantize the scaled weights. Scaled-up columns occupy more of the grid's dynamic range and get finer effective resolution precisely where the layer's output is most sensitive. No Hessian, no iterative solve, no backward pass; and because it never fits per-column updates to calibration data, AWQ generalizes somewhat better across domains on some evals. GPTQ and AWQ together are the deployed standard: the bulk of quantized open-model checkpoints on HuggingFace ship in one of the two formats (or GGUF's closely related k-quants). <span class="tag tag-verify">Verify</span> against current HF download stats.</p>
+
+<h4>34.4 Rotation-Based Methods</h4>
+
+<p>Grouping bounds outlier damage; scaling migrates it; rotations <em>dissolve</em> it. For any orthogonal $Q$, replacing $W \to WQ$ and $x \to Q^\top x$ leaves every layer output unchanged, and in pre-norm transformers with RMSNorm the rotation commutes with the normalization (RMSNorm is rotation-equivariant once its diagonal gain is folded into the adjacent weights), so $Q$ can be absorbed into weight matrices offline at zero inference cost. A random or Walsh&ndash;Hadamard rotation mixes every coordinate into every other, so a residual stream with a few huge channels becomes, in the rotated basis, near-Gaussian with no heavy coordinates &mdash; formally, the rotation makes weights and activations <em>incoherent</em>, bounding $\max_{ij}$ entries relative to the Frobenius norm. QuIP established the incoherence framing; QuIP# added Hadamard-based incoherence processing plus E8-lattice vector codebooks and is among the strongest published results at 2&ndash;3 bits; QuaRot applied fused rotations to make weights, activations, <em>and</em> KV cache all INT4; SpinQuant learns the rotation matrices (optimizing over the orthogonal manifold via Cayley SGD) rather than fixing them randomly, and reports closing the W4A4KV4 zero-shot gap on LLaMA-2 7B to 2.9 points versus 19&ndash;25 point gaps for earlier methods. <span class="tag tag-verify">Verify</span> &mdash; all three numbers are paper-reported, not remeasured here. Rotations are the reason "4-bit activations" stopped being absurd, and the point where the chapter's thesis becomes a recipe: the outliers were never information-theoretically necessary, they were a basis artifact.</p>
+
+<h4>34.5 Activation Quantization and FP8</h4>
+
+<p>Weight-only quantization accelerates memory-bound decode but leaves compute in FP16; compute-bound phases (prefill, training, large-batch serving) need <em>both</em> operands of the GEMM in low precision to use the fast tensor-core paths. Activations must then be quantized on the fly, per token &mdash; scales computed at runtime from data that includes the outliers, which is why W8A8 needed SmoothQuant-style migration and W4A4 needed rotations.</p>
+
+<p>FP8 changes the trade rather than solving the problem: an 8-bit float (E4M3: 4 exponent bits, 3 mantissa bits; or E5M2) spends bits on dynamic range instead of resolution, tolerating outliers far better than INT8 at the same width. DeepSeek-V3 is the landmark at-scale validation: a 671B-parameter MoE pretrained with FP8 GEMMs throughout, using E4M3 for all tensors (not the earlier E4M3-forward/E5M2-backward convention), fine-grained scaling &mdash; $1\times128$ tiles for activations, $128\times128$ blocks for weights, the training-side echo of per-group weight quantization &mdash; and promotion of partial sums from tensor cores to FP32 CUDA-core accumulators every 128 multiply-accumulates, working around the H800's limited-precision internal accumulation. The reported relative loss error versus a BF16 baseline stays under 0.25%. <span class="tag tag-verify">Verify</span> against the DeepSeek-V3 technical report (arXiv:2412.19437). The through-line from Section 34.1 is exact: even with floating-point formats, the winning move was finer scaling granularity.</p>
+
+<h4>34.6 QAT and the Straight-Through Estimator</h4>
+
+<p>PTQ repairs a frozen model; quantization-aware training (QAT) lets the model adapt. The forward pass applies "fake quantization" $\hat w = s(\mathrm{clip}(\mathrm{round}(w/s)+z) - z)$ while keeping an FP32 shadow copy of $w$; the backward pass faces the problem that $\mathrm{round}(\cdot)$ has zero derivative almost everywhere.</p>
+
+<div class="definition">
+<div class="box-title">Definition 34.2 (Straight-through estimator)</div>
+<p>The STE replaces the true Jacobian of the quantizer with the identity on the unclipped region:
+$$\frac{\partial \hat w}{\partial w} := \mathbb{1}\!\left[\,0 \le \mathrm{round}(w/s)+z \le 2^b - 1\,\right],$$
+i.e., gradients pass through rounding unchanged and are zeroed where the value clipped. Updates accumulate in the FP32 shadow weights; the quantized value changes only when the shadow crosses a grid boundary.</p>
+</div>
+
+<p>The STE is a biased estimator of a gradient that does not exist, and it works anyway; the honest theoretical account is that fake-quantized training approximately minimizes the loss of the quantized network as long as steps are small relative to grid spacing, with the shadow weights doing a dithered search over grid assignments. Zeroing the gradient outside the clip range matters &mdash; pass gradients there too and weights drift arbitrarily far past the representable range. Refinements treat $s$ itself as a learnable parameter with its own STE-derived gradient (LSQ). The cost profile fixes the division of labor: QAT needs data, training infrastructure, and some percent of pretraining compute, so it is reserved for regimes PTQ cannot reach &mdash; sub-4-bit weights, aggressive activation formats, edge deployment &mdash; while 4-bit weight-only stays PTQ. <span class="tag tag-likely">Likely</span></p>
+
+<h4>34.7 Ternary Models</h4>
+
+<p>The extreme of QAT is training with weights constrained to $\{-1, 0, +1\}$ from step zero &mdash; 1.58 bits ($\log_2 3$) per weight, with a per-tensor FP scale, 8-bit activations, and FP32 shadow weights during training. BitNet b1.58 (Microsoft, 2024) claimed parity with FP16 LLaMA-architecture baselines at 3B parameters; BitNet b1.58 2B4T (2025) is the strongest public evidence: a 2B-parameter ternary model trained on 4T tokens that the technical report places within 1&ndash;2 points of similarly sized full-precision open models (Qwen2.5-1.5B, MiniCPM, Gemma-3 1B class) on MMLU, GSM8K, and commonsense suites, with ~0.4&thinsp;GB weight memory and genuinely fast CPU inference via bitnet.cpp. <span class="tag tag-verify">Verify</span> against arXiv:2504.12285.</p>
+
+<p>What ternary models have <em>not</em> demonstrated is the claim the headlines imply. <span class="tag tag-contested">Contested</span> The comparisons are against models trained on different data with different recipes, so "parity" is confounded; no ternary model has been shown competitive at 7B&ndash;70B+ against an equally resourced full-precision twin; and the fair baseline question is unsettled &mdash; at matched <em>memory</em> (a ternary 10B versus an FP4-quantized ~3B, say) or matched training compute, it is not established that ternary wins, and PTQ-to-4-bit of a strong FP model remains the better accuracy-per-byte trade at every scale where both exist. Our position: BitNet-class results are real evidence that extreme weight precision is not fundamental at the ~2B scale, and are not yet evidence that frontier training should be ternary. What would settle it: one controlled scaling study, identical data and tokens, ternary versus BF16 versus FP4-PTQ, crossing 7B. Note the asymmetry with Section 34.5: FP8 training is production reality at 671B; ternary's largest public validation is ~2B.</p>
+
+<h4>34.8 KV-Cache Quantization</h4>
+
+<p>Chapter 33 computed the KV cache at $2 \cdot L \cdot n \cdot d_{\text{kv}}$ elements per sequence; at long context it, not the weights, is the memory bound, and at large batch it is also the bandwidth bound for attention. The cache is activation data, so Section 34.2's pathology applies with a twist that has a clean empirical signature: <em>keys</em> exhibit strong per-channel outliers (specific $d_k$ coordinates are large across all positions, a structure RoPE further imprints), while <em>values</em> show no such channel structure. The deployed recipe follows directly: quantize keys per-channel and values per-token &mdash; the KIVI observation &mdash; which pushes both to 2 bits given a short FP16 window of recent tokens (rounding recent keys hurts most: their attention logits are largest, and $\mathrm{softmax}$ amplifies logit error exponentially). <span class="tag tag-likely">Likely</span> In practice INT8 KV is near-free, 4-bit is the standard aggressive setting (llama.cpp, vLLM, TensorRT-LLM all ship it), and 2-bit degrades long-context retrieval first &mdash; needle-style evals are the right smoke test. <span class="tag tag-verify">Verify</span> against current vLLM/TensorRT-LLM documentation.</p>
+
+<h4>34.9 Distillation and Pruning</h4>
+
+<p>Quantization shrinks bits per parameter; distillation shrinks the parameter count by training a small student against a large teacher's <em>distribution</em> rather than one-hot data. The classic loss (Hinton et al., 2015) softens both with temperature $\tau$:
+$$\mathcal{L}_{\text{KD}} = \tau^2 \cdot \mathrm{KL}\!\left(\mathrm{softmax}(z_t/\tau)\,\|\,\mathrm{softmax}(z_s/\tau)\right),$$
+the $\tau^2$ keeping gradient magnitude comparable across temperatures. The teacher's soft targets carry the "dark knowledge" one-hot labels destroy &mdash; which wrong answers are nearly right &mdash; and act as a per-example regularizer. For autoregressive LLMs, token-level KL on teacher logits is often replaced by <em>sequence-level</em> KD: generate from the teacher, fine-tune the student on the outputs. DeepSeek-R1's distilled 1.5B&ndash;70B models &mdash; Qwen and Llama checkpoints fine-tuned on ~800K teacher-generated reasoning traces &mdash; are the most consequential recent example, transferring much of the reasoning behavior at a fraction of the size; on-policy (generalized) KD on student-generated sequences further reduces the train&ndash;inference mismatch. <span class="tag tag-verify">Verify</span> specifics against the R1 report.</p>
+
+<p>Pruning zeroes weights outright. Unstructured magnitude pruning compresses storage but not dense-GEMM time; hardware-realizable gains need structure, e.g. 2:4 semi-structured sparsity (two zeros per four consecutive weights), which NVIDIA tensor cores execute at up to a nominal 2&times; &mdash; realized end-to-end gains are substantially smaller. <span class="tag tag-verify">Verify</span> The best PTQ pruning method is this chapter's math wearing a different constraint: SparseGPT solves the same layerwise objective $\|WX - \hat W X\|_F^2$ with the same Hessian $XX^\top$ and the same OBQ compensation of Theorem 34.1, except the "quantizer" sets weights to zero; Wanda then showed that for LLMs the selection criterion $|w_{ij}| \cdot \|x_j\|_2$ alone &mdash; salience again, as in AWQ &mdash; gets most of the way with no update step at all. One Hessian, three compressions.</p>
+
+<div class="artifact-box">
+<div class="box-title">Artifact 34.1 &mdash; GPTQ from Scratch with the Ablations That Matter</div>
+<p>A layer $y = Wx$ with $256\times256$ weights and 2,048 correlated calibration vectors (power-law covariance &mdash; propagation only matters when $H$ has off-diagonal mass); affine grids at all three granularities; RTN; Cholesky-form GPTQ per Theorem 34.1. Asserted: (a) GPTQ beats RTN on layer-output MSE at 4, 3, 2 bits; (b) disabling only the propagation step collapses GPTQ to RTN exactly; (c) per-group(32) beats per-tensor at 4 bits; (d) injected outlier channels concentrate the error, and an AWQ-style grid-searched channel scale reduces it. torch appears only to cross-check the MSE arithmetic.</p>
+<pre><code>"""Artifact 34.1 -- GPTQ from scratch, with the error-propagation ablation,
+per-group vs per-tensor scaling, and an AWQ-style outlier demonstration.
+
+Pure NumPy. torch appears only as a cross-check on the output-MSE computation.
+Everything asserted is measured here; nothing is quoted from a paper.
+"""
+import numpy as np
+
+rng = np.random.default_rng(0)
+
+# ----------------------------------------------------------------------
+# Setup: a "layer" y = W x with correlated calibration activations.
+# X is (d_in, n): n calibration vectors as columns.  The layerwise
+# objective GPTQ minimizes is ||W X - W_q X||_F^2, whose Hessian w.r.t.
+# each row of W is H = 2 X X^T -- shared across rows.
+# ----------------------------------------------------------------------
+d_in, d_out, n = 256, 256, 2048
+# Controlled covariance: decaying spectrum + random rotation, so H has
+# strong off-diagonal structure (propagation only matters if it does).
+U, _ = np.linalg.qr(rng.standard_normal((d_in, d_in)))
+spec = (np.arange(1, d_in + 1) ** -0.7)            # power-law eigenvalues
+A = U * np.sqrt(spec)                               # Sigma^(1/2) up to rotation
+X = A @ rng.standard_normal((d_in, n))              # cov(X) ~ U diag(spec) U^T
+W = rng.standard_normal((d_out, d_in)) / np.sqrt(d_in)
+Y_ref = W @ X                                       # exact layer output
+
+
+def out_mse(Wq, Xc=X):
+    """Layer-output MSE: mean squared error of (W - Wq) Xc."""
+    D = (W - Wq) @ Xc
+    return float(np.mean(D * D))
+
+
+# ----------------------------------------------------------------------
+# Quantization grids.  Asymmetric affine: q = clip(round(w/s) + z, 0, 2^b-1),
+# w_hat = s (q - z).  Scales/zeros are per-row ("per-channel"), per-group
+# (contiguous input-dim blocks), or one pair for the whole tensor.
+# ----------------------------------------------------------------------
+def make_grid(Wm, bits, granularity="channel", group=32):
+    qmax = 2 ** bits - 1
+    if granularity == "tensor":
+        lo, hi = Wm.min(), Wm.max()
+        s = np.maximum((hi - lo) / qmax, 1e-12); z = np.round(-lo / s)
+        return np.full((Wm.shape[0], Wm.shape[1]), s), np.full(Wm.shape, z)
+    if granularity == "channel":
+        lo = Wm.min(axis=1, keepdims=True); hi = Wm.max(axis=1, keepdims=True)
+        s = np.maximum((hi - lo) / qmax, 1e-12); z = np.round(-lo / s)
+        return np.broadcast_to(s, Wm.shape).copy(), np.broadcast_to(z, Wm.shape).copy()
+    # per-group: independent (s, z) for each row x each block of `group` cols
+    s = np.empty_like(Wm); z = np.empty_like(Wm)
+    for g0 in range(0, Wm.shape[1], group):
+        blk = Wm[:, g0:g0 + group]
+        lo = blk.min(axis=1, keepdims=True); hi = blk.max(axis=1, keepdims=True)
+        sg = np.maximum((hi - lo) / qmax, 1e-12)
+        s[:, g0:g0 + group] = sg; z[:, g0:g0 + group] = np.round(-lo / sg)
+    return s, z
+
+
+def quant(Wm, s, z, bits):
+    q = np.clip(np.round(Wm / s) + z, 0, 2 ** bits - 1)
+    return s * (q - z)
+
+
+def rtn(Wm, bits, granularity="channel", group=32):
+    s, z = make_grid(Wm, bits, granularity, group)
+    return quant(Wm, s, z, bits)
+
+
+# ----------------------------------------------------------------------
+# GPTQ, Cholesky form.  H = 2 X X^T + damping.  Let T = chol(H^{-1})
+# (upper).  Quantize columns left to right; after fixing column j, add
+# (w_j - q_j)/T_jj * T_{j,j+1:} to the not-yet-quantized columns -- the
+# exact OBQ update, batched via the Cholesky factor.
+# `propagate=False` uses the identical grid but skips the update:
+# that is column-wise RTN on the same grid (ablation (b)).
+# ----------------------------------------------------------------------
+def gptq(Wm, Xc, bits, granularity="channel", group=32, propagate=True):
+    H = 2.0 * (Xc @ Xc.T)
+    H[np.diag_indices_from(H)] += 0.01 * np.mean(np.diag(H))  # damping
+    Hinv = np.linalg.inv(H)
+    T = np.linalg.cholesky(Hinv, upper=True)   # upper-triangular factor
+    Wk = Wm.copy()
+    s, z = make_grid(Wm, bits, granularity, group)  # grid fixed up front
+    Q = np.empty_like(Wm)
+    for j in range(Wm.shape[1]):
+        w = Wk[:, j]
+        Q[:, j] = quant(w, s[:, j], z[:, j], bits)
+        if propagate and j + 1 &lt; Wm.shape[1]:
+            err = (w - Q[:, j]) / T[j, j]                 # scaled residual
+            Wk[:, j + 1:] -= np.outer(err, T[j, j + 1:])  # push into the future
+    return Q
+
+
+# ======================================================================
+if __name__ == "__main__":
+    # ---------- (a) + (b): GPTQ vs RTN vs GPTQ-without-propagation ----
+    print("bits |    RTN MSE   |  no-prop MSE |   GPTQ MSE   | GPTQ/RTN")
+    for bits in (4, 3, 2):
+        m_rtn = out_mse(rtn(W, bits))
+        m_nop = out_mse(gptq(W, X, bits, propagate=False))
+        m_gptq = out_mse(gptq(W, X, bits))
+        print(f"  {bits}  | {m_rtn:.6e} | {m_nop:.6e} | {m_gptq:.6e} | {m_gptq/m_rtn:6.3f}")
+        assert m_gptq &lt; m_rtn,  f"(a) GPTQ !&lt; RTN at {bits} bits"
+        assert m_gptq &lt; m_nop,  f"(b) propagation did not help at {bits} bits"
+    # sanity: same grid, no propagation == plain per-channel RTN
+    assert np.allclose(gptq(W, X, 4, propagate=False), rtn(W, 4))
+
+    # ---------- (c): per-group vs per-tensor at 4 bits (RTN) ----------
+    m_tensor = out_mse(rtn(W, 4, "tensor"))
+    m_group = out_mse(rtn(W, 4, "group", 32))
+    print(f"\n4-bit RTN  per-tensor MSE {m_tensor:.6e}  vs  per-group(32) "
+          f"{m_group:.6e}  ({m_tensor/m_group:.2f}x better)")
+    assert m_group &lt; m_tensor, "(c) per-group !&lt; per-tensor"
+
+    # ---------- (d): outlier channels + AWQ-style rescue --------------
+    Xo = X.copy()
+    out_idx = rng.choice(d_in, 4, replace=False)
+    Xo[out_idx] *= 50.0                       # 4 emergent-outlier channels
+    Y_o = W @ Xo
+    dW = W - rtn(W, 3)                        # 3-bit RTN weight error
+    # per-input-channel share of output error energy: ||dW_col_j||^2 E[x_j^2]
+    energy = (dW ** 2).sum(0) * (Xo ** 2).mean(1)
+    frac = energy[out_idx].sum() / energy.sum()
+    print(f"\n4/{d_in} channels are outliers (x50); they carry "
+          f"{100*frac:.1f}% of weight-quantization output error energy")
+    assert frac &gt; 0.5, "(d) error did not concentrate on outlier channels"
+
+    base = float(np.mean(((W - rtn(W, 3)) @ Xo) ** 2))
+    best = (None, np.inf)
+    for alpha in (0.25, 0.5, 0.75, 1.0):      # AWQ grid search on the scale
+        s_ch = np.abs(Xo).mean(1) ** alpha    # per-channel activation scale
+        s_ch /= s_ch.mean()
+        Wq = rtn(W * s_ch, 3)                 # quantize scaled weights
+        m = float(np.mean(((W * s_ch - Wq) @ (Xo / s_ch[:, None])) ** 2))
+        if m &lt; best[1]:
+            best = (alpha, m)
+    print(f"3-bit RTN output MSE on outlier data: {base:.6e} -&gt; "
+          f"{best[1]:.6e} with AWQ scale (alpha={best[0]}), "
+          f"{base/best[1]:.1f}x reduction")
+    assert best[1] &lt; base, "(d) AWQ scaling did not reduce error"
+
+    # ---------- torch cross-check on the MSE computation --------------
+    try:
+        import torch
+    except ImportError:
+        torch = None
+    if torch is not None:
+        Wq4 = gptq(W, X, 4)
+        ref = torch.mean(((torch.from_numpy(W) - torch.from_numpy(Wq4))
+                          @ torch.from_numpy(X)) ** 2).item()
+        np_val = out_mse(Wq4)
+        print(f"\ntorch cross-check: |MSE_np - MSE_torch| = {abs(ref-np_val):.2e}")
+        assert abs(ref - np_val) &lt; 1e-10
+    else:
+        print("[skipped: torch not installed]")
+    print("\nAll assertions passed.")
+</code></pre>
+<p>Running it prints: at 4 bits, RTN output MSE 6.98e-4 versus GPTQ 4.69e-4 (ratio 0.672); at 2 bits, 1.73e-2 versus 1.18e-2 (0.684); the no-propagation column equals RTN to machine precision at every width, so the entire gain is the Theorem 34.1 update. Per-group(32) beats per-tensor 4-bit RTN by 4.29&times;; the four outlier channels carry 97.6% of error energy; the AWQ scale at $\alpha=0.25$ cuts outlier-data MSE 3.9&times; (1.33e-1 to 3.44e-2). Wall time ~11&thinsp;s on CPU.</p>
+</div>
+
+<div class="encrypted-note">
+<div class="box-title">Under Encryption</div>
+<p>Under homomorphic encryption, quantization stops being an optimization and becomes an enabler &mdash; and the direction of help depends on the scheme. TFHE-style schemes evaluate arbitrary functions as programmable-bootstrap lookup tables over <em>small integer domains</em>, with cost exponential-ish in the bit width of the table input; aggressive 4&ndash;8-bit quantization is therefore what makes encrypted inference expressible at all, not a compression nicety. This is exactly the design point of Concrete-ML, which pairs quantization-aware training with compilation of the resulting integer network into TFHE circuits. CKKS is the opposite case: it computes on approximate reals natively, carrying ~30&ndash;50 bits of scale per level, so quantizing weights to 4 bits buys essentially no precision headroom &mdash; the noise floor is set by the encryption parameters, not the plaintext &mdash; though packing quantized weights does shrink plaintext/ciphertext count and thus memory and key-switching traffic. The scheme choice and the quantization decision are therefore one decision, not two: choosing TFHE <em>is</em> choosing low-bit integer inference, and choosing CKKS makes this chapter's machinery mostly moot. Chapter 40 returns to this when comparing private-inference systems.</p>
+</div>
+
+<div class="key-takeaways">
+<div class="kt-title">Key Takeaways</div>
+<ul>
+<li>Affine quantization error is bounded by half the scale, and the scale is set by the range of its unit &mdash; so granularity (per-tensor &rarr; per-channel &rarr; per-group) is the first lever, costing exactly $32/g$ extra bits per weight for group size $g$ with FP16 scale and zero-point. <span class="tag tag-certain">Certain</span></li>
+<li>Large transformers develop a few outlier activation channels that dominate quantization error; the artifact measures 4/256 injected outlier channels carrying 97.6% of layer output error energy, and an AWQ-style channel scale cutting it 3.9&times;. <span class="tag tag-certain">Certain</span></li>
+<li>GPTQ is exact OBQ compensation (Theorem 34.1) run column-wise with a shared Cholesky-factored inverse Hessian; on identical grids it beat RTN by ~1.5&times; in output MSE at 4, 3, and 2 bits in our measurement, entirely via error propagation. <span class="tag tag-certain">Certain</span></li>
+<li>Rotation methods (QuIP#, QuaRot, SpinQuant) exploit the model's orthogonal invariance to dissolve outliers in a rotated basis, making 4-bit activations and KV cache viable; FP8 training with fine-grained tile scaling is production-validated at 671B by DeepSeek-V3 at &lt;0.25% reported relative loss error. <span class="tag tag-verify">Verify</span></li>
+<li>Ternary (BitNet-class) models show extreme weight precision is not fundamental at ~2B scale, but have not demonstrated frontier-scale parity under controlled comparisons; matched-memory and matched-compute baselines remain the unsettled crux. <span class="tag tag-contested">Contested</span></li>
+</ul>
+</div>
+</div>
