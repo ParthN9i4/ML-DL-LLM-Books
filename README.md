@@ -40,7 +40,31 @@ chapter's central claim is backed by a runnable artifact that verifies itself.
 
 ## Status
 
-Being written part by part, one commit per part. Chapters 1–21 are complete and
-fact-checked; Part V (22–29) is in verification; Parts VI–VIII and the appendices are in
-progress. The commit history documents every factual error the verification passes caught
-and fixed — which is itself an honest record of why the verification passes exist.
+**Complete.** 42 chapters, 6 appendices, ~201,400 words, 1.98 MB.
+
+Verified end to end:
+
+| Check | Result |
+|---|---|
+| Structural (`book-workspace/assemble.py verify`) | all passed — every TOC anchor resolves, five objectives and five tagged takeaways per chapter, one artifact each, per-type box counters sequential, tags balanced |
+| Artifacts re-executed | **42/42 run clean** |
+| Embedded code vs executed files (`drift_check.py`) | **42/42 byte-identical, zero drift** |
+| Exercise ladder (`ml-foundations/check.py`) | **17/17 pass** |
+| Confidence tags | 339 Certain · 236 Likely · 259 Verify · 69 Contested |
+
+Two things the automated checks cannot cover, both worth knowing before you cite anything:
+
+- **MathJax could not be rendered during the build.** The build sandbox's proxy blocks
+  `cdn.jsdelivr.net`, so the page was never seen with its math typeset. Layout, theme and
+  callout boxes were confirmed visually; the formulas were not. Open it once with network
+  access before trusting the presentation.
+- **Part VIII's citations are partly abstract-level.** The same proxy blocked arXiv,
+  IACR ePrint, ACM, NDSS and OpenReview. The OpenFHE security tables and the Lattigo
+  bootstrapping depth were verified against primary source text; other reported figures in
+  Chapters 38–42 were verified only through search-engine extraction of abstracts. Spot-check
+  them against the PDFs before using them in a paper.
+
+The commit history records every factual error the verification passes caught and fixed —
+a fabricated benchmark, an inverted estimator bias, superseded FlashAttention-3 numbers,
+security-table figures that were wrong twice over, an algorithm named after the wrong
+inventor. That record is the honest argument for why the verification passes exist.
