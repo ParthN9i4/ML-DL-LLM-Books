@@ -1,0 +1,173 @@
+<div class="chapter" id="appendix-f">
+<div class="chapter-header"><div class="ch-label">Appendix F</div><h3>Reference Numbers (dated)</h3></div>
+
+<p><strong>Compiled August 2026.</strong> Every volatile number the book leans on is collected here so that the book ages in one appendix rather than in forty-two chapters. Sections F.1 through F.4 hold numbers that drift &mdash; accelerator specifications, model cards, prices, benchmark scores. Section F.5 holds the formulas, which do not, and F.6 says how to rebuild the rest. That separation is the point of the appendix: when a chapter says an H100 executes about 295 bf16 FLOPs per byte of HBM traffic, the durable content is the definition of machine balance $B^{*} = \pi/\beta$ from Section 30.3, and the 295 is a perishable input. Re-derive, do not re-read. Where a number here disagrees with a chapter, this appendix is the later measurement and wins; one such disagreement is flagged explicitly in F.1.</p>
+
+<div class="warning-box">
+<div class="box-title">Common Pitfall</div>
+<p><strong>Do not cite this appendix.</strong> Cite the source it names. Accelerator datasheets are revised silently, model cards are edited after release, API prices in this table have moved within a single week, and benchmark leaderboards are re-scored under new harnesses. Every row below carries a <span class="tag tag-verify">Verify</span> tag and names where to check it. A row without a source is a row that was omitted &mdash; several were. An incomplete honest table beats a complete invented one, and the failure mode this appendix exists to prevent is a reader quoting a 2026 price in 2028 because it was typeset in a book.</p>
+</div>
+
+<h4>F.1 Accelerator specifications</h4>
+
+<p>All throughput figures are <em>dense</em> bf16 tensor-core peaks. Vendor marketing routinely quotes the structured-sparsity number, which is exactly twice the dense number and unreachable on ordinary weights; the H100's widely repeated &ldquo;1,979 TFLOP/s&rdquo; is the sparse figure and the dense one is 989. Divide any quoted tensor-core peak by two if you cannot tell which you are looking at.</p>
+
+<table>
+<tr><th>Accelerator</th><th>bf16 dense</th><th>Memory</th><th>Bandwidth</th><th>$B^{*}$ (FLOPs/byte)</th><th>Confidence</th></tr>
+<tr><td>NVIDIA H100 SXM</td><td>989 TFLOP/s</td><td>80 GB HBM3</td><td>3.35 TB/s</td><td>295</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>NVIDIA H200 SXM</td><td>989 TFLOP/s</td><td>141 GB HBM3e</td><td>4.8 TB/s</td><td>206</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>NVIDIA B200 SXM</td><td>2,250 TFLOP/s</td><td>180 GB HBM3e</td><td>7.7 TB/s</td><td>292</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>Google TPU v5p</td><td>459 TFLOP/s</td><td>95 GB HBM2e</td><td>2.765 TB/s</td><td>166</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>Google TPU v7 (Ironwood)</td><td>2,307 TFLOP/s (derived)</td><td>192 GB HBM3e</td><td>7.37 TB/s</td><td>313</td><td><span class="tag tag-verify">Verify</span></td></tr>
+</table>
+
+<p><strong>Sources.</strong> H100 and H200: the NVIDIA Hopper datasheets &mdash; H100 SXM 80 GB HBM3 at 3.35 TB/s, 700 W; H200 SXM 141 GB HBM3e at 4.8 TB/s; both list 1,979 TFLOP/s BFLOAT16 <em>with sparsity</em>, hence 989 dense. B200: the HGX B200 product documentation gives 2.25 PFLOP/s FP16/bf16 dense (4.5 sparse), 180 GB HBM3e per GPU, 7.7 TB/s, 1,000 W, and fifth-generation NVLink at 1.8 TB/s per GPU. TPU v5p: Google Cloud's TPU v5p documentation gives 459 bf16 TFLOP/s per chip, 95 GB HBM2e at 2,765 GB/s, 4,800 Gbps interchip interconnect, pods of 8,960 chips in a 3D torus. TPU v7 Ironwood: Google publishes 4,614 FP8 TFLOP/s per chip, 192 GB HBM3e, 7.37 TB/s, 9.6 Tb/s ICI, superpods of 9,216 chips; the bf16 figure is <em>not</em> published as such and 2,307 is the conventional halving of the FP8 rate, so treat it as an inference rather than a spec. <span class="tag tag-likely">Likely</span></p>
+
+<h5>F.1.1 The derived machine balance point</h5>
+
+<p>The final column is not a specification. It is $B^{*} = \pi/\beta$, peak dense bf16 FLOP/s divided by HBM bytes per second &mdash; Definition 30.2. It is the only number in the table that matters directly to a kernel author, because by Theorem 30.1 an operation with arithmetic intensity $I &lt; B^{*}$ cannot reach peak no matter how the kernel is written. Worked once, for the H100: $989 \times 10^{12} / (3.35 \times 10^{12}) = 295.2$.</p>
+
+<p><strong>Discrepancy with Chapter 30.</strong> The hardware table in Section 30.8 lists the B200 at &ldquo;180&ndash;192 GB&rdquo; and &ldquo;$\sim$8 TB/s&rdquo;, giving $B^{*} \approx 281$. Re-verification for this appendix returns 180 GB at 7.7 TB/s, so $2250/7.7 = 292$. The chapter's arithmetic is right for its input; the input conflated two SKUs &mdash; the HGX B200 board is 180 GB at 7.7 TB/s, while the 8 TB/s figure belongs to the GB200 NVL package at 186 GB. Use 292 for a B200. <span class="tag tag-verify">Verify</span> This is precisely the drift the appendix exists to absorb, and it is worth noticing how small it is: a 4% error in a bandwidth spec moved the balance point by 4% and changed no conclusion in the chapter. The conclusions that depend on $B^{*}$ &mdash; that batch-1 decode sits two to three orders of magnitude below it, that elementwise kernels never approach it &mdash; survive any plausible revision of these rows.</p>
+
+<p>Two structural facts the table encodes are more durable than any cell in it. First, $B^{*}$ has stayed inside a band of roughly 150 to 320 across all five accelerators above and both vendors, because FLOP/s and bandwidth have scaled together by design; a hypothetical accelerator with $B^{*} = 30$ would make most of Part VI moot, and none exists. Second, the H200 is an H100 with a better memory system and an unchanged compute peak &mdash; it lowers $B^{*}$ from 295 to 206 and nothing else &mdash; which is the cleanest available evidence that decode is bandwidth-bound in the market's own judgement. <span class="tag tag-certain">Certain</span></p>
+
+<h4>F.2 Model specifications</h4>
+
+<p>Open-weight models the book names by number. Active parameters are given for mixture-of-experts models only; for dense models the two coincide. &ldquo;Native context&rdquo; is the trained window, not the YaRN- or PI-extended window discussed in Section 19.5, which is a deployment choice rather than a model property.</p>
+
+<table>
+<tr><th>Model</th><th>Total params</th><th>Active</th><th>Native context</th><th>Training tokens</th><th>Confidence</th></tr>
+<tr><td>Llama 3.1 405B</td><td>405 B (dense)</td><td>&mdash;</td><td>128 K</td><td>15.6 T</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>Mixtral 8&times;7B</td><td>46.7 B</td><td>12.9 B</td><td>32 K</td><td>not disclosed</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>DeepSeek-V3</td><td>671 B</td><td>37 B</td><td>128 K</td><td>14.8 T</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>Qwen3-30B-A3B</td><td>30.5 B</td><td>3.3 B</td><td>32 K</td><td>36 T (family)</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>Qwen3-235B-A22B</td><td>235 B</td><td>22 B</td><td>32 K</td><td>36 T</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>Qwen3.6-35B-A3B</td><td>35 B</td><td>$\approx$3 B</td><td>262 K</td><td>not disclosed</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>Kimi K2</td><td>1 T</td><td>32 B</td><td>128 K</td><td>15.5 T</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>gpt-oss-120b</td><td>117 B</td><td>5.1 B</td><td>128 K</td><td>not disclosed</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>Gemma 3 27B</td><td>27 B (dense)</td><td>&mdash;</td><td>128 K</td><td>14 T</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>OLMo 2 32B</td><td>32 B (dense)</td><td>&mdash;</td><td>4 K</td><td>up to 6 T</td><td><span class="tag tag-verify">Verify</span></td></tr>
+</table>
+
+<p><strong>Sources and caveats.</strong> Llama 3.1 405B: <em>The Llama 3 Herd of Models</em>, arXiv:2407.21783 &mdash; 405 B dense, pretrained on 15.6 T tokens at an 8 K window with a continued-pretraining stage extending to 128 K, on more than 16,000 H100s. Mixtral 8&times;7B: <em>Mixtral of Experts</em>, arXiv:2401.04088 &mdash; eight experts per layer, top-2 routing, hence 46.7 B total and 12.9 B active; the token count was never published. DeepSeek-V3: arXiv:2412.19437 &mdash; 671 B total, 37 B activated per token, 14.8 T pretraining tokens, 256 routed experts with top-8 plus one shared, FP8 GEMMs throughout. Qwen3: the Qwen3 release documentation &mdash; 36 T pretraining tokens across 119 languages in three stages, 128 experts with 8 activated for the 30B-A3B, 32,768 native window extendable to 131,072 by YaRN. Qwen3.6-35B-A3B: the Qwen3.6 model card &mdash; released 16 April 2026, Apache 2.0, 256 experts with 8 routed plus 1 shared, 262,144 native context extensible past 1 M by YaRN; the pretraining token count is not disclosed and the &ldquo;$\approx$3 B active&rdquo; is the vendor's own rounding, which is why it is not stated more precisely. Kimi K2: the Moonshot AI technical report, distributed from the <code>MoonshotAI/Kimi-K2</code> repository rather than arXiv &mdash; 1 T total, 32 B active, 15.5 T tokens, 384 experts with top-8, 61 layers, 160 K vocabulary; trained with MuonClip, as Chapter 13 discusses. gpt-oss-120b: arXiv:2508.10925 &mdash; 117 B total, 5.1 B active, 36 layers, 128 experts with top-4, 128 K context, MoE weights post-trained to MXFP4 at 4.25 bits per parameter so the model fits one 80 GB card. Gemma 3 27B: arXiv:2503.19786 &mdash; 14 T tokens, 128 K context. OLMo 2 32B: Ai2, arXiv:2501.00656 &mdash; up to 6 T tokens across pretraining and a Dolmino mid-training stage of 843 B curated tokens; the short native window is genuine and is the reason the model appears in Section 25.8 as a mid-training case study rather than a long-context one.</p>
+
+<p>Two omissions are deliberate. DeepSeek-R1 shares V3's architecture and parameter counts, so it adds no row; its distinguishing numbers are RL-training details, not specifications. Llama 4 is named in passing in the book but its published parameter and token counts have been inconsistent across sources, so no row is given rather than a guessed one. <span class="tag tag-verify">Verify</span></p>
+
+<h4>F.3 Cost and pricing</h4>
+
+<div class="warning-box">
+<div class="box-title">Common Pitfall</div>
+<p>These move fastest of all &mdash; faster than hardware, faster than model cards, faster than benchmarks. B200 on-demand rates fell measurably between January and August 2026. DeepSeek retired its <code>deepseek-chat</code> and <code>deepseek-reasoner</code> endpoint names on 24 July 2026 and re-tariffed the replacements at 16:00 UTC on 16 August 2026, the day before this appendix was compiled. Anything in this section should be treated as an order of magnitude with a decimal point attached for illustration, and re-fetched before it enters a budget.</p>
+</div>
+
+<h5>F.3.1 Accelerator rental</h5>
+
+<table>
+<tr><th>Accelerator</th><th>On-demand, per GPU-hour</th><th>Confidence</th></tr>
+<tr><td>H100 SXM, specialist clouds</td><td>$\approx$\$1.40&ndash;\$4.00 (median $\approx$\$3.37)</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>H100 SXM, hyperscalers</td><td>$\approx$\$6.90&ndash;\$12.30</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>B200, specialist clouds</td><td>$\approx$\$5.90&ndash;\$8.60</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>B200, hyperscalers</td><td>$\approx$\$14&ndash;\$16</td><td><span class="tag tag-verify">Verify</span></td></tr>
+</table>
+
+<p>The hyperscaler-to-neocloud spread on identical silicon is a factor of roughly two to four, and it reflects contract terms, egress, SLA, and availability guarantees rather than anything about the chip. It is a real lever and it costs no engineering, but keep it in proportion: Section 33.8 measures a $30\times$ swing from batching alone on one card, an order of magnitude more than procurement buys. That section assumes \$2 per GPU-hour for its cost-per-token arithmetic, which sits near the bottom of the H100 band and is therefore an optimistic-but-defensible floor; multiply its dollar conclusions by your own rate before quoting them. <span class="tag tag-verify">Verify</span></p>
+
+<h5>F.3.2 API pricing, per million tokens</h5>
+
+<p>DeepSeek is tabulated in full because it is the only major provider publishing an explicit peak/off-peak split and a separate cache-hit input rate, which makes it the cleanest available illustration of the three structural facts Section 33.8 derives: output costs several times input, cached input costs an order of magnitude less than uncached input, and both ratios follow from prefill/decode arithmetic rather than from pricing strategy.</p>
+
+<table>
+<tr><th>Model / tier</th><th>Cache-hit input</th><th>Cache-miss input</th><th>Output</th><th>Confidence</th></tr>
+<tr><td>DeepSeek-V4-Flash, off-peak</td><td>\$0.007</td><td>\$0.22</td><td>\$0.66</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>DeepSeek-V4-Flash, peak</td><td>\$0.014</td><td>\$0.44</td><td>\$1.32</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>DeepSeek-V4-Pro, off-peak</td><td>\$0.022</td><td>\$0.66</td><td>\$1.98</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>DeepSeek-V4-Pro, peak</td><td>\$0.044</td><td>\$1.32</td><td>\$3.96</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>gpt-oss-120b, hosted (Together)</td><td>&mdash;</td><td>$\approx$\$0.15</td><td>$\approx$\$0.60</td><td><span class="tag tag-verify">Verify</span></td></tr>
+</table>
+
+<p>Peak hours are 01:00&ndash;04:00 and 06:00&ndash;10:00 UTC; all other hours are off-peak, and peak is exactly $2\times$ off-peak in every cell. Read the ratios, not the levels. Output is $3\times$ cache-miss input across every DeepSeek tier and $4\times$ for the hosted gpt-oss-120b, both inside the &ldquo;commonly $3$&ndash;$5\times$&rdquo; band Section 33.8 predicts from prefill/decode arithmetic <span class="tag tag-verify">Verify</span>. Cache-hit input is roughly $30\times$ cheaper than cache-miss, a larger discount than the $2$&ndash;$10\times$ Section 33.7 reports as typical &mdash; evidence that prefix caching became a competitive weapon rather than a passed-through saving during 2026. <span class="tag tag-likely">Likely</span> No other provider's per-token rates are tabulated here: the ones checked were either inconsistent across the vendor's own pages or quoted for model variants whose identity could not be pinned down, and an unverifiable price is worse than no price.</p>
+
+<h4>F.4 Benchmark scores the book cites</h4>
+
+<p>Read Section 29.2 before reading this table. A benchmark score is a triple of dataset, model, and <em>scoring protocol</em>, and the third element is routinely omitted in reporting. The same MMLU dataset scored by the original Berkeley code, HELM, and the EleutherAI harness produces three different numbers on one model, with double-digit gaps large enough to reorder a leaderboard. Every row below is therefore protocol-dependent even where the protocol is not stated.</p>
+
+<table>
+<tr><th>Claim</th><th>Value</th><th>Source</th><th>Confidence</th></tr>
+<tr><td>DeepSeek-V3, MMLU</td><td>88.5</td><td>arXiv:2412.19437</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>DeepSeek-V3, MMLU-Pro</td><td>75.9</td><td>arXiv:2412.19437</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>gpt-oss-120b, GPQA Diamond (no tools)</td><td>80.1</td><td>arXiv:2508.10925</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>gpt-oss-120b, AIME 2024 (no tools)</td><td>95.8</td><td>arXiv:2508.10925</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>GSM1k vs. GSM8K, worst-family drop</td><td>up to $\approx$13 points</td><td>arXiv:2405.00332</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>GSM1k, memorization&ndash;gap correlation</td><td>Spearman $r^2 = 0.32$</td><td>arXiv:2405.00332</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>SWE-bench Pro, public / held-out split</td><td>731 / 858 tasks</td><td>arXiv:2509.16941</td><td><span class="tag tag-verify">Verify</span></td></tr>
+</table>
+
+<p>The GSM1k rows are the two most useful numbers in this section and the two least likely to drift, because they measure a property of the evaluation ecosystem rather than of any model. Zhang et al. hand-wrote 1,205 fresh grade-school arithmetic problems matched to GSM8K's difficulty; several model families lost up to thirteen points on the clone, and the per-model gap correlated with the model's ability to reproduce GSM8K items verbatim. That is direct evidence of memorization, and it is the reason Section 29.4 treats a single reported GSM8K figure as uninterpretable in isolation.</p>
+
+<p>The frontier-model rows will age worst. Reasoning-model scores on AIME and GPQA moved by tens of points inside 2025&ndash;26, and saturation forced the field toward held-out and semi-private designs &mdash; FrontierMath scoring run by maintainers, SWE-bench Pro's held-out half, ARC-AGI-2-style versioned refresh &mdash; precisely so that the number cannot be quoted from a table like this one. Chapter 29 argues that the durable output of an evaluation is the protocol and the contamination audit, not the score; this section is a demonstration of why. <span class="tag tag-certain">Certain</span></p>
+
+<h4>F.5 Formulas that do not drift</h4>
+
+<p>Everything above expires. Nothing below does. These are the closed forms the book uses to convert hardware and model numbers into decisions, and each is stated with the caveat that makes it wrong when ignored.</p>
+
+<h5>F.5.1 Training compute: $C \approx 6ND$</h5>
+
+<p>Training a dense transformer of $N$ parameters on $D$ tokens costs approximately $C = 6ND$ FLOPs: two FLOPs per parameter per token for the forward multiply&ndash;accumulate, and about twice that again for the backward pass, which computes gradients with respect to both activations and weights. The neglected term is attention's score and value products: $4nd$ FLOPs per token per layer before masking, halved to about $2nd$ by causality since a token attends to $n/2$ positions on average, against the $24d^2$ of the parameter matrices &mdash; a ratio of $n/(12d)$, as Section 24.2.1 derives it. At $d = 4096$ the correction stays under 10% for $n$ below about 4,900 tokens and becomes the dominant term long before $n$ reaches a modern context window. Use $6ND$ for budget arithmetic and scaling-law fits as in Chapter 24; do not use it for long-context runs without adding the quadratic term. <span class="tag tag-certain">Certain</span></p>
+
+<h5>F.5.2 Inference compute: $2N$ per token</h5>
+
+<p>One forward pass costs about $2N$ FLOPs per token, the same multiply&ndash;accumulate count without the backward factor of three. For a mixture-of-experts model substitute the <em>active</em> parameter count: DeepSeek-V3 costs $2 \times 37\text{B} = 74$ GFLOP per token, not $2 \times 671$B. The memory system does not get the same discount &mdash; every expert must be resident because the next token may route anywhere &mdash; which is the whole content of Section 22.8 and the reason F.2 tabulates both columns. Combined with F.5.1, the inference-aware scaling objective of Section 24.5 is $6ND + 2ND_{\text{inf}}$, whose minimizer sits strictly left of Chinchilla's. <span class="tag tag-certain">Certain</span></p>
+
+<h5>F.5.3 KV-cache size</h5>
+
+<p>For $L$ layers, $n_{\text{kv}}$ key/value heads, head dimension $d_h$, and $b$ bytes per element, one sequence of length $T$ occupies
+$$K(T) \;=\; 2\,L\,n_{\text{kv}}\,d_h\,b\,T \ \text{bytes},$$
+the leading 2 being keys plus values. Section 33.2's worked case &mdash; $L=32$, $n_{\text{kv}}=8$, $d_h=128$, fp16 &mdash; gives $2 \times 32 \times 8 \times 128 \times 2 = 131{,}072$ bytes per token, exactly 128 KiB, so an 8,192-token sequence carries 1 GiB of cache. Multi-query attention is $n_{\text{kv}} = 1$; multi-head is $n_{\text{kv}} = $ the query head count. The formula is exact for standard attention and does <em>not</em> apply to multi-head latent attention, which caches a compressed joint representation instead. <span class="tag tag-certain">Certain</span></p>
+
+<h5>F.5.4 Arithmetic intensity, machine balance, roofline</h5>
+
+<p>For an operation performing $C$ FLOPs while moving $Q$ bytes to and from the memory level under consideration, the arithmetic intensity is $I = C/Q$. Given peak throughput $\pi$ FLOP/s and bandwidth $\beta$ bytes/s, the machine balance is $B^{*} = \pi/\beta$ and the attainable rate is bounded by
+$$P \;\le\; \min(\pi,\ \beta I),$$
+so the operation is memory-bound exactly when $I &lt; B^{*}$. Two traps: $Q$ is traffic at a <em>specified</em> level, so an operation memory-bound against HBM may be compute-bound against L2; and $\pi$ must be the peak for the precision actually issued, which is why the dense-versus-sparse distinction in F.1 changes conclusions rather than decorating them. Square bf16 matmul has $I \approx n/3$, giving the compute-bound threshold $n \ge 3B^{*}$; batch-1 decode has $I \approx 1$ regardless of model size. <span class="tag tag-certain">Certain</span></p>
+
+<h5>F.5.5 Ring all-reduce volume</h5>
+
+<p>Over $P$ workers all-reducing $S$ bytes, the ring algorithm runs a reduce-scatter and an all-gather, each $P-1$ steps of $S/P$ bytes, so each worker transmits
+$$V \;=\; 2\,\frac{P-1}{P}\,S \ \text{bytes}, \qquad t \;=\; 2(P-1)\alpha \;+\; 2\,\frac{P-1}{P}\,S\beta$$
+in the $\alpha$&ndash;$\beta$ model. This is bandwidth-optimal (Theorem 32.1). The bytes saturate at $2S$ as $P$ grows &mdash; going from $P=8$ to $P=8000$ increases per-worker traffic by about 14% &mdash; while the latency term grows linearly in $P$, which is why rings win on large tensors and lose on small ones, and why hierarchical and tree collectives exist. <span class="tag tag-certain">Certain</span></p>
+
+<h5>F.5.6 The pass@$k$ estimator</h5>
+
+<p>For an i.i.d. sampler with per-problem success probability $p$, $\text{pass@}k = 1 - (1-p)^k$. Given $n \ge k$ samples of which $c$ verify correct, the unbiased estimator (Chen et al., 2021) is
+$$\widehat{\text{pass@}k} \;=\; 1 - \frac{\binom{n-c}{k}}{\binom{n}{k}} \;=\; 1 - \prod_{j=0}^{k-1}\frac{n-c-j}{n-j},$$
+and the product form is the one to implement: the binomial coefficients overflow for the $n$ used in coverage studies. The plug-in alternative $1-(1-c/n)^k$ is biased <em>downward</em> &mdash; $1-(1-p)^k$ is concave in $p$, so Jensen's inequality puts $\mathbb{E}[1-(1-c/n)^k] \le 1-(1-p)^k$ &mdash; and the bias grows as $k$ approaches $n$: at $p = 0.05$, $n = 64$, $k = 32$ it is $-0.08$ against a true value of $0.81$, exactly the regime where pass@$k$ inversion claims between base and RL-tuned models are decided. Section 28.3 also insists on the interpretive point: pass@$k$ at large $k$ measures the sampler's support, not its reliability. <span class="tag tag-certain">Certain</span></p>
+
+<h5>F.5.7 CKKS depth accounting</h5>
+
+<p>Each ciphertext&ndash;ciphertext multiplication consumes one level from a fixed budget, so a circuit of multiplicative depth $d$ requires at least $d$ levels and refreshing the budget requires bootstrapping. Summing the per-layer ledger of Section 38.4 over $L$ layers gives the per-token depth $d_{\text{tok}}$; for the twelve-layer geometry of Section 41.4, twenty-one levels per block gives $d_{\text{tok}} = 252$, and with $B = 18$ usable levels that is $252/18 = 14$ bootstraps per token. Over $T$ tokens the total depth is $D = T\,d_{\text{tok}}$ and greedy scheduling performs
+$$\left\lceil \frac{D}{B} \right\rceil - 1 \ \text{bootstraps}$$
+by Theorem 41.1 &mdash; $\lceil 258{,}048/18 \rceil - 1 = 14{,}335$ for $T = 1024$. Two companions. A ciphertext at level $\ell$ in RNS with $w$-byte limbs occupies $2N\ell w$ bytes, which is why an encrypted KV cache runs two orders of magnitude above its fp16 counterpart. And baby-step&ndash;giant-step reduces the Halevi&ndash;Shoup diagonal matvec from $d-1$ rotations to $n_1 + n_2 - 2 \approx 2\sqrt{d}$ &mdash; 4,095 down to 126 at $d = 4096$ (Theorem 38.1). Depth is the currency; rotations are the tax. <span class="tag tag-certain">Certain</span></p>
+
+<h4>F.6 Re-verifying this appendix</h4>
+
+<p>The tables above were built by fetching primary sources, not by recall. Rebuilding them takes under an hour. Fetch the vendor datasheets for F.1 and recompute $B^{*}$ yourself rather than trusting a quoted balance point; pull the model cards and technical reports named in F.2 by their arXiv identifiers; fetch the provider pricing pages for F.3 on the day you need them; and for F.4 read the protocol section of each paper before copying its number. A minimal harness:</p>
+
+<pre><code>mkdir -p refcheck &amp;&amp; cd refcheck
+printf '%s\n' 2407.21783 2401.04088 2412.19437 2508.10925 2503.19786 \
+              2405.00332 2501.00656 2509.16941 \
+  | xargs -I ID curl -sL -o ID.pdf https://arxiv.org/pdf/ID
+python - &lt;&lt;'PY'
+specs = {                       # (dense bf16 TFLOP/s, HBM TB/s)
+    "H100 SXM": (989.0, 3.35),
+    "H200 SXM": (989.0, 4.80),
+    "B200 SXM": (2250.0, 7.70),
+    "TPU v5p":  (459.0, 2.765),
+    "TPU v7":   (2307.0, 7.37),
+}
+for name, (pi, beta) in specs.items():
+    print(f"{name:10s} B* = {pi / beta:6.1f} FLOPs/byte")
+PY</code></pre>
+
+<p>When a row changes, change it here and nowhere else. That is the contract this appendix is written under, and the reason Chapter 30 states a balance point in prose while this appendix states the bandwidth it came from.</p>
+
+</div>

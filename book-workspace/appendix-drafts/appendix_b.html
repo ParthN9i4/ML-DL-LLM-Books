@@ -1,0 +1,183 @@
+<div class="chapter" id="appendix-b">
+<div class="chapter-header"><div class="ch-label">Appendix B</div><h3>Environment Setup</h3></div>
+
+<p>This appendix is a build record, not a wish list. The book contains 42 artifacts &mdash; one per chapter, Chapters 1 through 42, across all eight parts &mdash; and every one of them was written to a file, executed, and re-executed until it ran clean before its output was quoted in the text. The versions below are the versions that produced those numbers. Nothing here was run on a GPU. Section B.1 states the machine, B.2 builds the environment, B.3 documents the numpy-only fallback that lets all 42 artifacts run with no PyTorch at all, B.4 runs them, B.5 covers seeding, B.6 covers Colab and Kaggle, B.7 and B.8 cover the companion <code>ml-foundations</code> exercise ladder and its encrypted tier, and B.9 fixes the offline mathematics.</p>
+
+<h4>B.1 What Was Actually Used</h4>
+
+<p>Every artifact in this book was executed on a single CPU-only Linux container. There was no GPU attached, at any point, for any chapter. <span class="tag tag-certain">Certain</span></p>
+
+<table>
+<tr><th>Component</th><th>Version / value</th><th>Note</th></tr>
+<tr><td>Python</td><td>3.11.15 (GCC 13.3.0)</td><td>CPython, system build</td></tr>
+<tr><td>numpy</td><td>2.4.6</td><td>the core of every artifact</td></tr>
+<tr><td>scipy</td><td>1.17.1</td><td>used by 10 of 42 artifacts</td></tr>
+<tr><td>torch</td><td>2.13.0</td><td>cross-checks only, 29 of 42 artifacts</td></tr>
+<tr><td>scikit-learn</td><td>1.9.0</td><td>cross-checks only, 5 artifacts</td></tr>
+<tr><td>OS / arch</td><td>Linux 6.18.5, x86_64</td><td>4 cores, 15 GB RAM</td></tr>
+<tr><td>Accelerator</td><td>none</td><td><code>torch.cuda.is_available()</code> was <code>False</code></td></tr>
+</table>
+
+<p>One honest wrinkle. <code>pip freeze</code> reports <code>torch==2.13.0</code>, but <code>torch.__version__</code> on this machine reported the string <code>2.13.0+cu130</code>: the default PyPI wheel is the CUDA build, and installing it dragged in roughly 2.7 GB of <code>nvidia-*</code> packages and 691 MB of Triton that never executed a single instruction. <span class="tag tag-verify">Verify</span> The resulting <code>site-packages</code> weighed 5.1 GB, of which about two-thirds was dead GPU payload. Section B.2 installs the CPU wheel instead and avoids all of it. Where the book says &ldquo;torch 2.13.0, CPU,&rdquo; it means the numerics of 2.13.0 executed on a CPU device, which is what a reader on the CPU wheel gets.</p>
+
+<p><strong>Consequence for the hardware numbers.</strong> Chapter 30 and Chapter 31 are full of memory bandwidths, tensor-core throughputs, SRAM capacities, and arithmetic intensities. <em>None of those are measurements taken for this book.</em> They are vendor specifications and published benchmark figures, and they are tagged accordingly: Chapter 30 alone carries 17 <span class="tag tag-verify">Verify</span> tags out of 31 total tags, and Chapter 31 carries 10. Book-wide the count is 259 Verify tags against 339 Certain, 236 Likely, and 69 Contested. A Verify tag on a hardware number means exactly this: it was correct against the vendor&rsquo;s datasheet when written, it was not reproduced here, and you should re-derive it on your own silicon before quoting it. What <em>was</em> measured on this machine are the artifact outputs, and those are CPU numbers about algorithmic behaviour &mdash; residuals, iteration counts, accuracy, relative timings &mdash; never absolute accelerator throughput.</p>
+
+<h4>B.2 A Minimal Virtual Environment</h4>
+
+<p>Four commands. The <code>--index-url</code> is the one line that matters: it selects the CPU wheel and skips the CUDA stack.</p>
+
+<pre><code>python3.11 -m venv ~/mlbook-venv
+source ~/mlbook-venv/bin/activate
+pip install --upgrade pip
+pip install "numpy==2.4.6" "scipy==1.17.1" "scikit-learn==1.9.0"
+pip install --index-url https://download.pytorch.org/whl/cpu "torch==2.13.0"</code></pre>
+
+<p>On Windows the activation line is <code>~\mlbook-venv\Scripts\activate</code>; everything else is identical. Pin the exact versions on a first read. Once you have run the artifacts and seen what they print, unpin freely &mdash; nothing in the book depends on a private API. The one version boundary that does bite is numpy 2.x: numpy 2 changed integer promotion rules and removed several long-deprecated aliases, so an artifact run under numpy 1.26 can produce a different dtype in an intermediate and trip an exact-equality assertion. <span class="tag tag-likely">Likely</span></p>
+
+<p>To confirm the environment before touching a chapter:</p>
+
+<pre><code>python -c "import numpy, scipy, sklearn, torch; \
+print(numpy.__version__, scipy.__version__, sklearn.__version__, torch.__version__); \
+print('cuda:', torch.cuda.is_available(), 'threads:', torch.get_num_threads())"</code></pre>
+
+<p>On the build machine that printed <code>2.4.6 1.17.1 1.9.0 2.13.0+cu130</code> and <code>cuda: False threads: 4</code>. If your <code>cuda:</code> line says <code>True</code>, nothing breaks &mdash; no artifact ever asks for a device, so torch stays on CPU regardless &mdash; but your timing comparisons will not match the ones quoted in the text.</p>
+
+<h4>B.3 The CPU-Only Fallback Path</h4>
+
+<p>Every artifact&rsquo;s core is pure numpy. PyTorch and scikit-learn appear only as cross-checks: an independent implementation to compare a from-scratch gradient, decomposition, or attention score against. Because they are cross-checks and not implementations, every one of them is guarded:</p>
+
+<pre><code>try:
+    import torch
+except ImportError:
+    torch = None
+
+# ... later, at the cross-check ...
+if torch is None:
+    print("  [skipped: torch not installed]")
+else:
+    ref = torch.linalg.lstsq(A_t, b_t).solution.numpy()
+    print(f"  max|ours - torch| = {np.abs(w - ref).max():.3e}")</code></pre>
+
+<p>This was tested rather than asserted. All 42 artifacts were re-run in an environment where <code>import torch</code> and <code>import sklearn</code> both raise <code>ImportError</code>. All 42 exited zero, produced no traceback, and kept every from-scratch assertion live. The sweep printed 42 skip lines in total: 28 instances of <code>[skipped: torch not installed]</code>, 8 of <code>[skipped: no torch reference]</code>, and 6 of <code>[skipped: sklearn not installed]</code>. <span class="tag tag-certain">Certain</span></p>
+
+<p>You can reproduce that test without uninstalling anything. Put two shadow modules on the path that raise on import:</p>
+
+<pre><code>mkdir -p /tmp/blocker
+echo 'raise ImportError("blocked")' &gt; /tmp/blocker/torch.py
+echo 'raise ImportError("blocked")' &gt; /tmp/blocker/sklearn.py
+PYTHONPATH=/tmp/blocker python code/ch12_artifact.py</code></pre>
+
+<p>Chapter 12&rsquo;s artifact then prints <code>[skipped: torch not installed]</code> where the cross-check would have been and exits zero with every signal-propagation assertion still checked. The practical upshot: <strong>if all you have is numpy, you can run this entire book.</strong> You lose the independent confirmation, not the content. Chapter 40&rsquo;s artifact goes furthest &mdash; its only import is <code>dataclasses</code> from the standard library, so it runs on a bare Python install in 0.04 s.</p>
+
+<h4>B.4 Running the Artifacts</h4>
+
+<p>Each artifact is a standalone file with an <code>if __name__ == "__main__":</code> demo at the end. Run one:</p>
+
+<pre><code>python code/ch18_artifact.py</code></pre>
+
+<p>Run the whole set, timing each, and stop on the first failure:</p>
+
+<pre><code>for f in code/ch*_artifact.py; do
+  /usr/bin/time -f "$f %e" python "$f" &gt; "/tmp/$(basename $f).out" 2&gt;&gt; /tmp/timings.txt || echo "FAIL $f"
+done</code></pre>
+
+<p>The full sweep of 42 artifacts took 248 s of wall clock on the otherwise idle 4-core machine of Section B.1 &mdash; just over four minutes for the entire book, interpreter startup included. <span class="tag tag-verify">Verify</span> The slowest three are Chapter 35 at 27.0 s, Chapter 15 at 23.0 s, and Chapter 30 at 21.6 s; the median is 3.0 s. Every artifact fits inside the contract&rsquo;s 30-second budget on an idle machine, but the top of that list has no margin left: put any other load on the same four cores and the slowest few cross it. None of them downloads anything, reads a dataset from disk, or touches the network. Every input is synthesized in-process. That is a deliberate constraint: an artifact that needs a corpus is an artifact that stops running the day the corpus moves.</p>
+
+<div class="warning-box">
+<div class="box-title">Common Pitfall</div>
+<p>Assertions that compare <em>wall-clock timings</em> are the ones most likely to fail on your machine, and they fail for reasons that have nothing to do with the mathematics. Chapter 17&rsquo;s artifact carries one: <code>assert pr &gt; sr</code>, that a single time-fused GEMM reaches higher throughput than the sequential per-timestep loop at every batch size. It holds on the build machine. Look at how little it holds by. At $T=512$, $d=256$, fp32, the fused path wins by 22.8&times; at $B=1$ &mdash; but at $B=32$, three consecutive runs of the same unmodified file on the same idle 4-core box measured gaps of 2.5&times;, 1.8&times;, and 1.5&times;. The margin fell by 40% with nothing changed but the run. The reason is structural: as $B$ grows, each per-timestep GEMM gets large enough for BLAS to run it near peak, so the sequential path climbs from 21 to 168 GFLOP/s between $B=1$ and $B=32$, while the fused call was already near peak and has nowhere to go. On a narrower or busier machine that margin reaches zero and the assertion fails &mdash; while the gradient checks in the same file still agree with <code>torch.nn.LSTM</code> to a relative error below $10^{-15}$. If an artifact fails for you, read the failing line first: if it is comparing milliseconds rather than residuals, your hardware disagrees with the build machine and the chapter&rsquo;s argument is unaffected.</p>
+</div>
+
+<h4>B.5 Determinism and Seeding</h4>
+
+<p>The book&rsquo;s convention is a fresh, explicitly seeded generator, never the legacy global state:</p>
+
+<pre><code>rng = np.random.default_rng(0)          # yes
+np.random.seed(0); np.random.randn(3)   # no &mdash; global, and legacy</code></pre>
+
+<p><code>default_rng(0)</code> accounts for 53 of the 89 generator constructions across the 42 artifacts. The exceptions are deliberate: Chapter 14 needs independent replicates to show that a regularization effect is not a seed artifact, so it indexes them as <code>default_rng(1)</code>, <code>default_rng(2)</code>, <code>default_rng(3)</code>, and so on, and the seed <em>is</em> the replicate index. Where an artifact needs a torch generator it passes one explicitly &mdash; Chapter 33 uses <code>torch.Generator().manual_seed(0)</code> rather than the global <code>torch.manual_seed</code>, so a cross-check cannot silently perturb the numpy stream that follows it.</p>
+
+<p>Reproducibility has a hard boundary and it is worth naming. Given the same numpy version and the same seed, integer and structural results are bit-identical across machines. Floating-point results are not: BLAS reduces sums in an order that depends on thread count and on the kernel your CPU dispatches to, and floating-point addition is not associative (Chapter 5). Expect agreement to roughly $10^{-12}$ relative on a well-conditioned linear solve and much less on an ill-conditioned one, which is exactly the phenomenon Chapter 5 measures. To narrow the gap when comparing runs, pin the thread count before importing numpy:</p>
+
+<pre><code>export OMP_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+export MKL_NUM_THREADS=1</code></pre>
+
+<p>This makes the reduction order deterministic on a single machine at a real cost in speed. It does not make results identical across different BLAS builds. <span class="tag tag-certain">Certain</span></p>
+
+<h4>B.6 Colab and Kaggle</h4>
+
+<p>Both work, with caveats. Neither needs a GPU runtime; select the CPU one, since a GPU runtime here buys nothing and burns quota.</p>
+
+<p><strong>Colab.</strong> numpy, scipy, torch, and scikit-learn are preinstalled, but the pinned versions of Section B.1 will not be the ones on the image, and the image changes without notice. <span class="tag tag-verify">Verify</span> Install the pins in the first cell with <code>%pip install</code> rather than <code>!pip install</code> &mdash; the magic installs into the kernel&rsquo;s own environment. If pip upgrades numpy, the already-imported binary extension modules are stale and you must restart the session before anything else; Colab will tell you so, and the warning is not optional. Upload the artifact files, or paste one artifact per cell. Long-running cells are subject to idle disconnection, which is not a problem here: no artifact runs longer than about 30 s.</p>
+
+<p><strong>Kaggle.</strong> Notebooks default to <em>internet off</em>, so <code>pip install</code> fails silently-ish and every version stays whatever the image ships. This is precisely the situation Section B.3 exists for: run the artifacts unmodified, let the torch and scikit-learn cross-checks print their skip lines, and read the from-scratch assertions. Turning internet on in the notebook settings restores <code>pip</code>. Kaggle&rsquo;s preinstalled scientific stack tends to lag Colab&rsquo;s. <span class="tag tag-verify">Verify</span></p>
+
+<h4>B.7 Running the <code>ml-foundations</code> Ladder</h4>
+
+<p>The companion exercise repository is paced against the book: each exercise is a standalone file whose <code>check()</code> assertions at the bottom <em>are</em> the specification. The intended use is destructive &mdash; delete a function body, replace it with <code>pass</code>, re-read the docstring and the assertions, and reimplement until the checks pass. Reading an implementation and writing one are different skills and only the second transfers.</p>
+
+<p>The harness is <code>check.py</code> at the repository root. It imports nothing but the standard library, deliberately, so that a failing exercise fails for its own reasons and never because the harness could not load. Two ways to run it:</p>
+
+<pre><code>python3 check.py              # every exercise, each as its own subprocess
+python3 check.py tier0_math   # one tier
+python3 tier0_math/ex01_linalg.py   # one exercise, directly</code></pre>
+
+<p>The runner executes each exercise as a subprocess, prints <code>PASS</code> or <code>FAIL</code> per file with the last six lines of output on failure, prints an <code>n/m exercises passed</code> summary, and exits non-zero if anything failed &mdash; so it drops into CI unchanged. Inside an exercise, <code>check(name, got, expected=True, tol=None)</code> defaults to exact comparison; pass a <code>tol</code> and it compares scalars and array-likes elementwise and reports the worst absolute difference, which is the number you actually want when a gradient check fails. <code>summary()</code> exits 1 if any check failed.</p>
+
+<p>As of this writing all seven tiers exist and 17 exercises are written, so a full run on the machine of Section B.1 prints <code>17/17 exercises passed</code>. <span class="tag tag-verify">Verify</span> The bottom two tiers are complete: <code>tier0_math</code> has five (<code>ex01_linalg</code> through <code>ex05_linear_models</code>: matrix calculus, probability and entropy, gradient descent, floating point, linear models) and <code>tier1_autodiff</code> four (<code>ex06_micrograd</code> through <code>ex09_optimizers</code>: a scalar autodiff engine, a tensor one, initialization and normalization, optimizers). Above them the coverage is a skeleton: <code>tier2_architectures</code> has three (<code>ex14_attention</code>, <code>ex15_transformer_block</code>, <code>ex16_rope</code>), <code>tier3_sequence</code> two (<code>ex17_linear_attention</code>, <code>ex18_ssm_scan</code>), and <code>tier4_llm</code>, <code>tier5_systems</code>, and <code>tier6_encrypted</code> one each (<code>ex24_dpo_grpo</code>, <code>ex26_speculative_decoding</code>, <code>ex29_poly_depth</code>). The gaps in the numbering are the exercises the README&rsquo;s tier table promises and that have not landed; check the repository rather than this page for what exists today.</p>
+
+<p>The dependencies are lighter than that tier table suggests. Nothing in the ladder imports scipy. Every core implementation is numpy, and <code>ex06_micrograd</code> is pure standard library. torch appears in six files &mdash; two in tier 0, three in tier 1, one in tier 2 &mdash; and scikit-learn in exactly one (<code>ex05_linear_models</code>), always as a guarded cross-check under the pattern of Section B.3. Re-run the whole ladder with both blocked and it still prints <code>17/17 exercises passed</code>: numpy alone runs every exercise that exists today. <span class="tag tag-certain">Certain</span> The README warns that tier 4 targets a single small GPU and degrades to a tiny model on CPU; the one tier-4 exercise written so far is numpy and needs neither.</p>
+
+<h4>B.8 Tier 6: The Encrypted Exercises</h4>
+
+<p>Tier 6 is the join point between the ladder and Part VIII (Chapters 38&ndash;42): polynomial softmax and inverse square root, an encrypted linear layer, and depth budgeting. It is the only tier that will reach for dependencies the rest of the book does not have &mdash; but not yet. The one tier-6 exercise written so far, <code>ex29_poly_depth</code>, builds Chebyshev approximation and the multiplicative-depth ledger in numpy and imports no cryptographic library at all, on the grounds that the depth arithmetic is a scheme fact rather than a library fact. The installs below are for the exercises that will actually encrypt something.</p>
+
+<pre><code># Python bindings over Microsoft SEAL &mdash; the fast path
+pip install tenseal
+
+# OpenFHE: C++ library, built from source
+git clone https://github.com/openfheorg/openfhe-development.git
+cd openfhe-development &amp;&amp; mkdir build &amp;&amp; cd build
+cmake .. &amp;&amp; make -j$(nproc) &amp;&amp; sudo make install</code></pre>
+
+<p>TenSEAL is a wheel and usually installs in seconds. OpenFHE is a C++ build: budget real time for it, expect a working C++17 toolchain and CMake to be prerequisites, and note that the Python bindings live in a <em>separate</em> repository which must be built against the C++ library after it is installed. <span class="tag tag-verify">Verify</span></p>
+
+<div class="warning-box">
+<div class="box-title">Common Pitfall</div>
+<p><strong>[VERIFY] &mdash; homomorphic-encryption library APIs move faster than any book.</strong> This is not a hedge; it is the single most reliable way to waste an afternoon. Context construction, parameter selection, key generation, the rescaling and level-management calls, and above all the bootstrapping setup have all changed names, signatures, or default behaviour across minor releases of both TenSEAL and OpenFHE. Any code sample in tier 6, in Part VIII, or in a blog post older than a few months should be treated as pseudocode that shows the <em>shape</em> of the computation. Before running it, open the library&rsquo;s own <code>examples/</code> directory at the version you installed: it is compiled and tested against the code, which makes it the only documentation that cannot drift. The concepts in Chapters 38 and 39 &mdash; multiplicative depth, level consumption, rotation counts, the cost of a Chebyshev approximation &mdash; are stable; the function names that express them are not.</p>
+</div>
+
+<p>One reassurance about the book proper: <em>none</em> of the 42 artifacts imports TenSEAL, OpenFHE, or any other HE library. Part VIII&rsquo;s artifacts are counting models and numerical approximations in numpy &mdash; Chapter 38&rsquo;s is an explicit depth-and-rotation ledger that never encrypts anything, Chapter 39&rsquo;s works in <code>numpy.polynomial.chebyshev</code>, Chapter 40&rsquo;s imports only <code>dataclasses</code>. You can read and run all of Part VIII with no cryptographic library installed. Tier 6 is where you would actually encrypt something, and it is optional.</p>
+
+<h4>B.9 MathJax, and Why the Formulas Might Be Raw LaTeX</h4>
+
+<p>The book is one self-contained HTML file with one external dependency, and this section exists because the page&rsquo;s own failure banner points here.</p>
+
+<p>Mathematics is typeset by MathJax 3, loaded from a CDN by a single line in the head:</p>
+
+<pre><code>&lt;script id="MathJax-script" async
+        src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"&gt;&lt;/script&gt;</code></pre>
+
+<p>If you are offline, behind a proxy that blocks <code>cdn.jsdelivr.net</code>, or reading from a USB stick on an air-gapped machine, that request fails and <strong>every formula in the book renders as raw LaTeX source</strong> &mdash; literal dollar signs and backslashes in the middle of otherwise normal prose. Nothing else on the page is affected: text, tables, code, and boxes are unaffected because they need no script. The page detects this. A status banner reads &ldquo;Typesetting mathematics&hellip;&rdquo; on load and hides itself when MathJax finishes; if MathJax has not initialized after 12 seconds, the banner rewrites itself to say so and points at this appendix rather than sitting there claiming to be working forever.</p>
+
+<p>The fix is a local copy. Get the MathJax 3 package and put it beside the HTML file:</p>
+
+<pre><code># with npm
+npm install mathjax@3
+mv node_modules/mathjax ./mathjax
+
+# or without npm &mdash; fetch and unpack the published tarball
+curl -LO https://registry.npmjs.org/mathjax/-/mathjax-3.2.2.tgz
+tar xzf mathjax-3.2.2.tgz
+mv package mathjax</code></pre>
+
+<p>Then edit the one line in the book&rsquo;s head, changing the <code>src</code> attribute from the jsdelivr URL to the relative path <code>mathjax/es5/tex-mml-chtml.js</code> and leaving the rest of the tag alone. Do not delete the <code>async</code> attribute or the <code>id</code>; the banner logic keys off the loaded object, not the tag.</p>
+
+<p>This was verified, not assumed. With MathJax 3.2.2 unpacked locally and the <code>src</code> rewritten, a headless Chromium loaded the book from a <code>file://</code> URL, made <strong>zero</strong> network requests, hid the banner, and typeset 9,848 math elements in 24.7 s on the 4-core machine of Section B.1. <span class="tag tag-verify">Verify</span> That is also the honest answer to &ldquo;why is the page slow on first load&rdquo;: typesetting time scales with the number of formulas, and a book with nearly ten thousand of them in a single document takes tens of seconds on a modest CPU whether the script came from a CDN or from disk.</p>
+
+<p>The unpacked package is 24 MB, most of which the book never touches. If you are shipping the book somewhere size-constrained, two paths suffice: <code>mathjax/es5/tex-mml-chtml.js</code> (1.2 MB) and the directory <code>mathjax/es5/output/chtml/fonts/</code> (500 KB). A tree containing only those two, 1.7 MB in total, rendered all 9,848 elements with zero failed requests in the same headless test. <span class="tag tag-verify">Verify</span> Everything else in the package &mdash; the SVG output jax, the MathML input jax, the 3.9 MB speech-rule engine &mdash; is unused by this configuration.</p>
+
+<p>Two smaller notes. Some browsers block <code>file://</code> subresource loads under a strict local-file policy; if the local copy still fails, serve the directory with <code>python3 -m http.server</code> and open <code>http://localhost:8000</code> instead. And if you only need the mathematics readable rather than beautiful, the raw LaTeX is not a disaster: $\mathcal{L}$, $\nabla_\theta$, and $\sigma(z)$ are legible as source, and the notation table in Appendix A is deliberately written so that each symbol is named in prose beside its glyph.</p>
+
+</div>

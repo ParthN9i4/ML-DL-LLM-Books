@@ -15879,6 +15879,1036 @@ if __name__ == "__main__":
 <!-- PART_VIII_END -->
 
 <!-- APPENDICES_START -->
+<div class="chapter" id="appendix-a">
+<div class="chapter-header"><div class="ch-label">Appendix A</div><h3>Notation and Mathematical Prerequisites</h3></div>
+
+<p>This appendix is the book's single notation authority. Every symbol below carries the chapter where it is <em>first used in earnest</em>; where a symbol is used loosely before it is defined formally, the defining chapter follows in parentheses. The inventory was harvested mechanically from the assembled text of all forty-two chapters: 213 distinct mathematical atoms occur eight or more times in the book's inline and display math <span class="tag tag-verify">Verify</span>. Dummy indices and symbols local to one derivation are collapsed rather than listed. Read Section A.3 before Part V: the book reuses several letters for genuinely different quantities, and one of those reuses &mdash; $\beta$ &mdash; will bite you. Sections A.4 through A.6 are refreshers, not courses; A.7 says what is assumed and where to get it.</p>
+
+<h4>A.1 Book-Wide Conventions</h4>
+
+<p>Seven conventions hold everywhere unless a chapter says otherwise.</p>
+
+<p><strong>Vectors are columns.</strong> $x \in \mathbb{R}^{n}$ is an $n \times 1$ object. Weight matrices act on the left: $y = Wx$, so $W \in \mathbb{R}^{d_{\text{out}} \times d_{\text{in}}}$. An inner product is $u^{\top}v$; an outer product is $uv^{\top}$.</p>
+
+<p><strong>Layer index is a parenthesized superscript.</strong> Chapter 10 fixes the MLP recursion as $z^{(l)} = W^{(l)}a^{(l-1)} + b^{(l)}$, $a^{(l)} = \phi(z^{(l)})$, and every later chapter inherits it. A bare superscript is a power; a parenthesized one is a layer. Head index, where it collides with layer index, is also parenthesized: $W_q^{(h)}$ in Chapter 18.</p>
+
+<p><strong>Transpose is $\top$ &mdash; except in Chapter 1.</strong> Chapter 1 writes $A^{\mathsf{T}}$; Chapters 3 onward write $A^{\top}$. The two glyphs mean the same thing. <span class="tag tag-certain">Certain</span> The same small inconsistency exists for the indicator, which appears in three variants: Chapter 7 writes $\mathbf{1}\{\,\cdot\,\}$, Chapter 8 writes $\mathbb{1}[\,\cdot\,]$, Chapter 10 writes $\mathbf{1}[\,\cdot\,]$. All three are the same function.</p>
+
+<p><strong>Batched math puts examples in columns; batched code puts them in rows.</strong> Chapter 10's backward pass carries activations as $A^{(l)} \in \mathbb{R}^{d_l \times B}$ and error signals as $\delta^{(l)} \in \mathbb{R}^{d_l \times B}$, so $\partial\mathcal{L}/\partial W^{(l)} = \delta^{(l)}A^{(l-1)\top}$ has the shape of $W^{(l)}$ with no transposes to guess at. NumPy and PyTorch store the batch first, shape $(B, d)$, and Chapter 11 works in that layout. Attention (Chapter 18) is a third case: $Q \in \mathbb{R}^{n_q \times d_k}$ stores one token per <em>row</em>, which is why the score matrix is $QK^{\top}$ and not $Q^{\top}K$.</p>
+
+<p><strong>Logarithms are natural unless subscripted.</strong> $\log = \ln$, and information quantities are therefore in nats (Chapter 2). Chapter 23 switches to $\log_2$ explicitly for perplexity and bits-per-byte, and says so.</p>
+
+<p><strong>Asymptotics are worst case unless stated.</strong> See A.6.</p>
+
+<p><strong>Hats and bars.</strong> $\hat{\cdot}$ is an estimate ($\hat{R}_S$, the empirical risk, Chapter 3) <em>or</em> a bias-corrected quantity ($\hat{m}_t$, Chapter 13). $\bar{\cdot}$ is an adjoint &mdash; a reverse-mode cotangent, $\bar{v}_i = \partial\mathcal{L}/\partial v_i$ (Chapter 11).</p>
+
+<h4>A.2 The Symbol Table</h4>
+
+<p>Part membership, where it helps: Part I is Chapters 1&ndash;5, Part II 6&ndash;9, Part III 10&ndash;15, Part IV 16&ndash;21, Part V 22&ndash;29, Part VI 30&ndash;34, Part VII 35&ndash;37, Part VIII 38&ndash;42.</p>
+
+<h5>A.2.1 Operators, sets, and structure</h5>
+
+<table>
+<tr><th>Symbol</th><th>Meaning</th><th>First used</th></tr>
+<tr><td>$\mathbb{R}$, $\mathbb{R}^{m\times n}$</td><td>reals; real matrices of that shape</td><td>1</td></tr>
+<tr><td>$I$</td><td>identity matrix</td><td>1</td></tr>
+<tr><td>$A^{\top}$, $A^{\mathsf{T}}$</td><td>transpose</td><td>1</td></tr>
+<tr><td>$\odot$</td><td>elementwise (Hadamard) product</td><td>1</td></tr>
+<tr><td>$\|\cdot\|_2$, $\|\cdot\|_F$</td><td>spectral/Euclidean norm; Frobenius norm</td><td>1</td></tr>
+<tr><td>$\delta_{ij}$</td><td>Kronecker delta</td><td>1</td></tr>
+<tr><td>$O$, $\Omega$, $\Theta$, $\tilde{O}$</td><td>asymptotic upper, lower, tight, polylog-suppressed</td><td>1, 3, 4, 21</td></tr>
+<tr><td>$\nabla$, $\nabla_W$</td><td>gradient; gradient with respect to a named variable</td><td>4, 6</td></tr>
+<tr><td>$\mathcal{L}$, $\ell$</td><td>total loss; per-example loss</td><td>2</td></tr>
+<tr><td>$\phi$, $\sigma(\cdot)$</td><td>activation function (Definition 10.1); logistic sigmoid $\sigma(z)=1/(1+e^{-z})$</td><td>10, 6</td></tr>
+<tr><td>$\mathbf{1}\{\,\cdot\,\}$, $\mathbb{1}[\,\cdot\,]$, $\mathbf{1}[\,\cdot\,]$</td><td>indicator of a predicate</td><td>7, 8, 10</td></tr>
+</table>
+
+<h5>A.2.2 Linear algebra and the cost model (Chapter 1)</h5>
+
+<table>
+<tr><th>Symbol</th><th>Meaning</th><th>First used</th></tr>
+<tr><td>$A$, $B$, $C$</td><td>matrix operands of a product; $m$, $n$, $k$ its dimensions</td><td>1</td></tr>
+<tr><td>$U$, $\Sigma$, $V$</td><td>SVD factors, $A = U\Sigma V^{\mathsf{T}}$</td><td>1</td></tr>
+<tr><td>$\sigma_i$, $\sigma_1$</td><td>singular values, descending; $\sigma_1$ the largest</td><td>1</td></tr>
+<tr><td>$u_i$, $v_i$</td><td>left and right singular vectors</td><td>1</td></tr>
+<tr><td>$\Lambda$, $\lambda_i$</td><td>eigenvalue matrix; $i$-th eigenvalue</td><td>1</td></tr>
+<tr><td>$\rho(A)$</td><td>spectral radius</td><td>1</td></tr>
+<tr><td>$\kappa_2(A)$</td><td>2-norm condition number</td><td>1</td></tr>
+<tr><td>$F$, $Q$, $I$</td><td>FLOP count, bytes moved, arithmetic intensity $I = F/Q$</td><td>1</td></tr>
+<tr><td>$P$, $\text{BW}$, $\beta$</td><td>peak FLOP rate, peak bandwidth, machine balance $\beta = P/\text{BW}$</td><td>1</td></tr>
+<tr><td>$M$</td><td>fast-memory capacity in the communication lower bound</td><td>1</td></tr>
+</table>
+
+<h5>A.2.3 Probability and information (Chapter 2)</h5>
+
+<table>
+<tr><th>Symbol</th><th>Meaning</th><th>First used</th></tr>
+<tr><td>$p$, $q$</td><td>true and model distributions (density or pmf, undistinguished)</td><td>2</td></tr>
+<tr><td>$x \sim p$, $\mathbb{E}_{x\sim p}$</td><td>sampling; expectation under a named law</td><td>2</td></tr>
+<tr><td>$\mathbb{E}$, $\mathrm{Var}$</td><td>expectation, variance</td><td>2</td></tr>
+<tr><td>$\mathcal{N}(\mu,\sigma^2)$</td><td>Gaussian; $\mathcal{N}(0,\tau^2 I)$ isotropic</td><td>2</td></tr>
+<tr><td>$H(p)$, $H(p,q)$</td><td>entropy; cross-entropy of $q$ relative to $p$</td><td>2</td></tr>
+<tr><td>$D_{\mathrm{KL}}(p\|q)$</td><td>Kullback&ndash;Leibler divergence</td><td>2</td></tr>
+<tr><td>$\theta$, $w$</td><td>parameters (generic; $w$ preferred in Parts I&ndash;II)</td><td>2, 1</td></tr>
+<tr><td>$\mathcal{D}$, $\mathcal{X}$, $\mathcal{Y}$</td><td>data distribution; input and label spaces</td><td>2, 3</td></tr>
+<tr><td>$z$, $Z$</td><td>latent variable; normalizing constant / partition function</td><td>2</td></tr>
+<tr><td>$\lambda$, $\tau$</td><td>regularization strength; Gaussian prior scale. The conversion depends on the likelihood's normalization: $\lambda = 1/(2\tau^2)$ in Chapter 2, $\lambda = \sigma^2/\tau^2$ under Chapter 6's $y\mid w \sim \mathcal{N}(Xw,\sigma^2 I)$</td><td>2</td></tr>
+</table>
+
+<h5>A.2.4 Learning theory (Chapter 3)</h5>
+
+<table>
+<tr><th>Symbol</th><th>Meaning</th><th>First used</th></tr>
+<tr><td>$\mathcal{H}$, $\mathcal{F}$</td><td>hypothesis class; class of real-valued functions</td><td>3</td></tr>
+<tr><td>$h$, $S$</td><td>a hypothesis; a training sample of size $n$</td><td>3</td></tr>
+<tr><td>$R(h)$, $\hat{R}_S(h)$</td><td>population risk; empirical risk on $S$</td><td>3</td></tr>
+<tr><td>$\epsilon$, $\delta$</td><td>PAC accuracy and failure probability</td><td>3</td></tr>
+<tr><td>$\sigma_i$</td><td>Rademacher signs, uniform on $\{-1,+1\}$</td><td>3</td></tr>
+<tr><td>$\hat{\mathfrak{R}}_S(\mathcal{F})$</td><td>empirical Rademacher complexity</td><td>3</td></tr>
+<tr><td>$\Phi$</td><td>design / feature matrix, $\Phi \in \mathbb{R}^{n\times p}$</td><td>3</td></tr>
+</table>
+
+<h5>A.2.5 Optimization and training (Parts I and III)</h5>
+
+<table>
+<tr><th>Symbol</th><th>Meaning</th><th>First used</th></tr>
+<tr><td>$\eta$</td><td>learning rate / step size</td><td>4</td></tr>
+<tr><td>$\mu$, $L$, $\kappa$</td><td>strong-convexity constant, smoothness constant, $\kappa = L/\mu$</td><td>4</td></tr>
+<tr><td>$\beta$</td><td>heavy-ball / Nesterov momentum coefficient</td><td>4</td></tr>
+<tr><td>$w_t$, $\theta_t$</td><td>iterate at step $t$</td><td>4, 7</td></tr>
+<tr><td>$B$, $B_{\text{noise}}$</td><td>batch size; gradient noise scale (the ratio $B/B_{\text{noise}}$ is what matters)</td><td>4</td></tr>
+<tr><td>$B_{\text{crit}}$</td><td>critical batch size</td><td>15</td></tr>
+<tr><td>$g_t$, $b_t$</td><td>stochastic gradient at step $t$; heavy-ball buffer, $b_t = \mu b_{t-1} + g_t$</td><td>13</td></tr>
+<tr><td>$m_t$, $v_t$</td><td>Adam first and second moment buffers (Chapter 4's $m_t$ is an unrelated second moment of the iterate)</td><td>13</td></tr>
+<tr><td>$\beta_1$, $\beta_2$</td><td>Adam moment decay rates</td><td>13</td></tr>
+<tr><td>$\varepsilon$</td><td>Adam denominator floor</td><td>13</td></tr>
+<tr><td>$\rho_i$</td><td>per-coordinate gradient signal-to-noise ratio $|\mu_i|/\sigma_i$</td><td>13</td></tr>
+<tr><td>$P_t$</td><td>preconditioner (Shampoo, SOAP, Muon)</td><td>13</td></tr>
+<tr><td>$\eta_{\text{eff}}$</td><td>effective learning rate under scale invariance</td><td>14</td></tr>
+<tr><td>$l$, $d_l$, $L$</td><td>layer index, width of layer $l$, number of layers</td><td>10</td></tr>
+<tr><td>$a^{(l)}$, $z^{(l)}$, $\delta^{(l)}$</td><td>post-activation, pre-activation, backprop error signal</td><td>10</td></tr>
+<tr><td>$J$</td><td>Jacobian, $J(x) \in \mathbb{R}^{m\times n}$ for $f:\mathbb{R}^n\to\mathbb{R}^m$</td><td>11</td></tr>
+<tr><td>$n_{\text{in}}$, $\sigma_l$</td><td>fan-in; per-layer initialization standard deviation</td><td>12</td></tr>
+</table>
+
+<h5>A.2.6 Architecture, scale, and systems (Parts IV&ndash;VII)</h5>
+
+<table>
+<tr><th>Symbol</th><th>Meaning</th><th>First used</th></tr>
+<tr><td>$d$, $d_{\text{model}}$</td><td>residual-stream width. Parts IV&ndash;VI mostly write the bare $d$</td><td>1 (18)</td></tr>
+<tr><td>$d_{\text{ff}}$</td><td>feed-forward inner width, conventionally $4d$</td><td>1 (18)</td></tr>
+<tr><td>$n$, $T$</td><td>sequence length (interchangeable; $n$ dominates in the attention chapters 18, 20, 31, $T$ in the recurrent, SSM, and serving chapters 17, 21, 33)</td><td>1</td></tr>
+<tr><td>$N$, $D$, $C$</td><td>parameter count, training tokens, training compute in FLOPs</td><td>1 (10, 24)</td></tr>
+<tr><td>$C_{\text{in}}$, $C_{\text{out}}$, $k_l$, $j_l$, $r_l$</td><td>conv channels in/out; kernel size, jump (cumulative stride), receptive field at layer $l$</td><td>16</td></tr>
+<tr><td>$h_t$, $c_t$, $f_t$, $z_t$, $W_h$</td><td>RNN hidden state, LSTM cell state, forget gate, the stacked gate pre-activation $z_t \in \mathbb{R}^{4d_h}$ that Definition 17.3 splits into $i_t,f_t,g_t,o_t$, recurrent weight</td><td>17</td></tr>
+<tr><td>$Q$, $K$, $V$, $A$, $M$</td><td>queries, keys, values, attention matrix, additive mask</td><td>18</td></tr>
+<tr><td>$H$, $H_{kv}$, $d_k$, $d_h$, $W_o$</td><td>heads, key/value heads, key dimension, per-head width $d_h = d/H$, output projection</td><td>$d_k$ 5, $d_h$ 12, rest 18 (all defined in 18)</td></tr>
+<tr><td>$R_n$, $A_m$, $T_{\text{train}}$, $\theta_i$</td><td>RoPE rotation at position $n$, relative rotation, pretraining context length, RoPE frequencies</td><td>19</td></tr>
+<tr><td>$\Delta_t$, $A_t$, $B_t$</td><td>SSM discretization step and selective state matrices</td><td>21</td></tr>
+<tr><td>$f_e$, $P_e$</td><td>MoE: fraction of tokens routed to expert $e$; mean gate probability for $e$</td><td>22</td></tr>
+<tr><td>$n_T$, $n_B$</td><td>tokens and bytes in an evaluation corpus (perplexity vs. bits-per-byte)</td><td>23</td></tr>
+<tr><td>$E$, $A$, $B$, $\alpha$, $\beta$</td><td>Chinchilla fit constants in $\mathcal{L}(N,D) = E + AN^{-\alpha} + BD^{-\beta}$</td><td>24</td></tr>
+<tr><td>$\pi_\theta$, $\pi_{\text{ref}}$, $\beta$</td><td>policy, reference (SFT) policy, KL coefficient</td><td>27</td></tr>
+<tr><td>$y_w$, $y_l$, $Z(x)$, $r_\phi$</td><td>preferred and dispreferred completion, partition function, learned reward model</td><td>27</td></tr>
+<tr><td>$B_r$, $\ell_i$, $\tilde{O}_i$</td><td>FlashAttention query-block rows, running softmax denominator, unnormalized accumulator</td><td>31</td></tr>
+<tr><td>$B_{\text{blk}}$</td><td>PagedAttention KV block size in tokens</td><td>33</td></tr>
+<tr><td>$x_0$, $\alpha_t$, $\sigma_t$, $u_t$</td><td>diffusion: clean sample, noise schedule coefficients, velocity field</td><td>35</td></tr>
+</table>
+
+<h5>A.2.7 Part VIII: computing under encryption (Chapters 38&ndash;42)</h5>
+
+<table>
+<tr><th>Symbol</th><th>Meaning</th><th>First used</th></tr>
+<tr><td>$N$</td><td>CKKS ring dimension; a ciphertext holds $N/2$ complex slots</td><td>38</td></tr>
+<tr><td>$\ell_{\max}$</td><td>level budget fixed at key generation: a circuit of multiplicative depth $\le \ell_{\max}$ evaluates leveled, with no bootstrap. Part VIII leaves $L$ alone &mdash; it stays the transformer layer count</td><td>38</td></tr>
+<tr><td>$n_1$, $n_2$</td><td>baby-step/giant-step factorization, $d = n_1 n_2$; rotation count $n_1 + n_2 - 2$</td><td>38</td></tr>
+<tr><td>$\Delta$</td><td>CKKS scale factor; effective precision is $\log_2(\Delta/\|e\|)$</td><td>41</td></tr>
+<tr><td>$\ell$</td><td>current level, equivalently RNS limb count; ciphertext bytes are $2N\ell w$</td><td>41</td></tr>
+<tr><td>$d_{\text{tok}}$, $d_{\text{layer}}$</td><td>multiplicative depth consumed per token and per layer, $d_{\text{tok}} = L\,d_{\text{layer}}$</td><td>41</td></tr>
+<tr><td>$B$, $p_{\text{boot}}$, $\lambda$</td><td>levels available between bootstraps, precision immediately after a bootstrap, bits lost per level</td><td>41</td></tr>
+</table>
+
+<h4>A.3 Collisions You Will Actually Hit</h4>
+
+<p>A book spanning numerical linear algebra, statistical learning theory, and lattice cryptography cannot give every quantity its own letter. What it can do is say where the reuses are. Each row below was read off the manuscript.</p>
+
+<div class="warning-box">
+<div class="box-title">Common Pitfall</div>
+<p>$\beta$ is the worst offender, and it is worst precisely where readers move fastest. In Chapter 13 it is the pair of Adam moment decay rates, $m_t = \beta_1 m_{t-1} + (1-\beta_1)g_t$ and $v_t = \beta_2 v_{t-1} + (1-\beta_2)g_t\odot g_t$, with defaults near $0.9$ and $0.999$, though Chapter 13 notes $\beta_2 \approx 0.95$ is the common choice in large language-model runs &mdash; in every case a number close to $1$ whose distance from $1$ sets an averaging window. In Chapter 27 it is the KL coefficient of the regularized objective $\mathbb{E}[r(x,y)] - \beta\,\mathrm{KL}(\pi\|\pi_{\text{ref}})$, whose optimum is $\pi^*(y|x) \propto \pi_{\text{ref}}(y|x)\exp(r(x,y)/\beta)$ &mdash; a temperature, at or below $1$, with Chapter 27's worked examples at $1$, $0.5$, and $0.3$ and deployed runs usually in $0.01$&ndash;$0.5$ <span class="tag tag-likely">Likely</span> &mdash; where smaller means sharper and further from the reference. They are unrelated. A DPO implementation that reads $\beta$ from an Adam config, or a reviewer who assumes the DPO $\beta$ should be "close to $1$ like Adam's", is making a category error. And $\beta$ has three more lives: machine balance $\beta = P/\text{BW}$ in Chapter 1, the momentum coefficient in Chapter 4 (which Chapter 13 then renames $\mu$), and the data-side exponent in Chapter 24's $\mathcal{L}(N,D) = E + AN^{-\alpha} + BD^{-\beta}$. <span class="tag tag-certain">Certain</span></p>
+</div>
+
+<table>
+<tr><th>Symbol</th><th>Meanings, by chapter of use</th></tr>
+<tr><td>$\beta$</td><td>machine balance (1) &middot; momentum (4) &middot; Adam decay rates (13) &middot; scaling-law data exponent (24) &middot; KL coefficient (27)</td></tr>
+<tr><td>$N$</td><td>matrix dimension (1) &middot; parameter count (1, 10, 24) &middot; SSM state dimension (21) &middot; CKKS ring dimension (38)</td></tr>
+<tr><td>$L$</td><td>smoothness constant (4) &middot; left child of a tree split, against $R$ (8) &middot; number of layers (10, and unchanged through Part VIII &mdash; the CKKS level budget is $\ell_{\max}$, not $L$)</td></tr>
+<tr><td>$B$</td><td>matrix operand (1) &middot; batch size (4) &middot; scaling-law data coefficient (24) &middot; block rows $B_r$ (31) &middot; levels between bootstraps (41)</td></tr>
+<tr><td>$C$</td><td>matrix operand (1) &middot; SVM box constraint (7) &middot; training compute in FLOPs (10, 24) &middot; channel count $C_{\text{in}}$ (16)</td></tr>
+<tr><td>$T$</td><td>sequence length (1) &middot; number of leaves in a tree (8) &middot; trace length in an autodiff program (11)</td></tr>
+<tr><td>$I$</td><td>identity matrix and arithmetic intensity $I=F/Q$ &mdash; both in Chapter 1</td></tr>
+<tr><td>$P$</td><td>peak FLOP rate (1) &middot; matrix of predicted probabilities (6) &middot; preconditioner $P_t$ (13) &middot; expert gate mass $P_e$ (22)</td></tr>
+<tr><td>$Q$</td><td>bytes moved across the memory boundary (1) &middot; query matrix (18)</td></tr>
+<tr><td>$M$</td><td>fast-memory capacity (1) &middot; mantissa bit count (5) &middot; attention mask (18)</td></tr>
+<tr><td>$\mu$</td><td>mean (2) &middot; strong-convexity constant (4) &middot; cluster centroid $\mu_j$ (9) &middot; momentum coefficient (13)</td></tr>
+<tr><td>$\sigma$</td><td>singular value $\sigma_i$ (1) &middot; standard deviation in $\mathcal{N}(\mu,\sigma^2)$ (2) &middot; Rademacher sign $\sigma_i$ (3) &middot; logistic sigmoid (6) &middot; per-layer initialization std $\sigma_l$ (12) &middot; diffusion noise level $\sigma_t$ (35)</td></tr>
+<tr><td>$\varepsilon$, $\epsilon$</td><td>perturbation size (1) &middot; PAC accuracy (3) &middot; machine epsilon $\varepsilon = 2^{-M}$, twice the unit roundoff $u = \varepsilon/2$ (5) &middot; Adam floor (13)</td></tr>
+<tr><td>$\delta$</td><td>Kronecker delta and perturbation (1) &middot; PAC failure probability (3) &middot; backprop error signal $\delta^{(l)}$ (10)</td></tr>
+<tr><td>$\lambda$</td><td>eigenvalue (1) &middot; regularization strength (2) &middot; bits of precision lost per level (41)</td></tr>
+<tr><td>$\Theta$</td><td>asymptotic tight bound (4) &middot; the neural tangent kernel $\Theta_\infty(x,x')$ (7)</td></tr>
+<tr><td>$\Omega$</td><td>asymptotic lower bound (3) &middot; the monotone regularizer $\Omega(\|f\|)$ of the representer theorem (7)</td></tr>
+<tr><td>$\mathcal{H}$</td><td>hypothesis class (3) &middot; reproducing kernel Hilbert space (7)</td></tr>
+<tr><td>$\tilde{O}$</td><td>soft-O, polylog suppressed (21) &middot; FlashAttention's unnormalized output accumulator $\tilde{O}_i$ (31)</td></tr>
+<tr><td>$u$</td><td>left singular vector $u_i$ (1) &middot; unit roundoff (5) &middot; velocity field $u_t$ of a flow (35)</td></tr>
+<tr><td>$\phi$</td><td>kernel feature map $\phi(x)$ (7) &middot; elementwise activation $\phi(z)$ (10) &middot; reward-model parameters $r_\phi$ (27)</td></tr>
+<tr><td>$\ell$</td><td>per-example loss (2) &middot; matrix-power index $\bar A^{\ell}$ (21) &middot; FlashAttention running denominator $\ell_i$ (31) &middot; CKKS level budget $\ell_{\max}$ (38) and current level / RNS limb count (41)</td></tr>
+</table>
+
+<p>Two collisions the book resolves rather than tolerates. Chapter 7 needs an angle while $\theta$ is already the parameter vector, so it writes $\vartheta = \arccos\langle x,x'\rangle$ and says in the text that this is not the parameter vector; Chapter 13 needs a momentum coefficient while $\beta_1,\beta_2$ are spoken for, so heavy ball becomes $b_t = \mu b_{t-1} + g_t$. Extend the notation the same way: a visibly different glyph plus one sentence of disclaimer.</p>
+
+<h4>A.4 Matrix Calculus: Which Layout, and Why It Matters</h4>
+
+<p>There are exactly two conventions for the derivative of a vector by a vector, they differ by a transpose, and mixing them is the most common source of shape errors in hand-derived backward passes. <strong>Numerator layout</strong> (also "Jacobian layout"): for $y = f(x)$ with $y\in\mathbb{R}^m$, $x\in\mathbb{R}^n$, the derivative $\partial y/\partial x$ is $m\times n$ &mdash; one row per output. <strong>Denominator layout</strong>: the same object is $n\times m$. A scalar function's derivative is a row vector in the first convention and a column vector in the second.</p>
+
+<p>This book uses a hybrid, and it is the hybrid essentially all of machine learning uses. <em>Jacobians are numerator layout</em>: Chapter 11 defines $J(x)\in\mathbb{R}^{m\times n}$ for $f:\mathbb{R}^n\to\mathbb{R}^m$, so the forward-mode JVP is $\dot{x}\mapsto J(x)\dot{x}$ and the reverse-mode VJP is $w \mapsto w^{\top}J(x)$, equivalently $J(x)^{\top}w$. <em>Gradients of scalars are denominator layout</em>: $\nabla_\theta\mathcal{L}$ has exactly the shape of $\theta$. That is not an aesthetic choice. An optimizer computes $\theta \leftarrow \theta - \eta\,\nabla_\theta\mathcal{L}$, an elementwise operation, and it can only do that if gradient and parameter are shape-compatible. Every framework enforces it; so does this book.</p>
+
+<p>The two conventions cohabit through one rule, which generates every backward pass in the book: for a scalar loss, <em>the gradient pulls back through the transposed Jacobian</em>,</p>
+
+<p>$$\nabla_x\mathcal{L} \;=\; J^{\top}\,\nabla_z\mathcal{L}, \qquad z = f(x).$$</p>
+
+<p>Three instances cover most of a neural network. For $z = Wx$: $\partial\mathcal{L}/\partial x = W^{\top}(\partial\mathcal{L}/\partial z)$ and $\partial\mathcal{L}/\partial W = (\partial\mathcal{L}/\partial z)\,x^{\top}$. For an elementwise $a = \phi(z)$: $\bar{z} = \bar{a}\odot\phi'(z)$. For broadcasting and summation: they are transposes of each other, so the backward pass of a broadcast is a sum over the broadcast axis, and the backward pass of a sum is a broadcast. Chapter 11 states this as a slogan &mdash; broadcasting copies entries, its transpose sums them &mdash; and it is the rule that fixes bias gradients.</p>
+
+<p>Shapes settle every remaining index question. If you cannot decide whether a term needs a transpose, write the shapes: in Chapter 10, $\delta^{(l)}$ is $d_l\times B$ and $A^{(l-1)\top}$ is $B\times d_{l-1}$, so their product is $d_l \times d_{l-1}$ &mdash; the shape of $W^{(l)}$, with nothing left to decide.</p>
+
+<div class="warning-box">
+<div class="box-title">Common Pitfall</div>
+<p>The batch axis is where hand-derived gradients and running code diverge. The math in Chapter 10 is column-per-example, $A^{(l)} \in \mathbb{R}^{d_l\times B}$; NumPy and PyTorch are row-per-example, shape $(B,d)$. Transcribing $\partial\mathcal{L}/\partial W = \delta A^{\top}$ literally into row-major code gives a $(B,B)$ matrix instead of a $(d_{\text{out}},d_{\text{in}})$ one &mdash; which at least fails loudly. The silent version is the bias: its gradient arrives with shape $(B,d)$ and must be summed over the batch axis to $(1,d)$. Whether that omission is loud depends on how the update is written, as Chapter 11 shows: in place, <code>p.data -= lr * p.grad</code> makes NumPy raise <code>non-broadcastable output operand</code> and you find the bug in a minute; out of place, <code>p.data = p.data - lr * p.grad</code> broadcasts happily, the bias silently becomes shape $(B,d)$, every later forward pass still runs, the loss still falls for a while, and the model now holds $B$ independent copies of each bias that correspond to nothing. Check every parameter gradient against finite differences before you trust a hand-written backward pass. <span class="tag tag-certain">Certain</span></p>
+</div>
+
+<p>For that finite-difference check, use the central difference $(\mathcal{L}(\theta + he_i) - \mathcal{L}(\theta - he_i))/2h$, whose truncation error is $O(h^2)$ against the forward difference's $O(h)$. Balancing truncation against rounding gives an optimal step near $\varepsilon_{\text{mach}}^{1/3}$, about $6\times10^{-6}$ in fp64 <span class="tag tag-certain">Certain</span>; compare relative error, not absolute, and do the check in double precision even when the model trains in bf16.</p>
+
+<h4>A.5 Probability Notation</h4>
+
+<p>The book is deliberately non-measure-theoretic. $p(x)$ denotes a density or a probability mass function according to context, and no distinction is drawn because no argument turns on one. Where a claim would need measure theory to state properly &mdash; the null-set argument for saddle escape in Chapter 4 is the clearest case &mdash; the chapter says so and gives the informal version.</p>
+
+<p>$x\sim p$ means $x$ is distributed as $p$; $\mathbb{E}_{x\sim p}[f(x)] = \sum_x p(x)f(x)$, with the subscript dropped when the law is unambiguous. $\mathrm{Var}$, $\mathrm{Cov}$ follow the same convention. Independent and identically distributed is abbreviated i.i.d., and $S \sim \mathcal{D}^n$ means a sample of $n$ i.i.d. draws.</p>
+
+<p>Information quantities, all from Chapter 2: entropy $H(p) = -\sum_x p(x)\log p(x)$; cross-entropy $H(p,q) = -\sum_x p(x)\log q(x) = \mathbb{E}_{x\sim p}[-\log q(x)]$; and $D_{\mathrm{KL}}(p\|q) = H(p,q) - H(p)$. The double bar in $D_{\mathrm{KL}}(p\|q)$ is a separator, not a norm, and the argument order matters: $D_{\mathrm{KL}}(p\|q)$ is mode-covering in $q$, $D_{\mathrm{KL}}(q\|p)$ mode-seeking, and Chapter 2 works the two-component Gaussian example that makes the difference concrete. Units are nats under $\log = \ln$ and bits under $\log_2$; a factor of $\ln 2 \approx 0.693$ separates the two and it accounts for a good fraction of the confusion in reported "loss" numbers across papers.</p>
+
+<p>Conditionals are $p(y|x)$, policies $\pi(y|x)$. Model-parameterized distributions carry the parameter as a subscript: $p_\theta$ (Chapter 2), $\pi_\theta$ and $r_\phi$ (Chapter 27). Chapter 9 is the exception, writing the parameter after a conditioning bar, $p(x,z\mid\theta)$. An asterisk marks an optimum &mdash; $f^\star$ (Chapters 2, 4, 7), $N^*$ (24), $\pi^*$ (27) &mdash; and both glyphs mean the same thing.</p>
+
+<h4>A.6 Asymptotic Notation</h4>
+
+<p>$f = O(g)$ means $|f| \le c\,g$ for some constant $c$ and all sufficiently large argument; $f = \Omega(g)$ is the matching lower bound; $f = \Theta(g)$ is both; $\tilde{O}(g)$ suppresses polylogarithmic factors, as in Chapter 21's $\tilde{O}(N+T)$ for the S4 convolution. Bounds are worst case unless a chapter says otherwise. Three conventions on top of that.</p>
+
+<p><strong>Name the variable going to infinity.</strong> "$O(1)$" is meaningless on its own. Chapter 12 asks initialization to keep preactivations $\Theta(1)$, and that is $\Theta(1)$ <em>in the width</em> &mdash; Chapter 15 is where the width-scaling is made explicit and muP falls out of it; Chapter 18's $O(n^2 d)$ attention cost is asymptotic <em>in sequence length</em> at fixed width. The same expression can be $O(1)$ in one variable and unbounded in another, and much of Part III turns on exactly that distinction.</p>
+
+<p><strong>Asymptotics classify algorithms; constants predict runtime.</strong> The book states both, and where they disagree the constant wins. Attention and the feed-forward block are $O(n^2d)$ and $O(nd^2)$; that comparison is useless until Chapter 18 supplies the coefficients &mdash; $4n^2d$ for attention against $4nd\,d_{\text{ff}}$ for the feed-forward block &mdash; which put the crossover at $n^{*} = d_{\text{ff}} = 4d$ and make attention dominate all three linear terms combined only above $n = 2d + d_{\text{ff}} = 6d$. Chapter 1 makes the same point in hardware: two algorithms with identical FLOP counts differ fiftyfold in wall-clock because one moves $2n^3$ words and the other $\Theta(n^3/\sqrt{M})$.</p>
+
+<p><strong>Watch for the overloads.</strong> $\Theta$ is also the neural tangent kernel (Chapter 7) and $\Omega$ is also the representer theorem's regularizer (Chapter 7) &mdash; and both overloads live in the same chapter. Disambiguate by arity: asymptotic $\Theta(\cdot)$ takes a growth rate, the NTK $\Theta_\infty(x,x')$ takes two data points.</p>
+
+<h4>A.7 What This Book Assumes, and Where to Get It</h4>
+
+<p>Assumed: linear algebra through eigendecomposition and the SVD, including what a matrix norm is; multivariable calculus, especially the chain rule for compositions of vector-valued maps; probability at the level of expectation, variance, conditioning, and Bayes' rule; enough real analysis to read a supremum, a limit, and a convexity argument without stumbling; and fluency in Python and NumPy, since every artifact is NumPy-first and the exercises are code.</p>
+
+<p>Not assumed, and built where needed: measure theory (never required); functional analysis (Chapter 7 constructs the RKHS it needs); convex optimization as a course (Chapter 4 derives its own rates); GPU programming (Chapters 30 and 31 start at the execution model); and any cryptography (Chapter 38 states the CKKS facts a transformer engineer needs and derives nothing about lattices).</p>
+
+<p>If a prerequisite is thin, these are the shortest routes to repair. For linear algebra: Strang's <em>Introduction to Linear Algebra</em> for the computational picture, Axler's <em>Linear Algebra Done Right</em> if you want the structural one; either is more than enough for Chapter 1. For probability: Blitzstein and Hwang's <em>Introduction to Probability</em>, or Wasserman's <em>All of Statistics</em> if you prefer density. For optimization: Boyd and Vandenberghe's <em>Convex Optimization</em>, free from the authors, of which Chapters 2&ndash;3 and 9 cover everything Chapter 4 assumes. For the machine-learning background: Goodfellow, Bengio, and Courville's <em>Deep Learning</em> remains the canonical treatment of Parts I&ndash;III, and Prince's <em>Understanding Deep Learning</em> is free and has the best diagrams in the field. For coding fluency before Part III, Karpathy's <em>Neural Networks: Zero to Hero</em> and Trask's <em>Grokking Deep Learning</em> both build backpropagation by hand, which is the single most useful thing you can do before Chapter 11. <span class="tag tag-certain">Certain</span></p>
+
+<p>To check a symbol's usage yourself rather than trusting this table, the manuscript is one HTML file and grep is sufficient:</p>
+
+<pre><code># first uses of a symbol, as fixed strings (-F, so braces are literal)
+grep -Fn 'd_{\text{model}}' ml-book.html | head -3
+
+# every chapter heading, to map a line number back to a chapter
+grep -n 'class="ch-label"' ml-book.html
+</code></pre>
+
+<p>The remaining appendices divide the rest of the reference material. Appendix B is environment setup: the pinned interpreter and packages every artifact was executed against, currently NumPy 2.4.6, SciPy 1.17.1, and a CPU build of PyTorch 2.13.0 <span class="tag tag-verify">Verify</span>. Appendix C collects the complete runnable code for all artifacts. Appendix D is sources and further reading, chapter by chapter; Appendix E is a reading crosswalk onto the companion texts and courses. Appendix F collects the dated reference numbers &mdash; hardware throughputs, prices, model sizes &mdash; that carry a <span class="tag tag-verify">Verify</span> tag in the body, so that when they go stale there is exactly one place to fix them.</p>
+
+</div>
+
+<div class="chapter" id="appendix-b">
+<div class="chapter-header"><div class="ch-label">Appendix B</div><h3>Environment Setup</h3></div>
+
+<p>This appendix is a build record, not a wish list. The book contains 42 artifacts &mdash; one per chapter, Chapters 1 through 42, across all eight parts &mdash; and every one of them was written to a file, executed, and re-executed until it ran clean before its output was quoted in the text. The versions below are the versions that produced those numbers. Nothing here was run on a GPU. Section B.1 states the machine, B.2 builds the environment, B.3 documents the numpy-only fallback that lets all 42 artifacts run with no PyTorch at all, B.4 runs them, B.5 covers seeding, B.6 covers Colab and Kaggle, B.7 and B.8 cover the companion <code>ml-foundations</code> exercise ladder and its encrypted tier, and B.9 fixes the offline mathematics.</p>
+
+<h4>B.1 What Was Actually Used</h4>
+
+<p>Every artifact in this book was executed on a single CPU-only Linux container. There was no GPU attached, at any point, for any chapter. <span class="tag tag-certain">Certain</span></p>
+
+<table>
+<tr><th>Component</th><th>Version / value</th><th>Note</th></tr>
+<tr><td>Python</td><td>3.11.15 (GCC 13.3.0)</td><td>CPython, system build</td></tr>
+<tr><td>numpy</td><td>2.4.6</td><td>the core of every artifact</td></tr>
+<tr><td>scipy</td><td>1.17.1</td><td>used by 10 of 42 artifacts</td></tr>
+<tr><td>torch</td><td>2.13.0</td><td>cross-checks only, 29 of 42 artifacts</td></tr>
+<tr><td>scikit-learn</td><td>1.9.0</td><td>cross-checks only, 5 artifacts</td></tr>
+<tr><td>OS / arch</td><td>Linux 6.18.5, x86_64</td><td>4 cores, 15 GB RAM</td></tr>
+<tr><td>Accelerator</td><td>none</td><td><code>torch.cuda.is_available()</code> was <code>False</code></td></tr>
+</table>
+
+<p>One honest wrinkle. <code>pip freeze</code> reports <code>torch==2.13.0</code>, but <code>torch.__version__</code> on this machine reported the string <code>2.13.0+cu130</code>: the default PyPI wheel is the CUDA build, and installing it dragged in roughly 2.7 GB of <code>nvidia-*</code> packages and 691 MB of Triton that never executed a single instruction. <span class="tag tag-verify">Verify</span> The resulting <code>site-packages</code> weighed 5.1 GB, of which about two-thirds was dead GPU payload. Section B.2 installs the CPU wheel instead and avoids all of it. Where the book says &ldquo;torch 2.13.0, CPU,&rdquo; it means the numerics of 2.13.0 executed on a CPU device, which is what a reader on the CPU wheel gets.</p>
+
+<p><strong>Consequence for the hardware numbers.</strong> Chapter 30 and Chapter 31 are full of memory bandwidths, tensor-core throughputs, SRAM capacities, and arithmetic intensities. <em>None of those are measurements taken for this book.</em> They are vendor specifications and published benchmark figures, and they are tagged accordingly: Chapter 30 alone carries 17 <span class="tag tag-verify">Verify</span> tags out of 31 total tags, and Chapter 31 carries 10. Book-wide the count is 259 Verify tags against 339 Certain, 236 Likely, and 69 Contested. A Verify tag on a hardware number means exactly this: it was correct against the vendor&rsquo;s datasheet when written, it was not reproduced here, and you should re-derive it on your own silicon before quoting it. What <em>was</em> measured on this machine are the artifact outputs, and those are CPU numbers about algorithmic behaviour &mdash; residuals, iteration counts, accuracy, relative timings &mdash; never absolute accelerator throughput.</p>
+
+<h4>B.2 A Minimal Virtual Environment</h4>
+
+<p>Four commands. The <code>--index-url</code> is the one line that matters: it selects the CPU wheel and skips the CUDA stack.</p>
+
+<pre><code>python3.11 -m venv ~/mlbook-venv
+source ~/mlbook-venv/bin/activate
+pip install --upgrade pip
+pip install "numpy==2.4.6" "scipy==1.17.1" "scikit-learn==1.9.0"
+pip install --index-url https://download.pytorch.org/whl/cpu "torch==2.13.0"</code></pre>
+
+<p>On Windows the activation line is <code>~\mlbook-venv\Scripts\activate</code>; everything else is identical. Pin the exact versions on a first read. Once you have run the artifacts and seen what they print, unpin freely &mdash; nothing in the book depends on a private API. The one version boundary that does bite is numpy 2.x: numpy 2 changed integer promotion rules and removed several long-deprecated aliases, so an artifact run under numpy 1.26 can produce a different dtype in an intermediate and trip an exact-equality assertion. <span class="tag tag-likely">Likely</span></p>
+
+<p>To confirm the environment before touching a chapter:</p>
+
+<pre><code>python -c "import numpy, scipy, sklearn, torch; \
+print(numpy.__version__, scipy.__version__, sklearn.__version__, torch.__version__); \
+print('cuda:', torch.cuda.is_available(), 'threads:', torch.get_num_threads())"</code></pre>
+
+<p>On the build machine that printed <code>2.4.6 1.17.1 1.9.0 2.13.0+cu130</code> and <code>cuda: False threads: 4</code>. If your <code>cuda:</code> line says <code>True</code>, nothing breaks &mdash; no artifact ever asks for a device, so torch stays on CPU regardless &mdash; but your timing comparisons will not match the ones quoted in the text.</p>
+
+<h4>B.3 The CPU-Only Fallback Path</h4>
+
+<p>Every artifact&rsquo;s core is pure numpy. PyTorch and scikit-learn appear only as cross-checks: an independent implementation to compare a from-scratch gradient, decomposition, or attention score against. Because they are cross-checks and not implementations, every one of them is guarded:</p>
+
+<pre><code>try:
+    import torch
+except ImportError:
+    torch = None
+
+# ... later, at the cross-check ...
+if torch is None:
+    print("  [skipped: torch not installed]")
+else:
+    ref = torch.linalg.lstsq(A_t, b_t).solution.numpy()
+    print(f"  max|ours - torch| = {np.abs(w - ref).max():.3e}")</code></pre>
+
+<p>This was tested rather than asserted. All 42 artifacts were re-run in an environment where <code>import torch</code> and <code>import sklearn</code> both raise <code>ImportError</code>. All 42 exited zero, produced no traceback, and kept every from-scratch assertion live. The sweep printed 42 skip lines in total: 28 instances of <code>[skipped: torch not installed]</code>, 8 of <code>[skipped: no torch reference]</code>, and 6 of <code>[skipped: sklearn not installed]</code>. <span class="tag tag-certain">Certain</span></p>
+
+<p>You can reproduce that test without uninstalling anything. Put two shadow modules on the path that raise on import:</p>
+
+<pre><code>mkdir -p /tmp/blocker
+echo 'raise ImportError("blocked")' &gt; /tmp/blocker/torch.py
+echo 'raise ImportError("blocked")' &gt; /tmp/blocker/sklearn.py
+PYTHONPATH=/tmp/blocker python code/ch12_artifact.py</code></pre>
+
+<p>Chapter 12&rsquo;s artifact then prints <code>[skipped: torch not installed]</code> where the cross-check would have been and exits zero with every signal-propagation assertion still checked. The practical upshot: <strong>if all you have is numpy, you can run this entire book.</strong> You lose the independent confirmation, not the content. Chapter 40&rsquo;s artifact goes furthest &mdash; its only import is <code>dataclasses</code> from the standard library, so it runs on a bare Python install in 0.04 s.</p>
+
+<h4>B.4 Running the Artifacts</h4>
+
+<p>Each artifact is a standalone file with an <code>if __name__ == "__main__":</code> demo at the end. Run one:</p>
+
+<pre><code>python code/ch18_artifact.py</code></pre>
+
+<p>Run the whole set, timing each, and stop on the first failure:</p>
+
+<pre><code>for f in code/ch*_artifact.py; do
+  /usr/bin/time -f "$f %e" python "$f" &gt; "/tmp/$(basename $f).out" 2&gt;&gt; /tmp/timings.txt || echo "FAIL $f"
+done</code></pre>
+
+<p>The full sweep of 42 artifacts took 248 s of wall clock on the otherwise idle 4-core machine of Section B.1 &mdash; just over four minutes for the entire book, interpreter startup included. <span class="tag tag-verify">Verify</span> The slowest three are Chapter 35 at 27.0 s, Chapter 15 at 23.0 s, and Chapter 30 at 21.6 s; the median is 3.0 s. Every artifact fits inside the contract&rsquo;s 30-second budget on an idle machine, but the top of that list has no margin left: put any other load on the same four cores and the slowest few cross it. None of them downloads anything, reads a dataset from disk, or touches the network. Every input is synthesized in-process. That is a deliberate constraint: an artifact that needs a corpus is an artifact that stops running the day the corpus moves.</p>
+
+<div class="warning-box">
+<div class="box-title">Common Pitfall</div>
+<p>Assertions that compare <em>wall-clock timings</em> are the ones most likely to fail on your machine, and they fail for reasons that have nothing to do with the mathematics. Chapter 17&rsquo;s artifact carries one: <code>assert pr &gt; sr</code>, that a single time-fused GEMM reaches higher throughput than the sequential per-timestep loop at every batch size. It holds on the build machine. Look at how little it holds by. At $T=512$, $d=256$, fp32, the fused path wins by 22.8&times; at $B=1$ &mdash; but at $B=32$, three consecutive runs of the same unmodified file on the same idle 4-core box measured gaps of 2.5&times;, 1.8&times;, and 1.5&times;. The margin fell by 40% with nothing changed but the run. The reason is structural: as $B$ grows, each per-timestep GEMM gets large enough for BLAS to run it near peak, so the sequential path climbs from 21 to 168 GFLOP/s between $B=1$ and $B=32$, while the fused call was already near peak and has nowhere to go. On a narrower or busier machine that margin reaches zero and the assertion fails &mdash; while the gradient checks in the same file still agree with <code>torch.nn.LSTM</code> to a relative error below $10^{-15}$. If an artifact fails for you, read the failing line first: if it is comparing milliseconds rather than residuals, your hardware disagrees with the build machine and the chapter&rsquo;s argument is unaffected.</p>
+</div>
+
+<h4>B.5 Determinism and Seeding</h4>
+
+<p>The book&rsquo;s convention is a fresh, explicitly seeded generator, never the legacy global state:</p>
+
+<pre><code>rng = np.random.default_rng(0)          # yes
+np.random.seed(0); np.random.randn(3)   # no &mdash; global, and legacy</code></pre>
+
+<p><code>default_rng(0)</code> accounts for 53 of the 89 generator constructions across the 42 artifacts. The exceptions are deliberate: Chapter 14 needs independent replicates to show that a regularization effect is not a seed artifact, so it indexes them as <code>default_rng(1)</code>, <code>default_rng(2)</code>, <code>default_rng(3)</code>, and so on, and the seed <em>is</em> the replicate index. Where an artifact needs a torch generator it passes one explicitly &mdash; Chapter 33 uses <code>torch.Generator().manual_seed(0)</code> rather than the global <code>torch.manual_seed</code>, so a cross-check cannot silently perturb the numpy stream that follows it.</p>
+
+<p>Reproducibility has a hard boundary and it is worth naming. Given the same numpy version and the same seed, integer and structural results are bit-identical across machines. Floating-point results are not: BLAS reduces sums in an order that depends on thread count and on the kernel your CPU dispatches to, and floating-point addition is not associative (Chapter 5). Expect agreement to roughly $10^{-12}$ relative on a well-conditioned linear solve and much less on an ill-conditioned one, which is exactly the phenomenon Chapter 5 measures. To narrow the gap when comparing runs, pin the thread count before importing numpy:</p>
+
+<pre><code>export OMP_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+export MKL_NUM_THREADS=1</code></pre>
+
+<p>This makes the reduction order deterministic on a single machine at a real cost in speed. It does not make results identical across different BLAS builds. <span class="tag tag-certain">Certain</span></p>
+
+<h4>B.6 Colab and Kaggle</h4>
+
+<p>Both work, with caveats. Neither needs a GPU runtime; select the CPU one, since a GPU runtime here buys nothing and burns quota.</p>
+
+<p><strong>Colab.</strong> numpy, scipy, torch, and scikit-learn are preinstalled, but the pinned versions of Section B.1 will not be the ones on the image, and the image changes without notice. <span class="tag tag-verify">Verify</span> Install the pins in the first cell with <code>%pip install</code> rather than <code>!pip install</code> &mdash; the magic installs into the kernel&rsquo;s own environment. If pip upgrades numpy, the already-imported binary extension modules are stale and you must restart the session before anything else; Colab will tell you so, and the warning is not optional. Upload the artifact files, or paste one artifact per cell. Long-running cells are subject to idle disconnection, which is not a problem here: no artifact runs longer than about 30 s.</p>
+
+<p><strong>Kaggle.</strong> Notebooks default to <em>internet off</em>, so <code>pip install</code> fails silently-ish and every version stays whatever the image ships. This is precisely the situation Section B.3 exists for: run the artifacts unmodified, let the torch and scikit-learn cross-checks print their skip lines, and read the from-scratch assertions. Turning internet on in the notebook settings restores <code>pip</code>. Kaggle&rsquo;s preinstalled scientific stack tends to lag Colab&rsquo;s. <span class="tag tag-verify">Verify</span></p>
+
+<h4>B.7 Running the <code>ml-foundations</code> Ladder</h4>
+
+<p>The companion exercise repository is paced against the book: each exercise is a standalone file whose <code>check()</code> assertions at the bottom <em>are</em> the specification. The intended use is destructive &mdash; delete a function body, replace it with <code>pass</code>, re-read the docstring and the assertions, and reimplement until the checks pass. Reading an implementation and writing one are different skills and only the second transfers.</p>
+
+<p>The harness is <code>check.py</code> at the repository root. It imports nothing but the standard library, deliberately, so that a failing exercise fails for its own reasons and never because the harness could not load. Two ways to run it:</p>
+
+<pre><code>python3 check.py              # every exercise, each as its own subprocess
+python3 check.py tier0_math   # one tier
+python3 tier0_math/ex01_linalg.py   # one exercise, directly</code></pre>
+
+<p>The runner executes each exercise as a subprocess, prints <code>PASS</code> or <code>FAIL</code> per file with the last six lines of output on failure, prints an <code>n/m exercises passed</code> summary, and exits non-zero if anything failed &mdash; so it drops into CI unchanged. Inside an exercise, <code>check(name, got, expected=True, tol=None)</code> defaults to exact comparison; pass a <code>tol</code> and it compares scalars and array-likes elementwise and reports the worst absolute difference, which is the number you actually want when a gradient check fails. <code>summary()</code> exits 1 if any check failed.</p>
+
+<p>As of this writing all seven tiers exist and 17 exercises are written, so a full run on the machine of Section B.1 prints <code>17/17 exercises passed</code>. <span class="tag tag-verify">Verify</span> The bottom two tiers are complete: <code>tier0_math</code> has five (<code>ex01_linalg</code> through <code>ex05_linear_models</code>: matrix calculus, probability and entropy, gradient descent, floating point, linear models) and <code>tier1_autodiff</code> four (<code>ex06_micrograd</code> through <code>ex09_optimizers</code>: a scalar autodiff engine, a tensor one, initialization and normalization, optimizers). Above them the coverage is a skeleton: <code>tier2_architectures</code> has three (<code>ex14_attention</code>, <code>ex15_transformer_block</code>, <code>ex16_rope</code>), <code>tier3_sequence</code> two (<code>ex17_linear_attention</code>, <code>ex18_ssm_scan</code>), and <code>tier4_llm</code>, <code>tier5_systems</code>, and <code>tier6_encrypted</code> one each (<code>ex24_dpo_grpo</code>, <code>ex26_speculative_decoding</code>, <code>ex29_poly_depth</code>). The gaps in the numbering are the exercises the README&rsquo;s tier table promises and that have not landed; check the repository rather than this page for what exists today.</p>
+
+<p>The dependencies are lighter than that tier table suggests. Nothing in the ladder imports scipy. Every core implementation is numpy, and <code>ex06_micrograd</code> is pure standard library. torch appears in six files &mdash; two in tier 0, three in tier 1, one in tier 2 &mdash; and scikit-learn in exactly one (<code>ex05_linear_models</code>), always as a guarded cross-check under the pattern of Section B.3. Re-run the whole ladder with both blocked and it still prints <code>17/17 exercises passed</code>: numpy alone runs every exercise that exists today. <span class="tag tag-certain">Certain</span> The README warns that tier 4 targets a single small GPU and degrades to a tiny model on CPU; the one tier-4 exercise written so far is numpy and needs neither.</p>
+
+<h4>B.8 Tier 6: The Encrypted Exercises</h4>
+
+<p>Tier 6 is the join point between the ladder and Part VIII (Chapters 38&ndash;42): polynomial softmax and inverse square root, an encrypted linear layer, and depth budgeting. It is the only tier that will reach for dependencies the rest of the book does not have &mdash; but not yet. The one tier-6 exercise written so far, <code>ex29_poly_depth</code>, builds Chebyshev approximation and the multiplicative-depth ledger in numpy and imports no cryptographic library at all, on the grounds that the depth arithmetic is a scheme fact rather than a library fact. The installs below are for the exercises that will actually encrypt something.</p>
+
+<pre><code># Python bindings over Microsoft SEAL &mdash; the fast path
+pip install tenseal
+
+# OpenFHE: C++ library, built from source
+git clone https://github.com/openfheorg/openfhe-development.git
+cd openfhe-development &amp;&amp; mkdir build &amp;&amp; cd build
+cmake .. &amp;&amp; make -j$(nproc) &amp;&amp; sudo make install</code></pre>
+
+<p>TenSEAL is a wheel and usually installs in seconds. OpenFHE is a C++ build: budget real time for it, expect a working C++17 toolchain and CMake to be prerequisites, and note that the Python bindings live in a <em>separate</em> repository which must be built against the C++ library after it is installed. <span class="tag tag-verify">Verify</span></p>
+
+<div class="warning-box">
+<div class="box-title">Common Pitfall</div>
+<p><strong>[VERIFY] &mdash; homomorphic-encryption library APIs move faster than any book.</strong> This is not a hedge; it is the single most reliable way to waste an afternoon. Context construction, parameter selection, key generation, the rescaling and level-management calls, and above all the bootstrapping setup have all changed names, signatures, or default behaviour across minor releases of both TenSEAL and OpenFHE. Any code sample in tier 6, in Part VIII, or in a blog post older than a few months should be treated as pseudocode that shows the <em>shape</em> of the computation. Before running it, open the library&rsquo;s own <code>examples/</code> directory at the version you installed: it is compiled and tested against the code, which makes it the only documentation that cannot drift. The concepts in Chapters 38 and 39 &mdash; multiplicative depth, level consumption, rotation counts, the cost of a Chebyshev approximation &mdash; are stable; the function names that express them are not.</p>
+</div>
+
+<p>One reassurance about the book proper: <em>none</em> of the 42 artifacts imports TenSEAL, OpenFHE, or any other HE library. Part VIII&rsquo;s artifacts are counting models and numerical approximations in numpy &mdash; Chapter 38&rsquo;s is an explicit depth-and-rotation ledger that never encrypts anything, Chapter 39&rsquo;s works in <code>numpy.polynomial.chebyshev</code>, Chapter 40&rsquo;s imports only <code>dataclasses</code>. You can read and run all of Part VIII with no cryptographic library installed. Tier 6 is where you would actually encrypt something, and it is optional.</p>
+
+<h4>B.9 MathJax, and Why the Formulas Might Be Raw LaTeX</h4>
+
+<p>The book is one self-contained HTML file with one external dependency, and this section exists because the page&rsquo;s own failure banner points here.</p>
+
+<p>Mathematics is typeset by MathJax 3, loaded from a CDN by a single line in the head:</p>
+
+<pre><code>&lt;script id="MathJax-script" async
+        src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"&gt;&lt;/script&gt;</code></pre>
+
+<p>If you are offline, behind a proxy that blocks <code>cdn.jsdelivr.net</code>, or reading from a USB stick on an air-gapped machine, that request fails and <strong>every formula in the book renders as raw LaTeX source</strong> &mdash; literal dollar signs and backslashes in the middle of otherwise normal prose. Nothing else on the page is affected: text, tables, code, and boxes are unaffected because they need no script. The page detects this. A status banner reads &ldquo;Typesetting mathematics&hellip;&rdquo; on load and hides itself when MathJax finishes; if MathJax has not initialized after 12 seconds, the banner rewrites itself to say so and points at this appendix rather than sitting there claiming to be working forever.</p>
+
+<p>The fix is a local copy. Get the MathJax 3 package and put it beside the HTML file:</p>
+
+<pre><code># with npm
+npm install mathjax@3
+mv node_modules/mathjax ./mathjax
+
+# or without npm &mdash; fetch and unpack the published tarball
+curl -LO https://registry.npmjs.org/mathjax/-/mathjax-3.2.2.tgz
+tar xzf mathjax-3.2.2.tgz
+mv package mathjax</code></pre>
+
+<p>Then edit the one line in the book&rsquo;s head, changing the <code>src</code> attribute from the jsdelivr URL to the relative path <code>mathjax/es5/tex-mml-chtml.js</code> and leaving the rest of the tag alone. Do not delete the <code>async</code> attribute or the <code>id</code>; the banner logic keys off the loaded object, not the tag.</p>
+
+<p>This was verified, not assumed. With MathJax 3.2.2 unpacked locally and the <code>src</code> rewritten, a headless Chromium loaded the book from a <code>file://</code> URL, made <strong>zero</strong> network requests, hid the banner, and typeset 9,848 math elements in 24.7 s on the 4-core machine of Section B.1. <span class="tag tag-verify">Verify</span> That is also the honest answer to &ldquo;why is the page slow on first load&rdquo;: typesetting time scales with the number of formulas, and a book with nearly ten thousand of them in a single document takes tens of seconds on a modest CPU whether the script came from a CDN or from disk.</p>
+
+<p>The unpacked package is 24 MB, most of which the book never touches. If you are shipping the book somewhere size-constrained, two paths suffice: <code>mathjax/es5/tex-mml-chtml.js</code> (1.2 MB) and the directory <code>mathjax/es5/output/chtml/fonts/</code> (500 KB). A tree containing only those two, 1.7 MB in total, rendered all 9,848 elements with zero failed requests in the same headless test. <span class="tag tag-verify">Verify</span> Everything else in the package &mdash; the SVG output jax, the MathML input jax, the 3.9 MB speech-rule engine &mdash; is unused by this configuration.</p>
+
+<p>Two smaller notes. Some browsers block <code>file://</code> subresource loads under a strict local-file policy; if the local copy still fails, serve the directory with <code>python3 -m http.server</code> and open <code>http://localhost:8000</code> instead. And if you only need the mathematics readable rather than beautiful, the raw LaTeX is not a disaster: $\mathcal{L}$, $\nabla_\theta$, and $\sigma(z)$ are legible as source, and the notation table in Appendix A is deliberately written so that each symbol is named in prose beside its glyph.</p>
+
+</div>
+
+<div class="chapter" id="appendix-c">
+<div class="chapter-header"><div class="ch-label">Appendix C</div><h3>Complete Code for All Artifacts</h3></div>
+
+<p>Every one of the 42 chapters ends in exactly one artifact, numbered N.1, and the listing printed inside that chapter&rsquo;s artifact box is the complete file &mdash; not an excerpt, not a sketch with elisions. This appendix is therefore an <em>index</em> to those 42 programs rather than a second copy: one row per chapter giving the title, what it builds, what it checks itself against, and which libraries it needs. Section C.1 gives the arithmetic behind that decision; C.2&ndash;C.4 are the index, grouped by part; C.5 states the five conventions every artifact obeys; C.6 points at the companion <code>ml-foundations/</code> ladder and says why it exists alongside the artifacts.</p>
+
+<h4>C.1 Why This Is an Index and Not a Listing</h4>
+
+<p>The 42 artifacts total 8,992 lines and 428,440 bytes of Python; the assembled <code>ml-book.html</code> is 1,810,756 bytes before appendices. <span class="tag tag-verify">Verify</span> Those two numbers are the argument. Reproducing every listing here would take the book&rsquo;s code content from roughly 428 KB to 857 KB &mdash; a clean doubling of the executable half of the book &mdash; and add about a quarter to the single HTML file the reader must load, scroll and search. Not one byte would be new: the listings already sit adjacent to the derivations they implement and to the paragraph quoting what they print.</p>
+
+<p>The second cost is worse. Duplicated code drifts. The predecessor volume in this series carried this kind of duplicate appendix and it went stale: its part-and-chapter ranges stopped matching the real table of contents and a definition was cited to the wrong chapter, because it was maintained by hand against a book that kept moving. Every row below was generated by mechanical extraction from the assembled HTML, so the titles, chapter numbers and part groupings are the book&rsquo;s rather than anyone&rsquo;s memory of them.</p>
+
+<p>What an index buys that a listing does not is <em>lookup by intent</em>: the backward pass checked against finite differences is Chapter 10&rsquo;s, the KV cache checked against full recomputation is Chapter 18&rsquo;s, the depth counting model is Chapter 38&rsquo;s. That is a query the tables answer and 428 KB of pasted source does not.</p>
+
+<div class="warning-box">
+<div class="box-title">Common Pitfall</div>
+<p>Copying an artifact out of the rendered HTML without unescaping. The listings sit inside <code>&lt;pre&gt;&lt;code&gt;</code>, so <code>&amp;lt;</code> and <code>&amp;amp;</code> appear as entities in the raw file. Browser copy-and-paste unescapes them; <code>curl</code> plus a regex does not, and the failure mode is a <code>SyntaxError</code> on the first comparison operator. Prefer <code>code/</code>: byte-for-byte the same source, verified listing-against-file for all 42 chapters. <span class="tag tag-certain">Certain</span></p>
+</div>
+
+<p>Each artifact is a standalone module ending in an <code>if __name__ == "__main__":</code> demo &mdash; all 42. <span class="tag tag-certain">Certain</span> No artifact imports another: <code>code/</code> holds 43 files, the 42 artifacts plus Chapter 11&rsquo;s engine shipped separately as <code>autodiff_engine.py</code> with its own self-test, for you to import into your own work. To run one:</p>
+
+<pre><code>python code/ch18_artifact.py</code></pre>
+
+<p>Appendix B covers interpreter and package versions. Nothing downloads data, nothing needs a GPU, and every artifact finishes on one CPU core in under a minute &mdash; the slowest is Chapter 35 at about 30 s. <span class="tag tag-verify">Verify</span></p>
+
+<h4>C.2 Parts I&ndash;III: Foundations, Classical ML, Neural Networks</h4>
+
+<p>A dagger (&dagger;) marks an import wrapped in <code>try</code>/<code>except ImportError</code> that degrades to a printed skip line; a library without one is a hard requirement.</p>
+
+<table>
+<tr><th>Ch.</th><th>Artifact title</th><th>Builds &mdash; and verifies against</th><th>Dependencies</th></tr>
+<tr><td colspan="4"><strong>Part I &mdash; Mathematical and Statistical Foundations (Chapters 1&ndash;5)</strong></td></tr>
+<tr><td>1</td><td>Blocked Matmul and a From-Scratch Jacobi SVD</td><td>Blocked matrix product and a one-sided Jacobi thin SVD; against <code>np.dot</code>, LAPACK, and a brute-force search for a rank-$k$ approximation beating Eckart&ndash;Young</td><td>numpy + torch&dagger;</td></tr>
+<tr><td>2</td><td>An integer arithmetic coder that measures your loss in bytes</td><td>A 32-bit integer range coder on an order-$k$ Markov model; against the ideal code length $N \cdot H$ and an exact decode round-trip</td><td>numpy + torch&dagger;</td></tr>
+<tr><td>3</td><td>Double descent, and the bound it violates</td><td>A random-feature width sweep with minimum-norm interpolation; against held-out risk and VC and Rademacher bounds evaluated on the same fits</td><td>numpy + scipy + torch&dagger;</td></tr>
+<tr><td>4</td><td>Measured Convergence Rates and the Edge of Stability</td><td>Gradient descent, heavy ball and Nesterov on diagonal quadratics; against the closed-form iterate $(I-\eta H)^t w_0$ and predicted iteration counts</td><td>numpy + torch&dagger;</td></tr>
+<tr><td>5</td><td>A Bit-Exact Low-Precision Simulator, and Errors That Land Where Predicted</td><td>fp16, bf16 and fp8-E4M3 rounding by integer masking of the fp32 bit pattern; against torch&rsquo;s casts on 400,022 values</td><td>numpy + torch&dagger;</td></tr>
+<tr><td colspan="4"><strong>Part II &mdash; Classical Machine Learning (Chapters 6&ndash;9)</strong></td></tr>
+<tr><td>6</td><td>Logistic regression from scratch: IRLS and gradient descent</td><td>Newton and first-order fits with analytic gradient and Hessian; against central differences on both, sklearn, and an SLSQP max-margin solve</td><td>numpy + sklearn&dagger; + scipy&dagger;</td></tr>
+<tr><td>7</td><td>SMO from Scratch and the Empirical NTK</td><td>A maximal-violating-pair SMO solver and a literal $JJ^{\mathsf T}$; against a hand-checkable three-point dual, <code>sklearn.svm.SVC</code>, and KKT residuals</td><td>numpy + sklearn&dagger; + torch&dagger;</td></tr>
+<tr><td>8</td><td>Gradient-Boosted Regression Trees, Exact and Histogram</td><td>Second-order boosted trees, two split finders sharing one builder; against a brute-force loop over every (feature, midpoint) candidate and scikit-learn</td><td>numpy + sklearn&dagger;</td></tr>
+<tr><td>9</td><td>PCA by Power Iteration and Gaussian-Mixture EM from Scratch</td><td>Power iteration with Hotelling deflation and Gaussian-mixture EM; against <code>np.linalg.svd</code>, monotone log-likelihood every step, and Lloyd&rsquo;s labels as $\sigma^2 \to 0$</td><td>numpy + sklearn&dagger;</td></tr>
+<tr><td colspan="4"><strong>Part III &mdash; Neural Networks and Optimization at Scale (Chapters 10&ndash;15)</strong></td></tr>
+<tr><td>10</td><td>A 3-Layer MLP with a Hand-Derived Backward Pass, and Linear Regions Counted</td><td>Backpropagation by hand, plus activation-pattern hashing; against central differences on all 83 parameters, torch autograd, and the Zaslavsky ceiling</td><td>numpy + torch&dagger;</td></tr>
+<tr><td>11</td><td>A Reverse-Mode Autodiff Engine in 236 Lines</td><td>A tape-based <code>Tensor</code> with correct broadcast reduction backward; against finite differences on 60 random graphs and <code>torch.autograd</code></td><td>numpy + torch&dagger;</td></tr>
+<tr><td>12</td><td>Signal-Propagation Analyzer</td><td>A 50-layer stack instrumented for forward and backward variance across initialization &times; normalizer &times; placement; against central differences, torch&rsquo;s <code>layer_norm</code>, and the predicted decay</td><td>numpy + torch&dagger;</td></tr>
+<tr><td>13</td><td>Optimizers from scratch, verified against torch.optim</td><td>SGD, momentum, Nesterov, Adam, AdamW, Lion and Muon on a shared closed-form gradient; against <code>torch.optim</code> step-for-step in float64</td><td>numpy + torch&dagger;</td></tr>
+<tr><td>14</td><td>Regularization Ablation Harness</td><td>Five regularizers at a fixed step budget, plus grokking; against exhaustive enumeration of all $2^{12}$ dropout masks and torch&rsquo;s label-smoothed gradient</td><td>numpy + torch&dagger;</td></tr>
+<tr><td>15</td><td>muP from Scratch with a Width-Sweep Assertion</td><td>An MLP under standard and maximal-update parameterization, five widths &times; eight learning rates; against finite differences, <code>torch.optim.Adam</code>, and an assertion on the argmin learning rate</td><td>numpy + torch&dagger;</td></tr>
+</table>
+
+<h4>C.3 Parts IV&ndash;VI: Architectures, Large Language Models, Systems</h4>
+
+<table>
+<tr><th>Ch.</th><th>Artifact title</th><th>Builds &mdash; and verifies against</th><th>Dependencies</th></tr>
+<tr><td colspan="4"><strong>Part IV &mdash; Architectures (Chapters 16&ndash;21)</strong></td></tr>
+<tr><td>16</td><td>Conv2d forward and backward from scratch</td><td>im2col convolution with stride, padding, dilation and groups, plus the col2im adjoint; against torch&rsquo;s <code>conv2d</code> and autograd over six configurations</td><td>numpy + torch&dagger;</td></tr>
+<tr><td>17</td><td>LSTM with BPTT, and the decay table</td><td>An LSTM with hand-written forward and backward-through-time passes; against <code>torch.nn.LSTM</code> in float64 and Gelfand&rsquo;s formula</td><td>numpy + torch&dagger;</td></tr>
+<tr><td>18</td><td>Multi-head attention and a pre-norm transformer block in NumPy</td><td>A complete block with analytic backward; against <code>torch.nn.MultiheadAttention</code> with transplanted weights, central differences on every parameter tensor, and KV-cache-free recomputation</td><td>numpy + torch&dagger;</td></tr>
+<tr><td>19</td><td>RoPE Two Ways, and the Wavelength Ledger</td><td>Rotary embeddings by complex multiplication and by explicit $2\times2$ blocks; against each other, torch, and the relative-position identity at positions up to $10^6$</td><td>numpy + torch&dagger;</td></tr>
+<tr><td>20</td><td>ViT Forward Pass, InfoNCE, and the Sigmoid Loss</td><td>A ViT with exact-erf GELU and both contrastive objectives, gradients hand-derived; against closed-form parameter and MAC counts, and central differences</td><td>numpy + scipy + torch&dagger;</td></tr>
+<tr><td>21</td><td>Three Equivalences: Scan, Convolution, and the SSD Duality</td><td>A selective SSM as a recurrence, a Blelloch scan and a masked matmul; against each other, a naive Toeplitz product, an FFT convolution, and an SVD rank test</td><td>numpy + torch&dagger;</td></tr>
+<tr><td colspan="4"><strong>Part V &mdash; Large Language Models (Chapters 22&ndash;29)</strong></td></tr>
+<tr><td>22</td><td>A Routed MoE Layer with Both Balancing Schemes</td><td>Top-$k$ gating with batched dispatch, capacity dropping and two load balancers; against a naive per-token dense loop and a closed-form parameter count</td><td>numpy + torch&dagger;</td></tr>
+<tr><td>23</td><td>Byte-Level BPE and a Bits-per-Byte Evaluator</td><td>Pre-tokenization, merge training, replay encoding and byte fallback; against exact round-trip on unseen scripts, segmentation replay, and one byte model read through two tokenizers</td><td>numpy + scipy&dagger;</td></tr>
+<tr><td>24</td><td>Chinchilla Fit, Compute-Optimal Allocation, and the Inference-Aware Correction</td><td>A Huber fit of five scaling-law parameters from 324 noisy runs; against the planted parameters and a brute-force minimum over 400,001 candidates</td><td>numpy + scipy</td></tr>
+<tr><td>25</td><td>MinHash LSH and a Decontamination Checker, Verified Against Brute Force</td><td>FineWeb&rsquo;s banded MinHash configuration and an $n$-gram leak detector; against the analytic S-curve $1-(1-s^r)^b$ and brute-force pairwise Jaccard</td><td>numpy</td></tr>
+<tr><td>26</td><td>LoRA and a NormalFloat Quantizer from Scratch</td><td>A LoRA wrapper over a frozen linear layer and the NF4 codebook; against bit-identity at initialization, merged-weight equivalence, and the full fine-tuning optimum at full rank</td><td>numpy + scipy + torch&dagger;</td></tr>
+<tr><td>27</td><td>DPO Against the Closed Form</td><td>DPO, IPO, SimPO and GRPO with analytic gradients on a 6-armed bandit; against the exact RLHF optimum $\pi^\ast \propto \pi_{\text{ref}} e^{r/\beta}$ and central differences</td><td>numpy + scipy + torch&dagger;</td></tr>
+<tr><td>28</td><td>A Test-Time-Compute Harness with an Exact Verifier</td><td>Sampling, majority voting, best-of-$n$ and verifier reranking on a task with closed-form truth; against the analytic pass@$k$ law and its estimator</td><td>numpy + scipy&dagger;</td></tr>
+<tr><td>29</td><td>The Measurement Crisis in Three Experiments</td><td>Three scoring protocols, a Min-K% membership detector and an exact-match amplification study; against SciPy&rsquo;s <code>kendalltau</code>, scikit-learn&rsquo;s AUC, and a chain-rule bound</td><td>numpy + scipy&dagger; + sklearn&dagger;</td></tr>
+<tr><td colspan="4"><strong>Part VI &mdash; Systems and Efficiency (Chapters 30&ndash;34)</strong></td></tr>
+<tr><td>30</td><td>An Empirical Roofline Analyzer</td><td>Measured bandwidth and peak-FLOP ceilings, then seven operations classified by arithmetic intensity; against runtimes predicted from the roofline</td><td>numpy + torch&dagger;</td></tr>
+<tr><td>31</td><td>Tiled Online-Softmax Attention with I/O Accounting</td><td>The FlashAttention forward pass with instrumented allocation and read counts; against naive attention over seven tilings, torch SDPA, and the read count $\lceil n/B_r \rceil\, n\, 2 d_k$</td><td>numpy + torch&dagger;</td></tr>
+<tr><td>32</td><td>Ring All-Reduce and a ZeRO Planner, From Scratch</td><td>Both ring phases with explicit chunk indices and a memory planner; against a direct integer sum and the wire count $2\frac{P-1}{P}S$</td><td>numpy + torch&dagger;</td></tr>
+<tr><td>33</td><td>Speculative Decoding and Paged Allocation, Verified</td><td>200,000 vectorized verification cycles and a paged KV allocator; against the target distribution by total variation and chi-square, and analytic $\alpha$ and tokens-per-cycle</td><td>numpy + scipy + torch&dagger;</td></tr>
+<tr><td>34</td><td>GPTQ from Scratch with the Ablations That Matter</td><td>Affine grids at three granularities, RTN and Cholesky-form GPTQ; against RTN at every bit width and a propagation-disabled control that must collapse to RTN</td><td>numpy + torch&dagger;</td></tr>
+</table>
+
+<h4>C.4 Parts VII&ndash;VIII: The Frontier and Machine Learning Under Encryption</h4>
+
+<p>No FHE library is imported anywhere in the book. Chapters 38, 41 and 42 are counting models: they price depth, rotations, ciphertext multiplications and bootstraps rather than execute them, and say so in their docstrings. They are not alone in modeling a system instead of running it &mdash; Chapter 32 simulates $P$ ring workers as $P$ arrays in one process, and Chapter 39 counts levels rather than timing them &mdash; but Part VIII is where the whole artifact is the model. That is a deliberate limit &mdash; a counting model reproducing a hand ledger exactly is falsifiable in a way a timing run on unavailable hardware is not.</p>
+
+<table>
+<tr><th>Ch.</th><th>Artifact title</th><th>Builds &mdash; and verifies against</th><th>Dependencies</th></tr>
+<tr><td colspan="4"><strong>Part VII &mdash; The Frontier (Chapters 35&ndash;37)</strong></td></tr>
+<tr><td>35</td><td>DDPM and Flow Matching on an Analytic Target</td><td>Both families end to end &mdash; networks, backprop, Adam, samplers &mdash; on a Gaussian mixture; against the exact score of every noised marginal and the exact velocity field</td><td>numpy + torch&dagger;</td></tr>
+<tr><td>36</td><td>Horizon Compounding in a Sandbox Agent Loop</td><td>A deterministic agent over three in-process tools with an injectable error rate; against $p^H$ within binomial standard errors across nine horizons, and the verifier-regime $q^H$</td><td>numpy</td></tr>
+<tr><td>37</td><td>Superposition, a TopK SAE, and a Causal Steering Test</td><td>The Elhage toy model with manual backprop, a TopK sparse autoencoder and a steering intervention; against a planted dictionary of 32 directions, a $d$-feature loss floor, and autograd</td><td>numpy + torch&dagger;</td></tr>
+<tr><td colspan="4"><strong>Part VIII &mdash; Machine Learning Under Encryption (Chapters 38&ndash;42)</strong></td></tr>
+<tr><td>38</td><td>A Transformer FHE Cost Model</td><td>A counting model pricing depth, ciphertext multiplications and rotations under naive-diagonal and BSGS packing; against the Section 38.4 hand ledger and rotations counted one-by-one</td><td>numpy</td></tr>
+<tr><td>39</td><td>Three Approximation Toolkits, Measured</td><td>Chebyshev interpolation versus a Remez minimax fit, the composite sign iteration, and a softmax accuracy&ndash;depth frontier; against an equioscillation audit and torch&rsquo;s softmax</td><td>numpy + torch&dagger;</td></tr>
+<tr><td>40</td><td>A System-Comparison Database with Sourcing Discipline</td><td>Ten private-inference systems as frozen 17-field records; against sourcing assertions, not numerics &mdash; no latency claim without an exclusions note, no non-interactivity claim alongside per-protocol rounds</td><td>stdlib only</td></tr>
+<tr><td>41</td><td>An Encrypted-Generation Cost Model</td><td>Autoregressive decoding of 1,024 tokens with a growing encrypted KV cache; against a fitted staircase slope equal to the analytic $b$, Theorem 41.1&rsquo;s bootstrap count, and $t^{\ast}$</td><td>numpy</td></tr>
+<tr><td>42</td><td>The Research Pitch as Arithmetic</td><td>A selective-SSM block priced against attention at matched width, depth a longest path through a DAG; against brute-force path enumeration, Chapter 38&rsquo;s ledger, and a Kogge&ndash;Stone scan against the recurrence</td><td>numpy</td></tr>
+</table>
+
+<p>Aggregated over all 42: <strong>29</strong> carry a guarded torch cross-check, <strong>5</strong> a scikit-learn one (6, 7, 8, 9, 29), and <strong>10</strong> touch SciPy &mdash; four guarded (6, 23, 28, 29), six hard, where SciPy supplies the numerical routine itself (<code>linprog</code>, <code>erf</code>, <code>minimize</code>, <code>norm.ppf</code>, <code>stats</code>) in Chapters 3, 20, 24, 26, 27 and 33. <span class="tag tag-certain">Certain</span> Five need nothing beyond NumPy (25, 36, 38, 41, 42) and one nothing beyond the standard library (40). The dependency floor is therefore NumPy: install nothing else and 36 of 42 artifacts still run every assertion they make.</p>
+
+<h4>C.5 Artifact Conventions</h4>
+
+<p>Five rules hold across all 42, and they are why the chapters&rsquo; numbers can be trusted.</p>
+
+<p><strong>Executed before written, re-run during fact-checking.</strong> Each artifact was written to a file, run to completion, and iterated until clean; only then was the source pasted into the chapter, and the paragraph following each listing quotes measured output from that run. Every artifact was then independently re-executed during fact-checking, from the extracted listing rather than the working copy. Wall-clock figures are tagged <span class="tag tag-verify">Verify</span>, because timings are the one class of number a different machine will legitimately contradict.</p>
+
+<p><strong>Optional imports are guarded.</strong> The core of every artifact is NumPy. Cross-check libraries are imported inside <code>try</code>/<code>except ImportError</code> and the fallback prints a skip line rather than raising:</p>
+
+<pre><code>try:
+    import torch
+except ImportError:
+    torch = None
+    print("[skipped: torch not installed]")</code></pre>
+
+<p>35 of the 42 files contain at least one such skip path. <span class="tag tag-certain">Certain</span> A missing library costs you a cross-check, never a run. The six SciPy hard dependencies above are the honest exception: SciPy does load-bearing work there &mdash; an L-BFGS-B fit, an inverse normal CDF &mdash; rather than confirming a result already computed.</p>
+
+<p><strong>One seed, stated explicitly.</strong> Randomness enters through <code>np.random.default_rng</code> with a literal integer seed, never the legacy global <code>np.random.seed</code> and never unseeded. Forty of the 42 artifacts draw random numbers, and every one of the forty constructs <code>np.random.default_rng(0)</code>. <span class="tag tag-certain">Certain</span> Eight of them open further streams with other small literal seeds where two experiments in the same file must not share one &mdash; Chapter 17 uses 0 through 6 across its decay sweep, Chapter 14 uses 1, 2 and 3 for its three exact-identity checks and 11 for its torch cross-check &mdash; and Chapter 14&rsquo;s five ablation arms are instead averaged over the shared seeds 0, 1, 2, so the arms differ by regularizer and nothing else. Chapters 40 and 41 draw none at all. Reproducibility is bit-level on pure-NumPy paths and float64-rounding-level through BLAS, where thread count changes summation order.</p>
+
+<p><strong>Assertions print residuals, not verdicts.</strong> The 42 artifacts contain 300 <code>assert</code> statements. <span class="tag tag-verify">Verify</span> A check that prints only <code>OK</code> hides how much room was left; every check here prints the measured quantity beside its threshold, which is what lets a chapter say a gradient matched torch to $4.4\times10^{-16}$ rather than merely that it passed at $10^{-6}$ &mdash; the difference between an exact derivation and one that is close enough today.</p>
+
+<p><strong>Self-verification is always against something external.</strong> No artifact checks itself against itself. Every assertion resolves to one of four independent references:</p>
+
+<table>
+<tr><th>Reference class</th><th>What it means</th><th>Representative artifacts</th></tr>
+<tr><td>Finite differences</td><td>An analytic derivative against a central difference quotient of the objective it differentiates</td><td>6 (gradient and Hessian), 10, 11, 12, 15, 18, 20, 27</td></tr>
+<tr><td>Brute force</td><td>A fast algorithm against an exhaustive enumeration too slow to ship, small enough to run</td><td>1 (rank-$k$ search), 8 (all split candidates), 14 (all $2^{12}$ masks), 24 (400,001 allocations), 25 (all pairs), 42 (all DAG paths)</td></tr>
+<tr><td>Closed form</td><td>A simulation or fit against an analytic answer, the problem chosen so one exists</td><td>2, 4, 5, 21, 27 ($\pi^\ast$), 28 (pass@$k$), 33, 35 (the exact score), 36, 38, 41</td></tr>
+<tr><td>Reference implementation</td><td>A from-scratch implementation against a mature library&rsquo;s, weights transplanted so the comparison is of arithmetic</td><td>5, 13, 16, 17, 18 (torch); 7, 8, 9 (scikit-learn); 29 (both)</td></tr>
+</table>
+
+<p>The ordering matters. A closed form beats a reference implementation, because a library can be wrong and frequently changes; where neither exists, brute force beats a plausibility check. A reference implementation is the weakest of the four and is the sole check in none of the 42. <span class="tag tag-likely">Likely</span> That is why several artifacts construct their problem so that an exact answer exists at all &mdash; Chapter 27&rsquo;s 6-armed bandit and Chapter 35&rsquo;s Gaussian-mixture target are chosen precisely so the thing being learned has a formula.</p>
+
+<h4>C.6 The Companion Ladder: ml-foundations/</h4>
+
+<p>Alongside the book sits <code>ml-foundations/</code>, an exercise ladder of 17 standalone files across seven tiers &mdash; <code>tier0_math/</code> through <code>tier6_encrypted/</code> &mdash; running from matrix calculus and floating point up to polynomial approximation and depth budgeting under encryption. <span class="tag tag-verify">Verify</span> Tier 0 maps onto Parts I&ndash;II (Chapters 1, 2, 4, 5, 6), tier 1 onto Part III, tiers 2&ndash;3 onto Part IV, tier 4 onto Part V, tier 5 onto Part VI, tier 6 onto Part VIII. Run all of it, or one tier:</p>
+
+<pre><code>python3 check.py
+python3 check.py tier0_math</code></pre>
+
+<p>The ladder follows the same dependency discipline &mdash; optional imports guarded, tiers 0&ndash;3 fully usable with NumPy alone &mdash; and uses the book&rsquo;s confidence markers: TenSEAL and OpenFHE surfaces in tier 6 carry <span class="tag tag-verify">Verify</span>, because those APIs move faster than any book.</p>
+
+<p><strong>The two are not redundant, because their intent is opposite.</strong> An artifact is a <em>demonstration</em>: complete, commented, runnable the moment you paste it, built to make a chapter&rsquo;s claim checkable. You read it, run it, see that the residual against finite differences really is $10^{-10}$, and move on. Reading it is the point. A ladder exercise is a <em>specification with a reference solution attached</em>, and its README tells you to delete the function body, replace it with <code>pass</code>, and write it again from the docstring and the assertions below. The assertions are the specification; the reference implementation exists so you can check yourself, not so you can read it.</p>
+
+<p>Reading an implementation and writing one are different skills, and only the second transfers. An artifact read carefully leaves you able to recognize the construct; an exercise reimplemented from an empty file leaves you able to build it. The ladder&rsquo;s standard is the right one: an exercise is finished when you can delete it, wait a week, and write it again from the docstring. <span class="tag tag-likely">Likely</span> None of the 42 artifacts is designed for that. Use them to verify what you have read; use the ladder to find out what you can write.</p>
+
+</div>
+
+<div class="chapter" id="appendix-d">
+<div class="chapter-header"><div class="ch-label">Appendix D</div><h3>Sources and Further Reading</h3></div>
+
+<p><strong>Where this book and a source disagree, the source wins.</strong> That convention is stated in the book&rsquo;s own writing contract and it is not modesty. This book compresses: it takes a result that a paper established over twenty pages with ablations and error bars and states it in one sentence with a number attached. Compression loses the conditions under which the number holds. Every claim here that matters enough to act on &mdash; a scaling exponent, a latency, a depth budget, a security level &mdash; should be checked against the entry below that owns it before you build on it. This appendix is therefore evaluative rather than bibliographic: each entry says what the source is actually good for, and, where the book takes a different line, says so. Sections D.1 through D.7 are organized by what you are trying to learn; D.8 is about the harder problem of not falling behind. Volatile facts &mdash; editions, course offerings, preprint numbers that may acquire venues &mdash; carry a <span class="tag tag-verify">Verify</span> tag.</p>
+
+<h4>D.1 Foundational Textbooks and Courses</h4>
+
+<p>Five books are the ones a reader is most likely to already own, and the ones whose attributions are easiest to get wrong; they are given here in full. Appendix E maps these and eight further sources chapter by chapter.</p>
+
+<p><strong>Aurélien Géron, <em>Hands-On Machine Learning with Scikit-Learn and PyTorch: Concepts, Tools, and Techniques to Build Intelligent Systems</em>.</strong> O&rsquo;Reilly, 2 December 2025; ISBN 9798341607989. <span class="tag tag-verify">Verify</span> This is the PyTorch edition, which <em>replaces</em> the earlier TensorFlow/Keras editions rather than supplementing them &mdash; if your copy says &ldquo;Keras&rdquo; on the cover, its second half no longer matches current practice. Best for: end-to-end project discipline, the scikit-learn API surface behind Part II, image pipelines and transfer learning for Chapter 20, and the practitioner&rsquo;s account of automatic mixed precision that Chapter 5 derives from first principles. Where it differs from us: Géron treats the framework as the object of study; this book treats PyTorch as a cross-check against NumPy code you wrote yourself. Read him for the API, us for what the API is hiding.</p>
+
+<p><strong>Sebastian Raschka, <em>Build a Large Language Model (From Scratch)</em>.</strong> Manning, October 2024; ISBN 9781633437166; code at <code>github.com/rasbt/LLMs-from-scratch</code>. The closest text in existence to Chapters 18, 19, 23, 26 and 33: tokenizer, dataloader, causal multi-head attention, KV cache, instruction templating with loss masking, and a generation loop, all written out line by line. Part VIII leans on it in a way that is easy to miss &mdash; Chapters 38 and 41 re-price exactly the plaintext block and the plaintext KV cache that Raschka builds, so having his code cold is a genuine prerequisite for the encrypted material, not a nicety.</p>
+
+<p><strong>Andrew W. Trask, <em>Grokking Deep Learning</em>.</strong> Manning, 2019. Backpropagation by hand, on scalars, before any framework exists. It is the right companion to Chapters 10 and 11 and the best available antidote to treating <code>loss.backward()</code> as magic. It stops well short of modern architectures; that is the correct scope for what it does.</p>
+
+<p><strong>Luis G. Serrano, <em>Grokking Machine Learning</em>.</strong> Manning, December 2021. The gentlest treatment of the classical algorithms that is still correct &mdash; no hand-waving that would have to be unlearned. Use it as a ramp into Part II. Its deliberate avoidance of linear algebra means it cannot reach the SVD-basis view of ridge regression in Chapter 6 or the spectral account of PCA in Chapter 9; for those, go to ESL and Bishop.</p>
+
+<p><strong>Tanmoy Chakraborty, <em>Introduction to Large Language Models</em></strong> (Wiley India, 2025) <span class="tag tag-verify">Verify</span> <strong>and NPTEL course 106102576, &ldquo;Introduction to Large Language Models (LLMs)&rdquo;.</strong> The course is taught by <strong>Prof. Tanmoy Chakraborty (IIT Delhi)</strong> with <strong>Prof. Soumen Chakrabarti (IIT Bombay)</strong>; lectures are free on YouTube and the syllabus is public at <code>nptel.ac.in/courses/106102576</code>. This is the NLP-side framing of everything in Part V: it comes at language models from problems in natural language processing rather than from optimization, which makes it the best available second angle on Chapters 17, 24, 26, 29 and 36. Its historical framing of the Kaplan-to-Chinchilla arc is more careful than most.</p>
+
+<div class="warning-box"><div class="box-title">Attribution, Stated Once, Correctly</div><p>NPTEL 106102576 is Prof. Tanmoy Chakraborty&rsquo;s course, co-taught with Prof. Soumen Chakrabarti. An earlier draft of this project attributed it to the wrong person, and misattributions of Indian academic courses propagate quickly through secondary listings because the same course runs under multiple SWAYAM offering codes each term. If you cite it, cite the NPTEL course page, not a course-aggregator card.</p></div>
+
+<p>Beyond the crosswalk, six reference texts carry most of the load.</p>
+
+<p><strong>Goodfellow, Bengio &amp; Courville, <em>Deep Learning</em></strong> (MIT Press, 2016; free at <code>deeplearningbook.org</code>) remains canonical for Parts I&ndash;III: the linear-algebra and numerical-computation preliminaries behind Chapters 1 and 5, the information-theoretic derivation behind Chapter 2, BPTT and the vanishing-gradient analysis behind Chapter 17. Read its regularization chapter knowing that Chapter 14 disputes its organizing assumption &mdash; that capacity control is the binding constraint &mdash; for the large-data regime.</p>
+
+<p><strong>Simon J. D. Prince, <em>Understanding Deep Learning</em></strong> (MIT Press, December 2023; ISBN 9780262048644; free PDF at <code>udlbook.github.io</code>). <span class="tag tag-verify">Verify</span> The best diagrams in print, and this book carries none: Prince&rsquo;s pictures of ReLU networks folding input space, of variance decay through depth, of momentum trajectories on ill-conditioned losses, and of the diffusion forward process are the visual complement to Chapters 10, 12, 13 and 35 respectively.</p>
+
+<p><strong>Kevin P. Murphy, <em>Probabilistic Machine Learning: An Introduction</em></strong> (MIT Press, 2022) <strong>and <em>Advanced Topics</em></strong> (MIT Press, 2023). <em>Advanced Topics</em> is the probabilistic lookup volume for this book: the measure-theoretic statements Chapter 2 makes informally, the variational machinery behind the ELBO in Chapter 9, the Gaussian-process side of Chapter 7, the policy-gradient derivations under Chapter 27, and the full SDE treatment of diffusion behind Chapter 35. It is a reference, not a read-through.</p>
+
+<p><strong>Bishop, <em>Pattern Recognition and Machine Learning</em></strong> (Springer, 2006; a free PDF is distributed by the author <span class="tag tag-verify">Verify</span>) and <strong>Hastie, Tibshirani &amp; Friedman, <em>The Elements of Statistical Learning</em></strong>, 2nd ed. (Springer, 2009; free PDF from Stanford). Part II canon. Bishop owns the probabilistic derivations &mdash; logistic regression via IRLS, kernels and the SVM dual, PCA and EM. ESL owns shrinkage, the lasso path, CART and cost-complexity pruning, and Friedman&rsquo;s original gradient boosting. ESL&rsquo;s bias&ndash;variance chapter is also the strongest statement of exactly the picture Chapter 3 attacks; read it first, then read Chapter 3 as a rebuttal.</p>
+
+<p>Three non-book sources matter more than most books. <strong>Stanford CS336, &ldquo;Language Modeling from Scratch&rdquo;</strong> (Percy Liang and Tatsunori Hashimoto; Spring 2025 lectures on YouTube, materials at <code>cs336.stanford.edu</code>) <span class="tag tag-verify">Verify</span> is the closest course to Parts V and VI, and it is the assignments rather than the lectures that do the work: a byte-level BPE tokenizer trained at scale, a rotary cache you then break at long context, a Triton FlashAttention exercise, and a distributed-training assignment. <strong>Andrej Karpathy, <em>Neural Networks: Zero to Hero</em></strong>, with <code>micrograd</code>, <code>nanoGPT</code> and <code>minbpe</code>, is the from-scratch pedagogy standard; the &ldquo;makemore&rdquo; episodes plot per-layer activation and gradient histograms and re-derive the Kaiming gain on screen, which is Chapter 12&rsquo;s artifact in interactive form, and <code>nanoGPT</code> is the standard substrate for replicating the interpretability experiments in Chapter 37. <strong>The Ultra-Scale Playbook: Training LLMs on GPU Clusters</strong> (Hugging Face / nanotron, 2025) is the practical companion to all of Part VI, worked on real clusters with profiler traces rather than on paper. <span class="tag tag-verify">Verify</span></p>
+
+<h4>D.2 Architectures</h4>
+
+<p>Vaswani et al., <em>Attention Is All You Need</em> (NeurIPS 2017), is short and still worth reading in the original, but be aware that Chapter 18 does not follow it: the paper puts LayerNorm after the residual add, and every model trained since roughly 2019 puts it before. Read the paper for the idea and Chapter 18.5 for the block that people actually build.</p>
+
+<p>He et al., <em>Deep Residual Learning for Image Recognition</em> (CVPR 2016), is the single most consequential architecture paper for Part III, and its argument is about optimization, not representation. Hochreiter &amp; Schmidhuber, <em>Long Short-Term Memory</em> (<em>Neural Computation</em> 9(8), 1997), remains the correct source for the gating argument in Chapter 17; the constant-error-carousel motivation is clearer in the original than in any retelling.</p>
+
+<p>For position: Su et al., <em>RoFormer: Enhanced Transformer with Rotary Position Embedding</em> (arXiv 2104.09864; <em>Neurocomputing</em>, 2024), for the derivation Chapter 19.4 follows; Press, Smith &amp; Lewis, <em>Train Short, Test Long</em> (ALiBi, ICLR 2022); and Peng et al., <em>YaRN</em> (ICLR 2024), for context extension. Chapter 19.6 takes a harder line than any of these on base-frequency changes: the papers report what worked, not the failure modes.</p>
+
+<p>Vision and multimodal: Dosovitskiy et al., <em>An Image Is Worth 16x16 Words</em> (ViT, ICLR 2021); Touvron et al., <em>DeiT</em> (ICML 2021); Radford et al., <em>Learning Transferable Visual Models from Natural Language Supervision</em> (CLIP, ICML 2021); and Zhai et al., <em>Sigmoid Loss for Language Image Pre-Training</em> (SigLIP, ICCV 2023, pp. 11975&ndash;11986). Those four are the ones Chapter 20 singles out as unusually readable primary sources, and they are &mdash; this is a corner of the literature where the papers beat the surveys. Liu et al., <em>Swin Transformer</em> (ICCV 2021), is the separate source for the hierarchical, windowed design of Section 20.7.</p>
+
+<p>State space models: Gu, Goel &amp; Ré, <em>Efficiently Modeling Long Sequences with Structured State Spaces</em> (S4, ICLR 2022); Gu &amp; Dao, <em>Mamba: Linear-Time Sequence Modeling with Selective State Spaces</em> (COLM 2024); Dao &amp; Gu, <em>Transformers Are SSMs: Generalized Models and Efficient Algorithms Through Structured State Space Duality</em> (ICML 2024). Chapter 21 says flatly that the primary papers are the only complete treatment, and adds Albert Gu&rsquo;s Goomba Lab blog series as the clearest exposition of the semiseparable-matrix argument. This is also the corner of Part IV that Chapter 42.3 identifies as the most under-exploited opportunity under encryption.</p>
+
+<p>Conditional computation: Shazeer et al., <em>Outrageously Large Neural Networks</em> (ICLR 2017), and Fedus, Zoph &amp; Shazeer, <em>Switch Transformers</em> (JMLR 2022). Neither anticipates the shared-expert and fine-grained-expert designs of Chapter 22.5; for those the current model reports are the sources.</p>
+
+<h4>D.3 Training, Scaling, and Post-Training</h4>
+
+<p>Optimization: Kingma &amp; Ba, <em>Adam</em> (ICLR 2015), and Loshchilov &amp; Hutter, <em>Decoupled Weight Decay Regularization</em> (ICLR 2019), which is the AdamW correction Chapter 13.4 derives. For the matrix-preconditioning line ending in Chapter 13.6, Liu et al., <em>Muon Is Scalable for LLM Training</em> (arXiv 2502.16982, 2025), is the first paper to report Muon at a scale where the claim can be assessed; Keller Jordan&rsquo;s original blog post is the clearer derivation and the paper is the better evidence. <span class="tag tag-verify">Verify</span></p>
+
+<p>Hyperparameter transfer: Yang et al., <em>Tensor Programs V: Tuning Large Neural Networks via Zero-Shot Hyperparameter Transfer</em> (arXiv 2203.03466; NeurIPS 2021), is the muP source for Chapter 15. Read it for the coordinate-check methodology in particular &mdash; Section 15.4 exists because the parametrization is easy to get subtly wrong and the check is the only thing that catches it. McCandlish et al., <em>An Empirical Model of Large-Batch Training</em> (arXiv 1812.06162), owns the gradient-noise-scale argument behind Chapter 15.7.</p>
+
+<p>Scaling laws: Kaplan et al., <em>Scaling Laws for Neural Language Models</em> (arXiv 2001.08361, 2020), and Hoffmann et al., <em>Training Compute-Optimal Large Language Models</em> (Chinchilla, NeurIPS 2022). Chapter 24 treats these as a pair whose disagreement is the point, and it insists on two follow-ups that most secondary accounts omit: Besiroglu et al.&rsquo;s replication of the Chinchilla fit (arXiv 2404.10102), which corrects the published parametric estimates, and Muennighoff et al., <em>Scaling Data-Constrained Language Models</em> (arXiv 2305.16264; NeurIPS 2023), which is the source for the repeated-data regime in Chapter 24.6. If you quote a Chinchilla exponent, quote it from the replication.</p>
+
+<p>Tokenization: Sennrich, Haddow &amp; Birch, <em>Neural Machine Translation of Rare Words with Subword Units</em> (ACL 2016), for BPE, and Kudo, <em>Subword Regularization</em> (ACL 2018), for the unigram model. Both predate the pathologies catalogued in Chapter 23.6, which have no canonical paper and are documented mostly in issue trackers.</p>
+
+<p>Post-training: Ouyang et al., <em>Training Language Models to Follow Instructions with Human Feedback</em> (InstructGPT, NeurIPS 2022), for the three-stage recipe; Rafailov et al., <em>Direct Preference Optimization: Your Language Model Is Secretly a Reward Model</em> (NeurIPS 2023), for the derivation Chapter 27.5 reproduces and for the assumptions it makes silently; Shao et al., <em>DeepSeekMath</em> (arXiv 2402.03300, 2024), for GRPO. Parameter-efficient adaptation: Hu et al., <em>LoRA</em> (ICLR 2022), and Dettmers et al., <em>QLoRA</em> (NeurIPS 2023), the latter also being the reference for NF4 and paged optimizers in Chapter 26.5.</p>
+
+<h4>D.4 Systems and Efficiency</h4>
+
+<p>The FlashAttention line is short and readable end to end: Dao, Fu, Ermon, Rudra &amp; Ré (NeurIPS 2022); Dao, <em>FlashAttention-2</em> (ICLR 2024); Shah et al., <em>FlashAttention-3</em> (NeurIPS 2024). Read them in order &mdash; each one changes what the bottleneck is, and reading only the third leaves you unable to say why. Milakov &amp; Gimelshein, <em>Online Normalizer Calculation for Softmax</em> (arXiv 1805.02867, 2018), is the short prerequisite for all three and is the actual content of Chapter 31.2.</p>
+
+<p>Serving: Kwon et al., <em>Efficient Memory Management for Large Language Model Serving with PagedAttention</em> (SOSP 2023), is the vLLM paper and the source for Chapter 33.3; Leviathan, Kalman &amp; Matias, <em>Fast Inference from Transformers via Speculative Decoding</em> (ICML 2023), for Chapter 33.5, where the acceptance-rate arithmetic is what matters and the wall-clock numbers are hardware-bound.</p>
+
+<p>Distributed training: Rajbhandari et al., <em>ZeRO</em> (SC 2020); Shoeybi et al., <em>Megatron-LM</em> (arXiv 1909.08053); Huang et al., <em>GPipe</em> (NeurIPS 2019). These three define the vocabulary of Chapter 32, but none of them composes the parallelisms the way current practice does; the Ultra-Scale Playbook is better on composition and on the failure modes of Chapter 32.9.</p>
+
+<p>Quantization: Dettmers et al., <em>LLM.int8()</em> (NeurIPS 2022), for outlier features; Frantar et al., <em>GPTQ</em> (ICLR 2023); Lin et al., <em>AWQ</em> (MLSys 2024). Quantization is the one topic in Part VI whose numbers move fastest, and it is also where the plaintext and encrypted halves of the book meet: Chapter 34 and Chapter 39 are solving the same problem &mdash; how much precision can you give up before the model changes behavior &mdash; against completely different cost models.</p>
+
+<p>For hardware primitives, the vendor documentation is the source and there is no substitute: the NVIDIA CUDA C++ Programming Guide for the execution model of Chapter 30, and the Triton documentation for Chapter 31.8. Both are versioned and both drift; check the version against your toolkit. <span class="tag tag-verify">Verify</span></p>
+
+<h4>D.5 Generative Modeling</h4>
+
+<p>Kingma &amp; Welling, <em>Auto-Encoding Variational Bayes</em> (ICLR 2014), is where Chapter 35.1 starts. Ho, Jain &amp; Abbeel, <em>Denoising Diffusion Probabilistic Models</em> (NeurIPS 2020), is the paper that made the discrete formulation work; Song et al., <em>Score-Based Generative Modeling Through Stochastic Differential Equations</em> (ICLR 2021), is the continuous-time unification that Chapter 35.3 and 35.4 follow, and it is the one to read if you only read one. Lipman et al., <em>Flow Matching for Generative Modeling</em> (ICLR 2023), and Liu, Gong &amp; Liu, <em>Rectified Flow</em> (ICLR 2023), give the straight-path reformulation of Chapter 35.5; the two papers arrive at nearly the same object from different directions, which is itself instructive.</p>
+
+<p>Ho &amp; Salimans, <em>Classifier-Free Diffusion Guidance</em> (NeurIPS 2021 Workshop on Deep Generative Models and Downstream Applications; extended version arXiv 2207.12598, 2022), is short and explains the single most load-bearing trick in practical image generation. Rombach et al., <em>High-Resolution Image Synthesis with Latent Diffusion Models</em> (CVPR 2022), and Peebles &amp; Xie, <em>Scalable Diffusion Models with Transformers</em> (DiT, ICCV 2023), cover the architectural half of Chapter 35.7 and 35.8. Chapter 35.10 on diffusion language models is the section most likely to date; treat its citations as a snapshot.</p>
+
+<h4>D.6 Evaluation, Interpretability, and Safety</h4>
+
+<p>Chapter 37 says plainly that no textbook in the book&rsquo;s list covers interpretability, and that remains true. The field publishes on <code>transformer-circuits.pub</code>, on arXiv, and on the Alignment Forum, in that order of density. The four papers Chapter 37 is built on are Elhage et al., <em>Toy Models of Superposition</em> (2022), which is the source of the phase-transition picture in Section 37.2; Olsson et al., <em>In-Context Learning and Induction Heads</em> (2022); Bricken et al., <em>Towards Monosemanticity</em> (2023); and Templeton et al., <em>Scaling Monosemanticity</em> (2024). All four are web-native publications with interactive figures, and the figures carry argument that the text does not &mdash; do not read them as PDFs.</p>
+
+<p>Evaluation has one genuinely contested pair, and Chapter 29.5 presents both sides: Wei et al., <em>Emergent Abilities of Large Language Models</em> (TMLR 2022), against Schaeffer, Miranda &amp; Koyejo, <em>Are Emergent Abilities of Large Language Models a Mirage?</em> (NeurIPS 2023). The dispute is about whether discontinuity is a property of the model or of the metric, and it is settled empirically by re-scoring the same checkpoints under a continuous metric &mdash; which is what the second paper does and what you should do before repeating either claim. <span class="tag tag-contested">Contested</span></p>
+
+<p>For benchmark infrastructure: Liang et al., <em>Holistic Evaluation of Language Models</em> (HELM, TMLR 2023), for the multi-metric framing; Hendrycks et al., <em>Measuring Massive Multitask Language Understanding</em> (MMLU, ICLR 2021), still the most-cited and most-contaminated benchmark in the field; Chiang et al., <em>Chatbot Arena</em> (ICML 2024), for the pairwise-ranking methodology and its documented biases. EleutherAI&rsquo;s <code>lm-evaluation-harness</code> is the reference implementation of the scoring protocols in Chapter 29.2, and reading its code is the fastest way to understand why the same benchmark yields different numbers in different papers.</p>
+
+<h4>D.7 Encrypted Machine Learning</h4>
+
+<p>Part VIII is the half of this book with no textbook. Everything below is a primary source, and the field&rsquo;s norms make that unusually workable: cryptography publishes preprints on the IACR Cryptology ePrint Archive with stable identifiers, and most of these papers ship artifacts.</p>
+
+<p><strong>The scheme.</strong> Cheon, Kim, Kim &amp; Song, <em>Homomorphic Encryption for Arithmetic of Approximate Numbers</em> (ASIACRYPT 2017, pp. 409&ndash;437), is CKKS, and Chapter 38 deliberately does not re-derive it. Cheon, Han, Kim, Kim &amp; Song, <em>Bootstrapping for Approximate Homomorphic Encryption</em> (EUROCRYPT 2018; ePrint 2018/153), is the refresh procedure whose cost dominates every budget in Chapters 38.6 and 41.4.</p>
+
+<p><strong>Parameters and security.</strong> Chapter 38 cites the <em>Homomorphic Encryption Standard</em> v1.1 (homomorphicencryption.org, November 2018) for parameter tables. Use it, but know that it has been effectively superseded: Bossuat et al., <em>Security Guidelines for Implementing Homomorphic Encryption</em> (IACR <em>Communications in Cryptology</em> 1(4), January 2025; ePrint 2024/463), carries updated security tables and functional parameter sets for all common schemes, and is the document to check a concrete parameter choice against today. <span class="tag tag-verify">Verify</span> Li &amp; Micciancio, <em>On the Security of Homomorphic Encryption on Approximate Numbers</em> (EUROCRYPT 2021; ePrint 2020/1533), is the paper that showed plain IND-CPA is insufficient for approximate schemes; Chapter 42 treats the resulting IND-CPA-D notion as a live constraint on deployment, not a footnote.</p>
+
+<p><strong>Approximation.</strong> Trefethen, <em>Approximation Theory and Approximation Practice, Extended Edition</em> (SIAM; ISBN 9781611975932) <span class="tag tag-verify">Verify</span> is the source for Chebyshev interpolation, equioscillation and Remez done properly, and it is a genuinely enjoyable book. For comparison and sign specifically &mdash; the machinery every CKKS system now ships and which Chapter 39.5 builds &mdash; the two sources are Cheon, Kim, Kim, Lee &amp; Lee, <em>Numerical Method for Comparison on Homomorphically Encrypted Numbers</em> (ASIACRYPT 2019, pp. 415&ndash;445; ePrint 2019/417), and Cheon, Kim &amp; Kim, <em>Efficient Homomorphic Comparison Methods with Optimal Complexity</em> (ASIACRYPT 2020, LNCS 12492, pp. 221&ndash;256). Both are short.</p>
+
+<p><strong>Systems.</strong> Chapter 40 splits these into an interactive and a non-interactive line, and the split is the right way to read them.</p>
+
+<table>
+<tr><th>System</th><th>Venue / identifier</th><th>What it is the reference for</th></tr>
+<tr><td>BOLT</td><td>IEEE S&amp;P 2024; ePrint 2023/1893</td><td>The 2PC baseline both halves of Chapter 40.2 are measured against</td></tr>
+<tr><td>BumbleBee</td><td>NDSS 2025; ePrint 2023/1678</td><td>The SecretFlow/SPU-based interactive line</td></tr>
+<tr><td>Nimbus</td><td>NeurIPS 2024; arXiv 2411.15707</td><td>Linear-layer protocol redesign</td></tr>
+<tr><td>NEXUS</td><td>NDSS 2025; ePrint 2024/136 (Zhang et al.)</td><td>The reference pure-FHE, non-interactive point</td></tr>
+<tr><td>SHAFT</td><td>NDSS 2025, Distinguished Artifact Award; ePrint 2025/2324</td><td>Reproducibility as a first-class claim</td></tr>
+<tr><td>THOR</td><td>ACM CCS 2025; ePrint 2024/1881 (Moon et al.)</td><td>Non-interactive linear algebra; interleaving away the max</td></tr>
+<tr><td>Powerformer</td><td>ACL 2025, pp. 11090&ndash;11111; ePrint 2024/1429</td><td>Retraining the non-polynomial problem away</td></tr>
+</table>
+
+<p><strong>GPU acceleration.</strong> Phantom (ePrint 2023/049), HEonGPU (ePrint 2024/1543), Cheddar (ASPLOS 2026; arXiv 2407.13055) and FIDESlib (arXiv 2507.04775) are the four Chapter 41.6 works with. Read their kernel-level accounting rather than their headline speedups: the speedups are stated against different CPU baselines and are not comparable across papers.</p>
+
+<p><strong>Systematizations.</strong> Two SoKs are the closest thing to a map of this field: Al Badawi, Alexandru, Polyakov &amp; Vaikuntanathan, <em>SoK: Private LLM Inference Using Approximate Homomorphic Encryption</em> (ePrint 2026/935), written by OpenFHE maintainers and consequently unusually honest about what parameter selection actually constrains, and <em>SoK: Private Transformer-Based Model Inference</em> (ePrint 2026/491). Two broader surveys exist (arXiv 2412.08145 and arXiv 2505.10315). <span class="tag tag-verify">Verify</span></p>
+
+<div class="warning-box"><div class="box-title">Surveys for Taxonomy, Never for Numbers</div><p>Chapters 40 and 42 both state this rule and it is the single most useful habit in this literature. A survey&rsquo;s comparison table flattens away the model, the sequence length, the threat model, the hardware, and whether the reported latency includes setup and key generation. Every one of those changes the number by an order of magnitude. Take the taxonomy from the survey; take the number from the paper, and take it with the configuration attached.</p></div>
+
+<p><strong>Libraries.</strong> OpenFHE is the most complete and the best documented, and its documentation is a legitimate source for what a production library exposes. Microsoft SEAL, Lattigo (Go), HEaaN, and Zama&rsquo;s Concrete/Concrete-ML round out the set; TenSEAL is the easiest entry point for a first encrypted tensor. Library APIs move faster than papers &mdash; check any call signature against the version you have installed rather than against a tutorial.</p>
+
+<h4>D.8 How to Keep Current</h4>
+
+<p>The half-life of Parts V through VIII is roughly eighteen months. <span class="tag tag-likely">Likely</span> Parts I through III will not move in your lifetime. Budget your reading accordingly: the foundations reward depth once, the frontier rewards a cheap recurring habit.</p>
+
+<p>The habit that works is venue-based rather than feed-based, because feeds select for novelty and venues select for having survived review.</p>
+
+<table>
+<tr><th>Venue</th><th>Covers</th><th>Cadence</th></tr>
+<tr><td>NeurIPS, ICML, ICLR</td><td>Core ML; Parts I&ndash;VI</td><td>Annual; proceedings open-access</td></tr>
+<tr><td>COLM</td><td>Language models specifically; Part V</td><td>Annual, since 2024</td></tr>
+<tr><td>ACL, EMNLP</td><td>NLP-side evaluation and analysis; Chapters 23, 29</td><td>Annual</td></tr>
+<tr><td>MLSys, ASPLOS, SOSP/OSDI</td><td>Systems; Part VI and Chapter 41.6</td><td>Annual</td></tr>
+<tr><td>CRYPTO, EUROCRYPT, ASIACRYPT</td><td>Scheme-level cryptography; Chapters 38&ndash;39</td><td>Annual, IACR</td></tr>
+<tr><td>IEEE S&amp;P, ACM CCS, USENIX Security, NDSS, PETS</td><td>Private inference systems; Chapters 40&ndash;42</td><td>Annual</td></tr>
+<tr><td>IACR ePrint Archive</td><td>Everything cryptographic, months earlier</td><td>Continuous</td></tr>
+<tr><td>arXiv cs.LG, cs.CL, cs.CR</td><td>Everything else, months earlier</td><td>Continuous</td></tr>
+</table>
+
+<p>Four practices are worth more than any reading list. <strong>Read the artifact before the abstract.</strong> If a paper ships code, the code answers questions the paper does not: what the baseline actually was, which numbers are measured and which are extrapolated, and what the configuration was. Chapter 40.5 is an entire section on reading a latency claim, and its method is to look for the configuration, not the headline. <strong>Reproduce one number.</strong> Not the whole paper &mdash; one number, on the smallest configuration the code supports. The gap between what you get and what is reported is the paper&rsquo;s real error bar. <strong>Track the correction, not just the claim.</strong> Chinchilla&rsquo;s published fit was corrected by a replication; emergence was reframed by a rebuttal; the 2018 HE parameter tables were superseded by the 2025 security guidelines. In each case the correction is less cited than the original and more correct. <strong>Prefer the source that states its own limits.</strong> The SoK written by library maintainers is more honest about parameter constraints than the survey written from abstracts, for the same reason a paper with an artifact is more honest than one without: someone had to make it run.</p>
+
+<p>Finally, on this book&rsquo;s own numbers. Every claim tagged <span class="tag tag-verify">Verify</span> is a claim that was correct when measured and is expected to drift &mdash; hardware bandwidths, model versions, prices, library APIs, preprint venues. Appendix F collects the dated reference numbers in one place precisely so that they can be re-measured rather than trusted. When one of them disagrees with a source you have checked, the source wins, and the book is what needs updating.</p>
+
+</div>
+
+<div class="chapter" id="appendix-e">
+<div class="chapter-header"><div class="ch-label">Appendix E</div><h3>Reading Crosswalk</h3></div>
+
+<p>The front matter&rsquo;s instruction &mdash; &ldquo;read the fundamentals in at least two of them&rdquo; &mdash; is worthless without a table saying <em>which</em> two. This appendix supplies one: a row for each of the book&rsquo;s 42 chapters naming a source for the derivation and a second for the intuition or the working implementation, and marking plainly where no second source exists. Every chapter number and title below was extracted mechanically from the assembled book, not recalled. One rule governs the citations: <strong>they name topics, never chapter numbers in other books.</strong> Editions repaginate, courses renumber lectures between offerings, and a free PDF revised twice a year does not hold its section numbers still. A pointer to &ldquo;Goodfellow&rsquo;s numerical-computation material&rdquo; survives that; a numbered pointer would be a guess dressed as a citation.</p>
+
+<h4>E.1 How to Read Two Sources at Once</h4>
+
+<p>Parallel reading fails when both sources are asked to do the same job: two textbook derivations of gradient descent give you one derivation and a wasted afternoon. The method that works assigns each source a distinct role before you open it.</p>
+
+<h5>E.1.1 Three roles, three sources</h5>
+
+<p><strong>The derivation source</strong> proves the thing: assumptions explicit, theorem in a form you could cite, no skipped step. For Parts I&ndash;III this is almost always Goodfellow, Bishop, Hastie et al., or Murphy; for Parts V&ndash;VI there is frequently no book at all, and the role falls to CS336 or to a primary paper in Appendix D.</p>
+
+<p><strong>The intuition source</strong> makes it picturable. Prince is strongest here in print &mdash; this book carries no diagrams by design, and Prince&rsquo;s are the ones to hold in your head. Trask covers anything with a backward pass, Serrano the classical algorithms of Part II, Karpathy anything you will eventually type.</p>
+
+<p><strong>The book&rsquo;s artifact is the arbiter.</strong> When the two appear to disagree you do not adjudicate by authority or publication date: you run the chapter&rsquo;s artifact, instrument the disputed quantity, and read the number. Appendix C indexes all 42 by what each verifies itself against, which is also an index of what each is competent to arbitrate.</p>
+
+<h5>E.1.2 Most disagreements are notational</h5>
+
+<p>Before treating a conflict as substantive, apply one test: <em>does the numeric prediction differ?</em> If it does not, you have found a convention, not a contradiction. The usual suspects are row versus column vectors (this book fixes column vectors and $y = Wx$; several sources use $x^{\top}W$), the factor of $\tfrac{1}{2}$ in a squared loss, natural log versus $\log_2$ in every information-theoretic quantity, whether a fused multiply&ndash;add counts as one FLOP or two (Chapter 1 counts two, giving $2mnk$; sources that count one report half this book&rsquo;s FLOPs everywhere), and whether a regularizer carries $\lambda$ or $\tfrac{\lambda}{2}$. Appendix A fixes the book&rsquo;s conventions; check there before believing a source is wrong.</p>
+
+<p>Real disagreements exist and this book names them. Chapter 3 argues directly against the capacity-control framing that Goodfellow presents as doctrine and Hastie et al. in its strongest classical form; read those as the position being attacked, not as background. Chapter 8 marks the tabular-data question contested, Chapter 5 the cost of non-deterministic reduction order. Each states which measurement would settle it, and the artifact runs whatever part of it fits on a CPU in thirty seconds.</p>
+
+<div class="warning-box">
+<div class="box-title">Common Pitfall</div>
+<p>Parallel reading degrades into serial skimming: you read three accounts of backpropagation, feel fluent, and cannot write the backward pass for a matmul from an empty file. Two sources plus one implementation beats five sources plus none, every time. Time-box the second source &mdash; it exists to unstick you on one step, not to be read cover to cover &mdash; and treat a chapter as unfinished until the artifact runs and you can explain the residual it prints.</p>
+</div>
+
+<h4>E.2 The Sources, and the Role Each Plays</h4>
+
+<table>
+<tr><th>Source</th><th>Role it plays best</th></tr>
+<tr><td>Goodfellow, Bengio &amp; Courville, <em>Deep Learning</em> (2016)</td><td>Derivation, Parts I&ndash;III. Mathematical preliminaries, optimization vocabulary, backprop on general graphs, the regularization catalogue. Pre-2017 on generalization and architectures.</td></tr>
+<tr><td>Prince, <em>Understanding Deep Learning</em> (2023)</td><td>Intuition. The best diagrams available for variance propagation, loss geometry, linear regions, receptive fields, attention maps, diffusion. Free PDF. <span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>Bishop, <em>PRML</em></td><td>Derivation, Part II. Probabilistic logistic regression, IRLS as Newton, kernels and the SVM dual, PCA and EM.</td></tr>
+<tr><td>Hastie, Tibshirani &amp; Friedman, <em>ESL</em></td><td>Derivation, Part II. Shrinkage in the SVD basis, the lasso path, CART and pruning, bagging, boosting, bias&ndash;variance.</td></tr>
+<tr><td>Murphy, <em>Probabilistic ML: Advanced Topics</em> (2023)</td><td>Lookup. Measure-theoretic statements, exponential families, variational inference, Gaussian processes, score matching, policy gradients.</td></tr>
+<tr><td>Trask, <em>Grokking Deep Learning</em></td><td>Implementation, Part III. Backprop written out by hand with no framework.</td></tr>
+<tr><td>Serrano, <em>Grokking Machine Learning</em></td><td>Intuition, Part II. The gentlest correct first pass at regression, SVMs, trees and ensembles.</td></tr>
+<tr><td>Karpathy, <em>Zero to Hero</em> and <code>nanoGPT</code></td><td>Implementation. Micrograd, the makemore activation/gradient histograms, the BPE lecture and <code>minbpe</code>, a small transformer to experiment on.</td></tr>
+<tr><td>Raschka, <em>Build a Large Language Model (From Scratch)</em></td><td>Implementation, Parts IV&ndash;V. Line-by-line attention, KV cache, tokenizer-to-dataloader pipeline, chat templating and loss masking, generation loops.</td></tr>
+<tr><td>G&eacute;ron, <em>Hands-On ML with Scikit-Learn and PyTorch</em> (2025 PyTorch edition)</td><td>Practice. What the API actually does &mdash; AMP, dropout semantics, GBDT hyperparameters, augmentation, project discipline. <span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>Chakraborty, <em>Introduction to LLMs</em> + NPTEL <code>106102576</code></td><td>NLP-side framing. The seq2seq-to-Transformer arc, subword history, instruction tuning, benchmark history. Course code and lecture numbering change between offerings. <span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>Stanford <strong>CS336</strong> (Language Modeling from Scratch)</td><td>Derivation and lab, Parts V&ndash;VI. The only course covering scaling laws, data, post-training, kernels and inference at this level. <span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>HuggingFace <strong>Ultra-Scale Playbook</strong></td><td>Systems ground truth, Part VI. Measured bandwidths, bf16/fp8 in production, the parallelisms with profiler traces from real clusters. A living document &mdash; prefer its numbers. <span class="tag tag-verify">Verify</span></td></tr>
+</table>
+
+<h4>E.3 Crosswalk: Parts I&ndash;III (Chapters 1&ndash;15)</h4>
+
+<table>
+<tr><th>Ch.</th><th>Title</th><th>For the derivation</th><th>For the intuition or the implementation</th></tr>
+<tr><td colspan="4"><strong>Part I &mdash; Mathematical and Statistical Foundations</strong></td></tr>
+<tr><td>1</td><td>Linear Algebra as Computation</td><td>Goodfellow &mdash; linear-algebra and numerical-computation preliminaries: SVD, pseudoinverse, conditioning</td><td>CS336 &mdash; the FLOP-and-bytes accounting assignment. Ultra-Scale Playbook for current memory-hierarchy numbers; replace this chapter&rsquo;s hardware figures from it as they age</td></tr>
+<tr><td>2</td><td>Probability, Information, and Why Cross-Entropy Is the Only Loss</td><td>Murphy &mdash; measure-theoretic statements and the variational machinery behind the ELBO; Goodfellow for information theory and maximum likelihood, gentler</td><td>Karpathy, Zero to Hero &mdash; negative log-likelihood built from bigram counts, no framework</td></tr>
+<tr><td>3</td><td>Generalization: Classical Theory and Its Deep-Learning Failure</td><td>Hastie et al. &mdash; bias&ndash;variance and model selection in their strongest form, the picture this chapter attacks; Goodfellow for the capacity/VC framing as of 2016</td><td>Prince &mdash; double descent and the interpolation regime, the clearest figures</td></tr>
+<tr><td>4</td><td>Optimization: Convergence Rates and the Non-Convex Reality</td><td>Goodfellow &mdash; numerical optimization: smoothness, strong convexity, ill-conditioning</td><td>Prince &mdash; momentum trajectories, condition-number ellipses, loss-surface geometry. G&eacute;ron for the practitioner&rsquo;s view</td></tr>
+<tr><td>5</td><td>Numerics: Floating Point, Precision, and Stability</td><td>Goodfellow &mdash; overflow, underflow, and softmax stabilization in canonical form</td><td>G&eacute;ron &mdash; mixed precision, the scaler, which tensors PyTorch silently keeps in fp32. Ultra-Scale Playbook for bf16 and fp8 in production</td></tr>
+<tr><td colspan="4"><strong>Part II &mdash; Classical Machine Learning</strong></td></tr>
+<tr><td>6</td><td>Linear and Logistic Regression: the Atom</td><td>Hastie et al. &mdash; ridge in the SVD basis and the lasso path; Bishop &mdash; IRLS as Newton on the Bernoulli likelihood; Murphy for exponential families, links, calibration</td><td>Serrano &mdash; the gentlest correct account of the same two models</td></tr>
+<tr><td>7</td><td>Kernels, Margins, and the Bridge to Infinite-Width Networks</td><td>Bishop &mdash; kernels, RKHS, the SVM dual and the sparsity argument; Murphy for the Gaussian-process side and infinite-width limits</td><td>Hastie et al. &mdash; the SVM as penalized hinge-loss regression, the framing that ties this to Chapter 6. Serrano for a first pass</td></tr>
+<tr><td>8</td><td>Trees, Bagging, and Gradient Boosting</td><td>Hastie et al. &mdash; CART, cost-complexity pruning, bagging, Friedman&rsquo;s gradient boosting, and the misclassification-versus-Gini counterexample this chapter reproduces</td><td>G&eacute;ron &mdash; what production GBDT hyperparameters do, and early stopping on a held-out split. Serrano for first contact</td></tr>
+<tr><td>9</td><td>Unsupervised Learning: PCA, Clustering, and Latent Variables</td><td>Bishop &mdash; PCA, probabilistic PCA, mixtures and EM; its ELBO derivation is the one followed here. Murphy for the modern latent-variable view</td><td>Hastie et al. &mdash; clustering as a combinatorial problem, and the vantage that $k$-means is one algorithm among many for a badly posed question. <em>Serrano stops at supervised learning</em>, so this is the one Part II chapter with no gentle first pass</td></tr>
+<tr><td colspan="4"><strong>Part III &mdash; Neural Networks and Optimization at Scale</strong></td></tr>
+<tr><td>10</td><td>The Multilayer Perceptron and What Depth Buys</td><td>Goodfellow &mdash; universal approximation and the depth&ndash;width literature preceding the separation results</td><td>Trask &mdash; backpropagation by hand, exactly what Section 10.6 does. Prince for ReLU networks folding input space</td></tr>
+<tr><td>11</td><td>Automatic Differentiation and Backpropagation</td><td>Goodfellow &mdash; the algorithm on arbitrary computational graphs, including the symbol-to-symbol view</td><td>Trask, then Karpathy&rsquo;s micrograd &mdash; the scalar ancestor of the tensor engine built here; diff them to see which lines exist only because we moved to arrays</td></tr>
+<tr><td>12</td><td>Initialization, Normalization, and Signal Propagation</td><td>Goodfellow for the classical initialization and normalization arguments; CS336 for the modern design point &mdash; pre-norm, RMSNorm, QK-norm &mdash; with measured consequences</td><td>Karpathy, the makemore episodes &mdash; activation and gradient histograms and the Kaiming gain re-derived on screen, this chapter&rsquo;s artifact in interactive form. Prince for variance decay through depth</td></tr>
+<tr><td>13</td><td>Optimizers: SGD to Muon</td><td>Goodfellow &mdash; momentum, AdaGrad, RMSProp and the convex framing they inherit; CS336 for AdamW settings that ship and the matrix-preconditioner line</td><td>Prince &mdash; why per-coordinate scaling helps on an ill-conditioned loss. Sections 13.5&ndash;13.6 have no textbook: see Appendix D</td></tr>
+<tr><td>14</td><td>Regularization and the Generalization Levers That Actually Work</td><td>Goodfellow &mdash; the fullest catalogue of the classical mechanisms and their Bayesian readings, read knowing that its assumption that capacity control binds is what this chapter disputes</td><td>Prince for implicit regularization and double descent. G&eacute;ron for what PyTorch does with a dropout probability or a label-smoothing coefficient</td></tr>
+<tr><td>15</td><td>Hyperparameter Transfer: muP, Schedules, and Batch Size</td><td>CS336 &mdash; the scaling and training-recipe lectures. <em>No textbook covers muP;</em> the primary sources are in Appendix D</td><td>Ultra-Scale Playbook &mdash; batch size where optimization theory meets data-parallel hardware constraints</td></tr>
+</table>
+
+<h4>E.4 Crosswalk: Part IV (Chapters 16&ndash;21)</h4>
+
+<table>
+<tr><th>Ch.</th><th>Title</th><th>For the derivation</th><th>For the intuition or the implementation</th></tr>
+<tr><td colspan="4"><strong>Part IV &mdash; Architectures</strong></td></tr>
+<tr><td>16</td><td>Convolutional Networks</td><td>Goodfellow &mdash; sparse interactions, parameter sharing, equivariance, and the variants compressed here</td><td>Prince for receptive fields and downsampling. G&eacute;ron for building ResNet-style networks layer by layer, and the training recipes Section 16.7 argues do most of the work</td></tr>
+<tr><td>17</td><td>Recurrence: RNNs, LSTMs, and the Gradient Pathology</td><td>Goodfellow &mdash; BPTT, vanishing gradients, echo-state initialization; the reference derivation for Sections 17.2&ndash;17.4</td><td>Prince for gate diagrams. Chakraborty and the NPTEL lectures for how seq2seq with attention became the Transformer</td></tr>
+<tr><td>18</td><td>Attention and the Transformer</td><td>Prince &mdash; what the attention matrix does to a sequence, and pre-norm versus post-norm. Chakraborty for the NLP-side account</td><td>Raschka &mdash; line-by-line causal multi-head attention and the KV cache, the closest text to this chapter&rsquo;s artifact. Karpathy&rsquo;s attention lecture and <code>nanoGPT</code> for the same block written as compactly as it can be</td></tr>
+<tr><td>19</td><td>Positional Information and Long Context</td><td>Prince for what a position encoding does to an attention map. Sections 19.5&ndash;19.8 are paper-only</td><td>Raschka &mdash; a rotary implementation you can diff against the artifact. CS336 &mdash; write the rotary cache, then break it at long context</td></tr>
+<tr><td>20</td><td>Vision Transformers and Multimodal Encoders</td><td><em>No textbook covers CLIP, DINO, or masked image modeling.</em> The papers are unusually readable; Appendix D lists them</td><td>Prince for patch tokenization and windowed attention maps. G&eacute;ron for image pipelines, augmentation, and fine-tuning a backbone without breaking it</td></tr>
+<tr><td>21</td><td>State Space Models: S4, Mamba, and the SSD Duality</td><td><em>Gap.</em> No book here covers state space models. The primary papers are the only complete treatment; Appendix D names them and the blog series that best explains the semiseparable-matrix argument</td><td>Prince for the recurrence and convolution background this chapter assumes. Chapter 17 and Section 18.7 are the in-book prerequisites</td></tr>
+</table>
+
+<h4>E.5 Crosswalk: Parts V&ndash;VI (Chapters 22&ndash;34)</h4>
+
+<table>
+<tr><th>Ch.</th><th>Title</th><th>For the derivation</th><th>For the intuition or the implementation</th></tr>
+<tr><td colspan="4"><strong>Part V &mdash; Large Language Models</strong></td></tr>
+<tr><td>22</td><td>Mixture of Experts and Conditional Computation</td><td>CS336 &mdash; the closest lecture treatment of MoE and routing trade-offs. No textbook covers routing or load balancing</td><td>Ultra-Scale Playbook for expert parallelism and all-to-all. Raschka for the from-scratch discipline the artifact follows</td></tr>
+<tr><td>23</td><td>Tokenization and the Language-Modeling Objective</td><td>Chakraborty for subword history and linguistic framing; Chapter 2 for the maximum-likelihood half, the same theorem</td><td>Raschka &mdash; the tokenizer-to-dataloader pipeline line by line. Karpathy&rsquo;s GPT-tokenizer lecture and <code>minbpe</code>, the cleanest byte-level BPE reference. CS336 &mdash; train one at scale</td></tr>
+<tr><td>24</td><td>Scaling Laws</td><td>CS336 &mdash; a full unit including the Chinchilla fitting mechanics</td><td>Chakraborty for the Kaplan-to-Chinchilla arc. Beyond that it is a paper literature; Sections 24.4&ndash;24.8 have no secondary source</td></tr>
+<tr><td>25</td><td>The Pretraining Pipeline: Data, Curricula, Mid-Training</td><td>CS336 &mdash; the data lectures and the filtering/deduplication assignment, the closest thing to a lab course on this chapter</td><td>Raschka for turning raw text into batches, including packing. <em>No textbook covers data curation;</em> Sections 25.4&ndash;25.8 are papers and dataset reports</td></tr>
+<tr><td>26</td><td>Supervised Fine-Tuning and Parameter-Efficient Adaptation</td><td>CS336 &mdash; post-training lectures placing SFT between pretraining and RLHF. Chapter 1&rsquo;s Eckart&ndash;Young result is the derivation under LoRA</td><td>Raschka &mdash; instruction fine-tuning with templating and loss masking line by line. Chakraborty for the NLP-side view</td></tr>
+<tr><td>27</td><td>Preference Optimization: RLHF, DPO, GRPO</td><td>CS336 for RLHF and GRPO with this chapter&rsquo;s from-scratch discipline; Murphy for the policy-gradient machinery underneath Section 27.4</td><td>Raschka &mdash; a line-by-line DPO implementation in the supplementary material</td></tr>
+<tr><td>28</td><td>Reasoning Models and Test-Time Compute</td><td>CS336 &mdash; inference-time scaling and RL post-training. <em>Thin:</em> most of this chapter postdates every book listed here</td><td>Raschka for the sampling and generation loops every method here is built on</td></tr>
+<tr><td>29</td><td>Evaluation and the Measurement Crisis</td><td>CS336 for evaluation inside a from-scratch pipeline; Chakraborty for benchmark history. The substance is a paper literature the chapter names inline</td><td>G&eacute;ron &mdash; held-out discipline and not tuning on the test set, the same failure at smaller scale</td></tr>
+<tr><td colspan="4"><strong>Part VI &mdash; Systems and Efficiency</strong></td></tr>
+<tr><td>30</td><td>The GPU Execution Model and the Memory Wall</td><td>Ultra-Scale Playbook &mdash; the same bandwidth arithmetic on real clusters; the best companion for all of Part VI</td><td>CS336 &mdash; rooflines, kernels and profiling, with assignments that measure what this chapter derives. Section 1.6 is the in-book prerequisite</td></tr>
+<tr><td>31</td><td>FlashAttention and Writing Fast Kernels</td><td>The FlashAttention papers are short and the only complete derivation; Appendix D lists all three</td><td>CS336 &mdash; the kernel-writing assignments, including a Triton FlashAttention exercise. Ultra-Scale Playbook for where fused kernels sit in the stack</td></tr>
+<tr><td>32</td><td>Distributed Training</td><td>Ultra-Scale Playbook &mdash; the single best companion: the same parallelisms with profiler traces from real clusters</td><td>CS336 covers the systems half as a graded assignment. Raschka for the single-node data-parallel starting point</td></tr>
+<tr><td>33</td><td>Inference: Serving, Caching, and Speculative Decoding</td><td>CS336 &mdash; the inference lectures, closest to this chapter&rsquo;s roofline and serving arguments</td><td>Raschka &mdash; the generation loop and KV cache line by line, making the memory arithmetic concrete. Sections 33.5&ndash;33.6 are paper-only</td></tr>
+<tr><td>34</td><td>Quantization, Distillation, and Compression</td><td>CS336 &mdash; quantization in the systems lectures. Chapter 5 supplies the floating-point derivation the quantization literature assumes</td><td>Ultra-Scale Playbook for mixed-precision and FP8 mechanics. G&eacute;ron for quantization through an API. GPTQ, AWQ and rotation methods are papers</td></tr>
+</table>
+
+<h4>E.6 Crosswalk: Parts VII&ndash;VIII (Chapters 35&ndash;42)</h4>
+
+<table>
+<tr><th>Ch.</th><th>Title</th><th>For the derivation</th><th>For the intuition or the implementation</th></tr>
+<tr><td colspan="4"><strong>Part VII &mdash; The Frontier</strong></td></tr>
+<tr><td>35</td><td>Diffusion, Flow Matching, and Non-Autoregressive Generation</td><td>Murphy &mdash; the full measure-theoretic treatment of diffusion, score matching and SDE samplers. The best-covered chapter in Part VII</td><td>Prince &mdash; the best visual companion to the algebra. Flow matching, rectified flow, few-step generation: paper-only</td></tr>
+<tr><td>36</td><td>Agents, Tool Use, and Long-Horizon Training</td><td>CS336 for the post-training and RL infrastructure agent training sits on. <em>No book covers agents;</em> the field in its present form is younger than every source listed here</td><td>Chakraborty for tool-augmented generation. G&eacute;ron for the end-to-end evaluation discipline agent systems need more than any other ML artifact</td></tr>
+<tr><td>37</td><td>Interpretability, Safety, and Open Problems</td><td><em>Gap.</em> No textbook here covers this. The field publishes on <code>transformer-circuits.pub</code>, arXiv, and the Alignment Forum; Section 37.8 says how to read those and Appendix D lists entry points</td><td>Karpathy&rsquo;s <code>nanoGPT</code> is the standard small transformer for replicating induction-head and patching experiments. Raschka supplies the activation-extraction plumbing an SAE needs</td></tr>
+<tr><td colspan="4"><strong>Part VIII &mdash; Machine Learning Under Encryption</strong></td></tr>
+<tr><td>38</td><td>What Breaks When You Encrypt a Transformer</td><td><em>Gap.</em> No ML text covers CKKS. Appendix D names the primary sources this book defers to: the original scheme paper, the Homomorphic Encryption Standard for parameter tables, and the OpenFHE documentation</td><td>Raschka &mdash; the plaintext block whose every line this chapter re-prices. Read it first: you cannot price what you cannot write</td></tr>
+<tr><td>39</td><td>Approximating the Non-Polynomial Core</td><td><em>Outside the crosswalk list.</em> Trefethen&rsquo;s approximation-theory text is the companion &mdash; Chebyshev interpolation, equioscillation, Remez &mdash; with the two homomorphic-comparison papers behind the composite-sign machinery every CKKS system ships. All in Appendix D</td><td>Raschka, to keep the plaintext softmax and LayerNorm you are approximating concretely in view</td></tr>
+<tr><td>40</td><td>Private Transformer Inference Systems</td><td><em>Gap, total.</em> No textbook, no course, no video. The papers are the only sources, and every record in the chapter&rsquo;s artifact names its paper. Two surveys serve as maps, never as sources of numbers</td><td>None. Read the artifact&rsquo;s systems table, then the three papers whose numbers you most distrust</td></tr>
+<tr><td>41</td><td>Encrypted LLM Serving at Scale</td><td><em>Gap.</em> No source covers encrypted generation; the cost model is built from Chapters 33, 38 and 39</td><td>Raschka for the plaintext KV cache line by line &mdash; you need that loop cold before encrypting it. CS336 for the prefill-versus-decode economics this chapter re-derives under encryption</td></tr>
+<tr><td>42</td><td>The Research Frontier: Where a Contribution Fits</td><td><em>Gap.</em> No textbook exists. Two systematizations in Appendix D are the closest map, one written by library maintainers and so unusually honest about parameter-level constraints</td><td>Chapter 21&rsquo;s primary sources remain the only treatment of the state-space side Section 42.3 argues is the opportunity. Read surveys for taxonomy, never numbers</td></tr>
+</table>
+
+<h4>E.7 The Gaps, Stated Plainly</h4>
+
+<p>Seven chapters have no adequate companion among the sources catalogued in Section E.2, and padding those rows would have been the easiest dishonesty in this book: Chapter 21, Chapter 37, and all five of Part VIII, with Chapters 28 and 36 close behind. Chapter 39 is the mildest case &mdash; its companion, Trefethen on approximation theory, exists but sits outside that list; the other six have nothing book-length at all. <span class="tag tag-likely">Likely</span> The pattern is not random. A textbook enters this crosswalk when a topic has stabilized enough that someone would spend two years writing about it; the gaps are where that has not happened. Part VIII is worse than merely new &mdash; it sits between two literatures, and the cryptography texts covering CKKS correctly do not discuss transformers while the ML texts covering transformers do not discuss ciphertext.</p>
+
+<p>The substitution protocol has three steps. <strong>First</strong>, read the primary paper in Appendix D for its assumptions rather than its results table &mdash; Section 40.5 demonstrates at length how much of a latency claim lives in its assumptions. <strong>Second</strong>, use an adjacent in-book chapter as the derivation source: Chapter 17 and Section 18.7 stand in for the background of Chapter 21; Chapters 33, 38 and 39 compose into Chapter 41; Chapter 5 is the numerical grounding under Chapter 34. <strong>Third</strong>, run the artifact and change a parameter the paper held fixed. A gap chapter&rsquo;s artifact does double duty as the only cross-check you have, and Appendix C states exactly what each verifies itself against.</p>
+
+<div class="warning-box">
+<div class="box-title">Common Pitfall</div>
+<p>Substituting a survey for the missing textbook. Surveys are useful as taxonomies and dangerous as sources of numbers: they copy latency and accuracy figures across papers using different sequence lengths, security parameters and hardware, and provenance is lost by the second citation. Chapters 40 and 42 both say so outright. Use a survey to find which papers exist, take the number from the paper, and record the conditions alongside it &mdash; the discipline Artifact 40.1 enforces mechanically.</p>
+</div>
+
+<h4>E.8 Using the Crosswalk</h4>
+
+<p>Three ways this table earns its keep. <strong>As a prerequisite check:</strong> if a chapter&rsquo;s derivation column names a source you have never opened, that is a signal about the chapter, not the source. Chapter 7 is hard without Bishop on the dual; Chapter 32 is hard without having seen a profiler trace of the kind the Ultra-Scale Playbook reproduces. <strong>As triage when you are stuck:</strong> being stuck on a derivation and on an implementation are different failures with different remedies, and the two columns separate them &mdash; if you cannot see why the algebra works, go left; if the algebra is clear and your code prints the wrong number, go right and diff against the implementation named there. <strong>As a reading order:</strong> the crosswalk thins from dense in Part I to nothing by Part VIII, a fair description of how much scaffolding exists at each depth. Read Parts I&ndash;III with a companion open, Part IV with Prince and Raschka open, Parts V&ndash;VI with CS336 and the Ultra-Scale Playbook open, and Part VIII with the papers open and the artifacts running, because there is nothing else.</p>
+
+<p>Two standing cautions. Volatile entries are tagged: course offerings change their assignments between years, the Ultra-Scale Playbook is revised continuously, and G&eacute;ron&rsquo;s 2025 PyTorch edition replaced the earlier TensorFlow and Keras editions, so an older copy on your shelf will not match the API discussion cited here. <span class="tag tag-verify">Verify</span> Check any dated entry against Appendix F before citing it. And one ordering rule governs conflicts: where a named source and this book disagree on a fact, the source wins, and the response is to correct the book rather than reconcile the two in your head. Where they disagree on a <em>measurement</em>, run the artifact.</p>
+
+</div>
+
+<div class="chapter" id="appendix-f">
+<div class="chapter-header"><div class="ch-label">Appendix F</div><h3>Reference Numbers (dated)</h3></div>
+
+<p><strong>Compiled August 2026.</strong> Every volatile number the book leans on is collected here so that the book ages in one appendix rather than in forty-two chapters. Sections F.1 through F.4 hold numbers that drift &mdash; accelerator specifications, model cards, prices, benchmark scores. Section F.5 holds the formulas, which do not, and F.6 says how to rebuild the rest. That separation is the point of the appendix: when a chapter says an H100 executes about 295 bf16 FLOPs per byte of HBM traffic, the durable content is the definition of machine balance $B^{*} = \pi/\beta$ from Section 30.3, and the 295 is a perishable input. Re-derive, do not re-read. Where a number here disagrees with a chapter, this appendix is the later measurement and wins; one such disagreement is flagged explicitly in F.1.</p>
+
+<div class="warning-box">
+<div class="box-title">Common Pitfall</div>
+<p><strong>Do not cite this appendix.</strong> Cite the source it names. Accelerator datasheets are revised silently, model cards are edited after release, API prices in this table have moved within a single week, and benchmark leaderboards are re-scored under new harnesses. Every row below carries a <span class="tag tag-verify">Verify</span> tag and names where to check it. A row without a source is a row that was omitted &mdash; several were. An incomplete honest table beats a complete invented one, and the failure mode this appendix exists to prevent is a reader quoting a 2026 price in 2028 because it was typeset in a book.</p>
+</div>
+
+<h4>F.1 Accelerator specifications</h4>
+
+<p>All throughput figures are <em>dense</em> bf16 tensor-core peaks. Vendor marketing routinely quotes the structured-sparsity number, which is exactly twice the dense number and unreachable on ordinary weights; the H100's widely repeated &ldquo;1,979 TFLOP/s&rdquo; is the sparse figure and the dense one is 989. Divide any quoted tensor-core peak by two if you cannot tell which you are looking at.</p>
+
+<table>
+<tr><th>Accelerator</th><th>bf16 dense</th><th>Memory</th><th>Bandwidth</th><th>$B^{*}$ (FLOPs/byte)</th><th>Confidence</th></tr>
+<tr><td>NVIDIA H100 SXM</td><td>989 TFLOP/s</td><td>80 GB HBM3</td><td>3.35 TB/s</td><td>295</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>NVIDIA H200 SXM</td><td>989 TFLOP/s</td><td>141 GB HBM3e</td><td>4.8 TB/s</td><td>206</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>NVIDIA B200 SXM</td><td>2,250 TFLOP/s</td><td>180 GB HBM3e</td><td>7.7 TB/s</td><td>292</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>Google TPU v5p</td><td>459 TFLOP/s</td><td>95 GB HBM2e</td><td>2.765 TB/s</td><td>166</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>Google TPU v7 (Ironwood)</td><td>2,307 TFLOP/s (derived)</td><td>192 GB HBM3e</td><td>7.37 TB/s</td><td>313</td><td><span class="tag tag-verify">Verify</span></td></tr>
+</table>
+
+<p><strong>Sources.</strong> H100 and H200: the NVIDIA Hopper datasheets &mdash; H100 SXM 80 GB HBM3 at 3.35 TB/s, 700 W; H200 SXM 141 GB HBM3e at 4.8 TB/s; both list 1,979 TFLOP/s BFLOAT16 <em>with sparsity</em>, hence 989 dense. B200: the HGX B200 product documentation gives 2.25 PFLOP/s FP16/bf16 dense (4.5 sparse), 180 GB HBM3e per GPU, 7.7 TB/s, 1,000 W, and fifth-generation NVLink at 1.8 TB/s per GPU. TPU v5p: Google Cloud's TPU v5p documentation gives 459 bf16 TFLOP/s per chip, 95 GB HBM2e at 2,765 GB/s, 4,800 Gbps interchip interconnect, pods of 8,960 chips in a 3D torus. TPU v7 Ironwood: Google publishes 4,614 FP8 TFLOP/s per chip, 192 GB HBM3e, 7.37 TB/s, 9.6 Tb/s ICI, superpods of 9,216 chips; the bf16 figure is <em>not</em> published as such and 2,307 is the conventional halving of the FP8 rate, so treat it as an inference rather than a spec. <span class="tag tag-likely">Likely</span></p>
+
+<h5>F.1.1 The derived machine balance point</h5>
+
+<p>The final column is not a specification. It is $B^{*} = \pi/\beta$, peak dense bf16 FLOP/s divided by HBM bytes per second &mdash; Definition 30.2. It is the only number in the table that matters directly to a kernel author, because by Theorem 30.1 an operation with arithmetic intensity $I &lt; B^{*}$ cannot reach peak no matter how the kernel is written. Worked once, for the H100: $989 \times 10^{12} / (3.35 \times 10^{12}) = 295.2$.</p>
+
+<p><strong>Discrepancy with Chapter 30.</strong> The hardware table in Section 30.8 lists the B200 at &ldquo;180&ndash;192 GB&rdquo; and &ldquo;$\sim$8 TB/s&rdquo;, giving $B^{*} \approx 281$. Re-verification for this appendix returns 180 GB at 7.7 TB/s, so $2250/7.7 = 292$. The chapter's arithmetic is right for its input; the input conflated two SKUs &mdash; the HGX B200 board is 180 GB at 7.7 TB/s, while the 8 TB/s figure belongs to the GB200 NVL package at 186 GB. Use 292 for a B200. <span class="tag tag-verify">Verify</span> This is precisely the drift the appendix exists to absorb, and it is worth noticing how small it is: a 4% error in a bandwidth spec moved the balance point by 4% and changed no conclusion in the chapter. The conclusions that depend on $B^{*}$ &mdash; that batch-1 decode sits two to three orders of magnitude below it, that elementwise kernels never approach it &mdash; survive any plausible revision of these rows.</p>
+
+<p>Two structural facts the table encodes are more durable than any cell in it. First, $B^{*}$ has stayed inside a band of roughly 150 to 320 across all five accelerators above and both vendors, because FLOP/s and bandwidth have scaled together by design; a hypothetical accelerator with $B^{*} = 30$ would make most of Part VI moot, and none exists. Second, the H200 is an H100 with a better memory system and an unchanged compute peak &mdash; it lowers $B^{*}$ from 295 to 206 and nothing else &mdash; which is the cleanest available evidence that decode is bandwidth-bound in the market's own judgement. <span class="tag tag-certain">Certain</span></p>
+
+<h4>F.2 Model specifications</h4>
+
+<p>Open-weight models the book names by number. Active parameters are given for mixture-of-experts models only; for dense models the two coincide. &ldquo;Native context&rdquo; is the trained window, not the YaRN- or PI-extended window discussed in Section 19.5, which is a deployment choice rather than a model property.</p>
+
+<table>
+<tr><th>Model</th><th>Total params</th><th>Active</th><th>Native context</th><th>Training tokens</th><th>Confidence</th></tr>
+<tr><td>Llama 3.1 405B</td><td>405 B (dense)</td><td>&mdash;</td><td>128 K</td><td>15.6 T</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>Mixtral 8&times;7B</td><td>46.7 B</td><td>12.9 B</td><td>32 K</td><td>not disclosed</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>DeepSeek-V3</td><td>671 B</td><td>37 B</td><td>128 K</td><td>14.8 T</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>Qwen3-30B-A3B</td><td>30.5 B</td><td>3.3 B</td><td>32 K</td><td>36 T (family)</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>Qwen3-235B-A22B</td><td>235 B</td><td>22 B</td><td>32 K</td><td>36 T</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>Qwen3.6-35B-A3B</td><td>35 B</td><td>$\approx$3 B</td><td>262 K</td><td>not disclosed</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>Kimi K2</td><td>1 T</td><td>32 B</td><td>128 K</td><td>15.5 T</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>gpt-oss-120b</td><td>117 B</td><td>5.1 B</td><td>128 K</td><td>not disclosed</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>Gemma 3 27B</td><td>27 B (dense)</td><td>&mdash;</td><td>128 K</td><td>14 T</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>OLMo 2 32B</td><td>32 B (dense)</td><td>&mdash;</td><td>4 K</td><td>up to 6 T</td><td><span class="tag tag-verify">Verify</span></td></tr>
+</table>
+
+<p><strong>Sources and caveats.</strong> Llama 3.1 405B: <em>The Llama 3 Herd of Models</em>, arXiv:2407.21783 &mdash; 405 B dense, pretrained on 15.6 T tokens at an 8 K window with a continued-pretraining stage extending to 128 K, on more than 16,000 H100s. Mixtral 8&times;7B: <em>Mixtral of Experts</em>, arXiv:2401.04088 &mdash; eight experts per layer, top-2 routing, hence 46.7 B total and 12.9 B active; the token count was never published. DeepSeek-V3: arXiv:2412.19437 &mdash; 671 B total, 37 B activated per token, 14.8 T pretraining tokens, 256 routed experts with top-8 plus one shared, FP8 GEMMs throughout. Qwen3: the Qwen3 release documentation &mdash; 36 T pretraining tokens across 119 languages in three stages, 128 experts with 8 activated for the 30B-A3B, 32,768 native window extendable to 131,072 by YaRN. Qwen3.6-35B-A3B: the Qwen3.6 model card &mdash; released 16 April 2026, Apache 2.0, 256 experts with 8 routed plus 1 shared, 262,144 native context extensible past 1 M by YaRN; the pretraining token count is not disclosed and the &ldquo;$\approx$3 B active&rdquo; is the vendor's own rounding, which is why it is not stated more precisely. Kimi K2: the Moonshot AI technical report, distributed from the <code>MoonshotAI/Kimi-K2</code> repository rather than arXiv &mdash; 1 T total, 32 B active, 15.5 T tokens, 384 experts with top-8, 61 layers, 160 K vocabulary; trained with MuonClip, as Chapter 13 discusses. gpt-oss-120b: arXiv:2508.10925 &mdash; 117 B total, 5.1 B active, 36 layers, 128 experts with top-4, 128 K context, MoE weights post-trained to MXFP4 at 4.25 bits per parameter so the model fits one 80 GB card. Gemma 3 27B: arXiv:2503.19786 &mdash; 14 T tokens, 128 K context. OLMo 2 32B: Ai2, arXiv:2501.00656 &mdash; up to 6 T tokens across pretraining and a Dolmino mid-training stage of 843 B curated tokens; the short native window is genuine and is the reason the model appears in Section 25.8 as a mid-training case study rather than a long-context one.</p>
+
+<p>Two omissions are deliberate. DeepSeek-R1 shares V3's architecture and parameter counts, so it adds no row; its distinguishing numbers are RL-training details, not specifications. Llama 4 is named in passing in the book but its published parameter and token counts have been inconsistent across sources, so no row is given rather than a guessed one. <span class="tag tag-verify">Verify</span></p>
+
+<h4>F.3 Cost and pricing</h4>
+
+<div class="warning-box">
+<div class="box-title">Common Pitfall</div>
+<p>These move fastest of all &mdash; faster than hardware, faster than model cards, faster than benchmarks. B200 on-demand rates fell measurably between January and August 2026. DeepSeek retired its <code>deepseek-chat</code> and <code>deepseek-reasoner</code> endpoint names on 24 July 2026 and re-tariffed the replacements at 16:00 UTC on 16 August 2026, the day before this appendix was compiled. Anything in this section should be treated as an order of magnitude with a decimal point attached for illustration, and re-fetched before it enters a budget.</p>
+</div>
+
+<h5>F.3.1 Accelerator rental</h5>
+
+<table>
+<tr><th>Accelerator</th><th>On-demand, per GPU-hour</th><th>Confidence</th></tr>
+<tr><td>H100 SXM, specialist clouds</td><td>$\approx$\$1.40&ndash;\$4.00 (median $\approx$\$3.37)</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>H100 SXM, hyperscalers</td><td>$\approx$\$6.90&ndash;\$12.30</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>B200, specialist clouds</td><td>$\approx$\$5.90&ndash;\$8.60</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>B200, hyperscalers</td><td>$\approx$\$14&ndash;\$16</td><td><span class="tag tag-verify">Verify</span></td></tr>
+</table>
+
+<p>The hyperscaler-to-neocloud spread on identical silicon is a factor of roughly two to four, and it reflects contract terms, egress, SLA, and availability guarantees rather than anything about the chip. It is a real lever and it costs no engineering, but keep it in proportion: Section 33.8 measures a $30\times$ swing from batching alone on one card, an order of magnitude more than procurement buys. That section assumes \$2 per GPU-hour for its cost-per-token arithmetic, which sits near the bottom of the H100 band and is therefore an optimistic-but-defensible floor; multiply its dollar conclusions by your own rate before quoting them. <span class="tag tag-verify">Verify</span></p>
+
+<h5>F.3.2 API pricing, per million tokens</h5>
+
+<p>DeepSeek is tabulated in full because it is the only major provider publishing an explicit peak/off-peak split and a separate cache-hit input rate, which makes it the cleanest available illustration of the three structural facts Section 33.8 derives: output costs several times input, cached input costs an order of magnitude less than uncached input, and both ratios follow from prefill/decode arithmetic rather than from pricing strategy.</p>
+
+<table>
+<tr><th>Model / tier</th><th>Cache-hit input</th><th>Cache-miss input</th><th>Output</th><th>Confidence</th></tr>
+<tr><td>DeepSeek-V4-Flash, off-peak</td><td>\$0.007</td><td>\$0.22</td><td>\$0.66</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>DeepSeek-V4-Flash, peak</td><td>\$0.014</td><td>\$0.44</td><td>\$1.32</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>DeepSeek-V4-Pro, off-peak</td><td>\$0.022</td><td>\$0.66</td><td>\$1.98</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>DeepSeek-V4-Pro, peak</td><td>\$0.044</td><td>\$1.32</td><td>\$3.96</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>gpt-oss-120b, hosted (Together)</td><td>&mdash;</td><td>$\approx$\$0.15</td><td>$\approx$\$0.60</td><td><span class="tag tag-verify">Verify</span></td></tr>
+</table>
+
+<p>Peak hours are 01:00&ndash;04:00 and 06:00&ndash;10:00 UTC; all other hours are off-peak, and peak is exactly $2\times$ off-peak in every cell. Read the ratios, not the levels. Output is $3\times$ cache-miss input across every DeepSeek tier and $4\times$ for the hosted gpt-oss-120b, both inside the &ldquo;commonly $3$&ndash;$5\times$&rdquo; band Section 33.8 predicts from prefill/decode arithmetic <span class="tag tag-verify">Verify</span>. Cache-hit input is roughly $30\times$ cheaper than cache-miss, a larger discount than the $2$&ndash;$10\times$ Section 33.7 reports as typical &mdash; evidence that prefix caching became a competitive weapon rather than a passed-through saving during 2026. <span class="tag tag-likely">Likely</span> No other provider's per-token rates are tabulated here: the ones checked were either inconsistent across the vendor's own pages or quoted for model variants whose identity could not be pinned down, and an unverifiable price is worse than no price.</p>
+
+<h4>F.4 Benchmark scores the book cites</h4>
+
+<p>Read Section 29.2 before reading this table. A benchmark score is a triple of dataset, model, and <em>scoring protocol</em>, and the third element is routinely omitted in reporting. The same MMLU dataset scored by the original Berkeley code, HELM, and the EleutherAI harness produces three different numbers on one model, with double-digit gaps large enough to reorder a leaderboard. Every row below is therefore protocol-dependent even where the protocol is not stated.</p>
+
+<table>
+<tr><th>Claim</th><th>Value</th><th>Source</th><th>Confidence</th></tr>
+<tr><td>DeepSeek-V3, MMLU</td><td>88.5</td><td>arXiv:2412.19437</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>DeepSeek-V3, MMLU-Pro</td><td>75.9</td><td>arXiv:2412.19437</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>gpt-oss-120b, GPQA Diamond (no tools)</td><td>80.1</td><td>arXiv:2508.10925</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>gpt-oss-120b, AIME 2024 (no tools)</td><td>95.8</td><td>arXiv:2508.10925</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>GSM1k vs. GSM8K, worst-family drop</td><td>up to $\approx$13 points</td><td>arXiv:2405.00332</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>GSM1k, memorization&ndash;gap correlation</td><td>Spearman $r^2 = 0.32$</td><td>arXiv:2405.00332</td><td><span class="tag tag-verify">Verify</span></td></tr>
+<tr><td>SWE-bench Pro, public / held-out split</td><td>731 / 858 tasks</td><td>arXiv:2509.16941</td><td><span class="tag tag-verify">Verify</span></td></tr>
+</table>
+
+<p>The GSM1k rows are the two most useful numbers in this section and the two least likely to drift, because they measure a property of the evaluation ecosystem rather than of any model. Zhang et al. hand-wrote 1,205 fresh grade-school arithmetic problems matched to GSM8K's difficulty; several model families lost up to thirteen points on the clone, and the per-model gap correlated with the model's ability to reproduce GSM8K items verbatim. That is direct evidence of memorization, and it is the reason Section 29.4 treats a single reported GSM8K figure as uninterpretable in isolation.</p>
+
+<p>The frontier-model rows will age worst. Reasoning-model scores on AIME and GPQA moved by tens of points inside 2025&ndash;26, and saturation forced the field toward held-out and semi-private designs &mdash; FrontierMath scoring run by maintainers, SWE-bench Pro's held-out half, ARC-AGI-2-style versioned refresh &mdash; precisely so that the number cannot be quoted from a table like this one. Chapter 29 argues that the durable output of an evaluation is the protocol and the contamination audit, not the score; this section is a demonstration of why. <span class="tag tag-certain">Certain</span></p>
+
+<h4>F.5 Formulas that do not drift</h4>
+
+<p>Everything above expires. Nothing below does. These are the closed forms the book uses to convert hardware and model numbers into decisions, and each is stated with the caveat that makes it wrong when ignored.</p>
+
+<h5>F.5.1 Training compute: $C \approx 6ND$</h5>
+
+<p>Training a dense transformer of $N$ parameters on $D$ tokens costs approximately $C = 6ND$ FLOPs: two FLOPs per parameter per token for the forward multiply&ndash;accumulate, and about twice that again for the backward pass, which computes gradients with respect to both activations and weights. The neglected term is attention's score and value products: $4nd$ FLOPs per token per layer before masking, halved to about $2nd$ by causality since a token attends to $n/2$ positions on average, against the $24d^2$ of the parameter matrices &mdash; a ratio of $n/(12d)$, as Section 24.2.1 derives it. At $d = 4096$ the correction stays under 10% for $n$ below about 4,900 tokens and becomes the dominant term long before $n$ reaches a modern context window. Use $6ND$ for budget arithmetic and scaling-law fits as in Chapter 24; do not use it for long-context runs without adding the quadratic term. <span class="tag tag-certain">Certain</span></p>
+
+<h5>F.5.2 Inference compute: $2N$ per token</h5>
+
+<p>One forward pass costs about $2N$ FLOPs per token, the same multiply&ndash;accumulate count without the backward factor of three. For a mixture-of-experts model substitute the <em>active</em> parameter count: DeepSeek-V3 costs $2 \times 37\text{B} = 74$ GFLOP per token, not $2 \times 671$B. The memory system does not get the same discount &mdash; every expert must be resident because the next token may route anywhere &mdash; which is the whole content of Section 22.8 and the reason F.2 tabulates both columns. Combined with F.5.1, the inference-aware scaling objective of Section 24.5 is $6ND + 2ND_{\text{inf}}$, whose minimizer sits strictly left of Chinchilla's. <span class="tag tag-certain">Certain</span></p>
+
+<h5>F.5.3 KV-cache size</h5>
+
+<p>For $L$ layers, $n_{\text{kv}}$ key/value heads, head dimension $d_h$, and $b$ bytes per element, one sequence of length $T$ occupies
+$$K(T) \;=\; 2\,L\,n_{\text{kv}}\,d_h\,b\,T \ \text{bytes},$$
+the leading 2 being keys plus values. Section 33.2's worked case &mdash; $L=32$, $n_{\text{kv}}=8$, $d_h=128$, fp16 &mdash; gives $2 \times 32 \times 8 \times 128 \times 2 = 131{,}072$ bytes per token, exactly 128 KiB, so an 8,192-token sequence carries 1 GiB of cache. Multi-query attention is $n_{\text{kv}} = 1$; multi-head is $n_{\text{kv}} = $ the query head count. The formula is exact for standard attention and does <em>not</em> apply to multi-head latent attention, which caches a compressed joint representation instead. <span class="tag tag-certain">Certain</span></p>
+
+<h5>F.5.4 Arithmetic intensity, machine balance, roofline</h5>
+
+<p>For an operation performing $C$ FLOPs while moving $Q$ bytes to and from the memory level under consideration, the arithmetic intensity is $I = C/Q$. Given peak throughput $\pi$ FLOP/s and bandwidth $\beta$ bytes/s, the machine balance is $B^{*} = \pi/\beta$ and the attainable rate is bounded by
+$$P \;\le\; \min(\pi,\ \beta I),$$
+so the operation is memory-bound exactly when $I &lt; B^{*}$. Two traps: $Q$ is traffic at a <em>specified</em> level, so an operation memory-bound against HBM may be compute-bound against L2; and $\pi$ must be the peak for the precision actually issued, which is why the dense-versus-sparse distinction in F.1 changes conclusions rather than decorating them. Square bf16 matmul has $I \approx n/3$, giving the compute-bound threshold $n \ge 3B^{*}$; batch-1 decode has $I \approx 1$ regardless of model size. <span class="tag tag-certain">Certain</span></p>
+
+<h5>F.5.5 Ring all-reduce volume</h5>
+
+<p>Over $P$ workers all-reducing $S$ bytes, the ring algorithm runs a reduce-scatter and an all-gather, each $P-1$ steps of $S/P$ bytes, so each worker transmits
+$$V \;=\; 2\,\frac{P-1}{P}\,S \ \text{bytes}, \qquad t \;=\; 2(P-1)\alpha \;+\; 2\,\frac{P-1}{P}\,S\beta$$
+in the $\alpha$&ndash;$\beta$ model. This is bandwidth-optimal (Theorem 32.1). The bytes saturate at $2S$ as $P$ grows &mdash; going from $P=8$ to $P=8000$ increases per-worker traffic by about 14% &mdash; while the latency term grows linearly in $P$, which is why rings win on large tensors and lose on small ones, and why hierarchical and tree collectives exist. <span class="tag tag-certain">Certain</span></p>
+
+<h5>F.5.6 The pass@$k$ estimator</h5>
+
+<p>For an i.i.d. sampler with per-problem success probability $p$, $\text{pass@}k = 1 - (1-p)^k$. Given $n \ge k$ samples of which $c$ verify correct, the unbiased estimator (Chen et al., 2021) is
+$$\widehat{\text{pass@}k} \;=\; 1 - \frac{\binom{n-c}{k}}{\binom{n}{k}} \;=\; 1 - \prod_{j=0}^{k-1}\frac{n-c-j}{n-j},$$
+and the product form is the one to implement: the binomial coefficients overflow for the $n$ used in coverage studies. The plug-in alternative $1-(1-c/n)^k$ is biased <em>downward</em> &mdash; $1-(1-p)^k$ is concave in $p$, so Jensen's inequality puts $\mathbb{E}[1-(1-c/n)^k] \le 1-(1-p)^k$ &mdash; and the bias grows as $k$ approaches $n$: at $p = 0.05$, $n = 64$, $k = 32$ it is $-0.08$ against a true value of $0.81$, exactly the regime where pass@$k$ inversion claims between base and RL-tuned models are decided. Section 28.3 also insists on the interpretive point: pass@$k$ at large $k$ measures the sampler's support, not its reliability. <span class="tag tag-certain">Certain</span></p>
+
+<h5>F.5.7 CKKS depth accounting</h5>
+
+<p>Each ciphertext&ndash;ciphertext multiplication consumes one level from a fixed budget, so a circuit of multiplicative depth $d$ requires at least $d$ levels and refreshing the budget requires bootstrapping. Summing the per-layer ledger of Section 38.4 over $L$ layers gives the per-token depth $d_{\text{tok}}$; for the twelve-layer geometry of Section 41.4, twenty-one levels per block gives $d_{\text{tok}} = 252$, and with $B = 18$ usable levels that is $252/18 = 14$ bootstraps per token. Over $T$ tokens the total depth is $D = T\,d_{\text{tok}}$ and greedy scheduling performs
+$$\left\lceil \frac{D}{B} \right\rceil - 1 \ \text{bootstraps}$$
+by Theorem 41.1 &mdash; $\lceil 258{,}048/18 \rceil - 1 = 14{,}335$ for $T = 1024$. Two companions. A ciphertext at level $\ell$ in RNS with $w$-byte limbs occupies $2N\ell w$ bytes, which is why an encrypted KV cache runs two orders of magnitude above its fp16 counterpart. And baby-step&ndash;giant-step reduces the Halevi&ndash;Shoup diagonal matvec from $d-1$ rotations to $n_1 + n_2 - 2 \approx 2\sqrt{d}$ &mdash; 4,095 down to 126 at $d = 4096$ (Theorem 38.1). Depth is the currency; rotations are the tax. <span class="tag tag-certain">Certain</span></p>
+
+<h4>F.6 Re-verifying this appendix</h4>
+
+<p>The tables above were built by fetching primary sources, not by recall. Rebuilding them takes under an hour. Fetch the vendor datasheets for F.1 and recompute $B^{*}$ yourself rather than trusting a quoted balance point; pull the model cards and technical reports named in F.2 by their arXiv identifiers; fetch the provider pricing pages for F.3 on the day you need them; and for F.4 read the protocol section of each paper before copying its number. A minimal harness:</p>
+
+<pre><code>mkdir -p refcheck &amp;&amp; cd refcheck
+printf '%s\n' 2407.21783 2401.04088 2412.19437 2508.10925 2503.19786 \
+              2405.00332 2501.00656 2509.16941 \
+  | xargs -I ID curl -sL -o ID.pdf https://arxiv.org/pdf/ID
+python - &lt;&lt;'PY'
+specs = {                       # (dense bf16 TFLOP/s, HBM TB/s)
+    "H100 SXM": (989.0, 3.35),
+    "H200 SXM": (989.0, 4.80),
+    "B200 SXM": (2250.0, 7.70),
+    "TPU v5p":  (459.0, 2.765),
+    "TPU v7":   (2307.0, 7.37),
+}
+for name, (pi, beta) in specs.items():
+    print(f"{name:10s} B* = {pi / beta:6.1f} FLOPs/byte")
+PY</code></pre>
+
+<p>When a row changes, change it here and nowhere else. That is the contract this appendix is written under, and the reason Chapter 30 states a balance point in prose while this appendix states the bandwidth it came from.</p>
+
+</div>
 <!-- APPENDICES_END -->
 
 </div><!-- .book-container -->
