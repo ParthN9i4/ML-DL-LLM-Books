@@ -1,0 +1,245 @@
+<div class="chapter" id="appendix-a">
+<div class="chapter-header"><div class="ch-label">Appendix A</div><h3>Notation and Mathematical Prerequisites</h3></div>
+
+<p>This appendix is the book's single notation authority. Every symbol below carries the chapter where it is <em>first used in earnest</em>; where a symbol is used loosely before it is defined formally, the defining chapter follows in parentheses. The inventory was harvested mechanically from the assembled text of Chapters 1&ndash;37 &mdash; 208 distinct mathematical atoms occurring eight or more times <span class="tag tag-verify">Verify</span> &mdash; then extended against Chapters 38&ndash;41 by hand. Dummy indices and symbols local to one derivation are collapsed rather than listed. Read Section A.3 before Part V: the book reuses several letters for genuinely different quantities, and one of those reuses &mdash; $\beta$ &mdash; will bite you. Sections A.4 through A.6 are refreshers, not courses; A.7 says what is assumed and where to get it.</p>
+
+<h4>A.1 Book-Wide Conventions</h4>
+
+<p>Seven conventions hold everywhere unless a chapter says otherwise.</p>
+
+<p><strong>Vectors are columns.</strong> $x \in \mathbb{R}^{n}$ is an $n \times 1$ object. Weight matrices act on the left: $y = Wx$, so $W \in \mathbb{R}^{d_{\text{out}} \times d_{\text{in}}}$. An inner product is $u^{\top}v$; an outer product is $uv^{\top}$.</p>
+
+<p><strong>Layer index is a parenthesized superscript.</strong> Chapter 10 fixes the MLP recursion as $z^{(l)} = W^{(l)}a^{(l-1)} + b^{(l)}$, $a^{(l)} = \phi(z^{(l)})$, and every later chapter inherits it. A bare superscript is a power; a parenthesized one is a layer. Head index, where it collides with layer index, is also parenthesized: $W_q^{(h)}$ in Chapter 18.</p>
+
+<p><strong>Transpose is $\top$ &mdash; except in Chapter 1.</strong> Chapter 1 writes $A^{\mathsf{T}}$; Chapters 3 onward write $A^{\top}$. The two glyphs mean the same thing. <span class="tag tag-certain">Certain</span> The same small inconsistency exists for the indicator: Chapter 8 writes $\mathbb{1}[\,\cdot\,]$, Chapter 10 writes $\mathbf{1}[\,\cdot\,]$.</p>
+
+<p><strong>Batched math puts examples in columns; batched code puts them in rows.</strong> Chapter 10's backward pass carries activations as $A^{(l)} \in \mathbb{R}^{d_l \times B}$ and error signals as $\delta^{(l)} \in \mathbb{R}^{d_l \times B}$, so $\partial\mathcal{L}/\partial W^{(l)} = \delta^{(l)}A^{(l-1)\top}$ has the shape of $W^{(l)}$ with no transposes to guess at. NumPy and PyTorch store the batch first, shape $(B, d)$, and Chapter 11 works in that layout. Attention (Chapter 18) is a third case: $Q \in \mathbb{R}^{n_q \times d_k}$ stores one token per <em>row</em>, which is why the score matrix is $QK^{\top}$ and not $Q^{\top}K$.</p>
+
+<p><strong>Logarithms are natural unless subscripted.</strong> $\log = \ln$, and information quantities are therefore in nats (Chapter 2). Chapter 23 switches to $\log_2$ explicitly for perplexity and bits-per-byte, and says so.</p>
+
+<p><strong>Asymptotics are worst case unless stated.</strong> See A.6.</p>
+
+<p><strong>Hats and bars.</strong> $\hat{\cdot}$ is an estimate ($\hat{R}_S$, the empirical risk, Chapter 3) <em>or</em> a bias-corrected quantity ($\hat{m}_t$, Chapter 13). $\bar{\cdot}$ is an adjoint &mdash; a reverse-mode cotangent, $\bar{v}_i = \partial\mathcal{L}/\partial v_i$ (Chapter 11).</p>
+
+<h4>A.2 The Symbol Table</h4>
+
+<p>Part membership, where it helps: Part I is Chapters 1&ndash;5, Part II 6&ndash;9, Part III 10&ndash;15, Part IV 16&ndash;21, Part V 22&ndash;29, Part VI 30&ndash;34, Part VII 35&ndash;37, Part VIII 38&ndash;42.</p>
+
+<h5>A.2.1 Operators, sets, and structure</h5>
+
+<table>
+<tr><th>Symbol</th><th>Meaning</th><th>First used</th></tr>
+<tr><td>$\mathbb{R}$, $\mathbb{R}^{m\times n}$</td><td>reals; real matrices of that shape</td><td>1</td></tr>
+<tr><td>$I$</td><td>identity matrix</td><td>1</td></tr>
+<tr><td>$A^{\top}$, $A^{\mathsf{T}}$</td><td>transpose</td><td>1</td></tr>
+<tr><td>$\odot$</td><td>elementwise (Hadamard) product</td><td>1</td></tr>
+<tr><td>$\|\cdot\|_2$, $\|\cdot\|_F$</td><td>spectral/Euclidean norm; Frobenius norm</td><td>1</td></tr>
+<tr><td>$\delta_{ij}$</td><td>Kronecker delta</td><td>1</td></tr>
+<tr><td>$O$, $\Omega$, $\Theta$, $\tilde{O}$</td><td>asymptotic upper, lower, tight, polylog-suppressed</td><td>1, 3, 4, 21</td></tr>
+<tr><td>$\nabla$, $\nabla_W$</td><td>gradient; gradient with respect to a named variable</td><td>4, 6</td></tr>
+<tr><td>$\mathcal{L}$, $\ell$</td><td>total loss; per-example loss</td><td>2</td></tr>
+<tr><td>$\phi$, $\sigma(\cdot)$</td><td>activation function; logistic sigmoid</td><td>2</td></tr>
+<tr><td>$\mathbb{1}[\,\cdot\,]$, $\mathbf{1}[\,\cdot\,]$</td><td>indicator of a predicate</td><td>8, 10</td></tr>
+</table>
+
+<h5>A.2.2 Linear algebra and the cost model (Chapter 1)</h5>
+
+<table>
+<tr><th>Symbol</th><th>Meaning</th><th>First used</th></tr>
+<tr><td>$A$, $B$, $C$</td><td>matrix operands of a product; $m$, $n$, $k$ its dimensions</td><td>1</td></tr>
+<tr><td>$U$, $\Sigma$, $V$</td><td>SVD factors, $A = U\Sigma V^{\mathsf{T}}$</td><td>1</td></tr>
+<tr><td>$\sigma_i$, $\sigma_1$</td><td>singular values, descending; $\sigma_1$ the largest</td><td>1</td></tr>
+<tr><td>$u_i$, $v_i$</td><td>left and right singular vectors</td><td>1</td></tr>
+<tr><td>$\Lambda$, $\lambda_i$</td><td>eigenvalue matrix; $i$-th eigenvalue</td><td>1</td></tr>
+<tr><td>$\rho(A)$</td><td>spectral radius</td><td>1</td></tr>
+<tr><td>$\kappa_2(A)$</td><td>2-norm condition number</td><td>1</td></tr>
+<tr><td>$F$, $Q$, $I$</td><td>FLOP count, bytes moved, arithmetic intensity $I = F/Q$</td><td>1</td></tr>
+<tr><td>$P$, $\text{BW}$, $\beta$</td><td>peak FLOP rate, peak bandwidth, machine balance $\beta = P/\text{BW}$</td><td>1</td></tr>
+<tr><td>$M$</td><td>fast-memory capacity in the communication lower bound</td><td>1</td></tr>
+</table>
+
+<h5>A.2.3 Probability and information (Chapter 2)</h5>
+
+<table>
+<tr><th>Symbol</th><th>Meaning</th><th>First used</th></tr>
+<tr><td>$p$, $q$</td><td>true and model distributions (density or pmf, undistinguished)</td><td>2</td></tr>
+<tr><td>$x \sim p$, $\mathbb{E}_{x\sim p}$</td><td>sampling; expectation under a named law</td><td>2</td></tr>
+<tr><td>$\mathbb{E}$, $\mathrm{Var}$</td><td>expectation, variance</td><td>2</td></tr>
+<tr><td>$\mathcal{N}(\mu,\sigma^2)$</td><td>Gaussian; $\mathcal{N}(0,\tau^2 I)$ isotropic</td><td>2</td></tr>
+<tr><td>$H(p)$, $H(p,q)$</td><td>entropy; cross-entropy of $q$ relative to $p$</td><td>2</td></tr>
+<tr><td>$D_{\mathrm{KL}}(p\|q)$</td><td>Kullback&ndash;Leibler divergence</td><td>2</td></tr>
+<tr><td>$\theta$, $w$</td><td>parameters (generic; $w$ preferred in Parts I&ndash;II)</td><td>2, 1</td></tr>
+<tr><td>$\mathcal{D}$, $\mathcal{X}$, $\mathcal{Y}$</td><td>data distribution; input and label spaces</td><td>2, 3</td></tr>
+<tr><td>$z$, $Z$</td><td>latent variable; normalizing constant / partition function</td><td>2</td></tr>
+<tr><td>$\lambda$, $\tau$</td><td>regularization strength; Gaussian prior scale, $\lambda = 1/(2\tau^2)$</td><td>2</td></tr>
+</table>
+
+<h5>A.2.4 Learning theory (Chapter 3)</h5>
+
+<table>
+<tr><th>Symbol</th><th>Meaning</th><th>First used</th></tr>
+<tr><td>$\mathcal{H}$, $\mathcal{F}$</td><td>hypothesis class; class of real-valued functions</td><td>3</td></tr>
+<tr><td>$h$, $S$</td><td>a hypothesis; a training sample of size $n$</td><td>3</td></tr>
+<tr><td>$R(h)$, $\hat{R}_S(h)$</td><td>population risk; empirical risk on $S$</td><td>3</td></tr>
+<tr><td>$\epsilon$, $\delta$</td><td>PAC accuracy and failure probability</td><td>3</td></tr>
+<tr><td>$\sigma_i$</td><td>Rademacher signs, uniform on $\{-1,+1\}$</td><td>3</td></tr>
+<tr><td>$\hat{\mathfrak{R}}_S(\mathcal{F})$</td><td>empirical Rademacher complexity</td><td>3</td></tr>
+<tr><td>$\Phi$</td><td>design / feature matrix, $\Phi \in \mathbb{R}^{n\times p}$</td><td>3</td></tr>
+</table>
+
+<h5>A.2.5 Optimization and training (Parts I and III)</h5>
+
+<table>
+<tr><th>Symbol</th><th>Meaning</th><th>First used</th></tr>
+<tr><td>$\eta$</td><td>learning rate / step size</td><td>4</td></tr>
+<tr><td>$\mu$, $L$, $\kappa$</td><td>strong-convexity constant, smoothness constant, $\kappa = L/\mu$</td><td>4</td></tr>
+<tr><td>$\beta$</td><td>heavy-ball / Nesterov momentum coefficient</td><td>4</td></tr>
+<tr><td>$w_t$, $\theta_t$</td><td>iterate at step $t$</td><td>4, 7</td></tr>
+<tr><td>$B$, $B_{\text{noise}}$</td><td>batch size; gradient noise scale (the ratio $B/B_{\text{noise}}$ is what matters)</td><td>4</td></tr>
+<tr><td>$B_{\text{crit}}$</td><td>critical batch size</td><td>15</td></tr>
+<tr><td>$g_t$, $b_t$</td><td>stochastic gradient at step $t$; heavy-ball buffer, $b_t = \mu b_{t-1} + g_t$</td><td>13</td></tr>
+<tr><td>$m_t$, $v_t$</td><td>Adam first and second moment buffers</td><td>13 (4)</td></tr>
+<tr><td>$\beta_1$, $\beta_2$</td><td>Adam moment decay rates</td><td>13</td></tr>
+<tr><td>$\varepsilon$</td><td>Adam denominator floor</td><td>13</td></tr>
+<tr><td>$\rho_i$</td><td>per-coordinate gradient signal-to-noise ratio $|\mu_i|/\sigma_i$</td><td>13</td></tr>
+<tr><td>$P_t$</td><td>preconditioner (Shampoo, SOAP, Muon)</td><td>13</td></tr>
+<tr><td>$\eta_{\text{eff}}$</td><td>effective learning rate under scale invariance</td><td>14</td></tr>
+<tr><td>$l$, $d_l$, $L$</td><td>layer index, width of layer $l$, number of layers</td><td>10</td></tr>
+<tr><td>$a^{(l)}$, $z^{(l)}$, $\delta^{(l)}$</td><td>post-activation, pre-activation, backprop error signal</td><td>10</td></tr>
+<tr><td>$J$</td><td>Jacobian, $J(x) \in \mathbb{R}^{m\times n}$ for $f:\mathbb{R}^n\to\mathbb{R}^m$</td><td>11</td></tr>
+<tr><td>$n_{\text{in}}$, $\sigma_l$</td><td>fan-in; per-layer initialization standard deviation</td><td>12</td></tr>
+</table>
+
+<h5>A.2.6 Architecture, scale, and systems (Parts IV&ndash;VII)</h5>
+
+<table>
+<tr><th>Symbol</th><th>Meaning</th><th>First used</th></tr>
+<tr><td>$d$, $d_{\text{model}}$</td><td>residual-stream width. Parts IV&ndash;VI mostly write the bare $d$</td><td>1 (18)</td></tr>
+<tr><td>$d_{\text{ff}}$</td><td>feed-forward inner width, conventionally $4d$</td><td>1 (18)</td></tr>
+<tr><td>$n$, $T$</td><td>sequence length (interchangeable; $T$ dominates in Parts I and VI, $n$ in Part IV)</td><td>1</td></tr>
+<tr><td>$N$, $D$, $C$</td><td>parameter count, training tokens, training compute in FLOPs</td><td>1 (10, 24)</td></tr>
+<tr><td>$C_{\text{in}}$, $C_{\text{out}}$, $k_l$, $j_l$, $r_l$</td><td>conv channels in/out; kernel size, jump (cumulative stride), receptive field at layer $l$</td><td>16</td></tr>
+<tr><td>$h_t$, $c_t$, $f_t$, $z_t$, $W_h$</td><td>RNN hidden state, LSTM cell state, forget and update gates, recurrent weight</td><td>17</td></tr>
+<tr><td>$Q$, $K$, $V$, $A$, $M$</td><td>queries, keys, values, attention matrix, additive mask</td><td>18</td></tr>
+<tr><td>$H$, $H_{kv}$, $d_k$, $d_h$, $W_o$</td><td>heads, key/value heads, key dimension, per-head width $d_h = d/H$, output projection</td><td>18 (12)</td></tr>
+<tr><td>$R_n$, $A_m$, $T_{\text{train}}$, $\theta_i$</td><td>RoPE rotation at position $n$, relative rotation, pretraining context length, RoPE frequencies</td><td>19</td></tr>
+<tr><td>$\Delta_t$, $A_t$, $B_t$</td><td>SSM discretization step and selective state matrices</td><td>21</td></tr>
+<tr><td>$f_e$, $P_e$</td><td>MoE: fraction of tokens routed to expert $e$; mean gate probability for $e$</td><td>22</td></tr>
+<tr><td>$n_T$, $n_B$</td><td>tokens and bytes in an evaluation corpus (perplexity vs. bits-per-byte)</td><td>23</td></tr>
+<tr><td>$E$, $A$, $B$, $\alpha$, $\beta$</td><td>Chinchilla fit constants in $\mathcal{L}(N,D) = E + AN^{-\alpha} + BD^{-\beta}$</td><td>24</td></tr>
+<tr><td>$\pi_\theta$, $\pi_{\text{ref}}$, $\beta$</td><td>policy, reference (SFT) policy, KL coefficient</td><td>27</td></tr>
+<tr><td>$y_w$, $y_l$, $Z(x)$, $r_\phi$</td><td>preferred and dispreferred completion, partition function, learned reward model</td><td>27</td></tr>
+<tr><td>$B_r$, $\ell_i$, $\tilde{O}_i$</td><td>FlashAttention query-block rows, running softmax denominator, unnormalized accumulator</td><td>31</td></tr>
+<tr><td>$B_{\text{blk}}$</td><td>PagedAttention KV block size in tokens</td><td>33</td></tr>
+<tr><td>$x_0$, $\alpha_t$, $\sigma_t$, $u_t$</td><td>diffusion: clean sample, noise schedule coefficients, velocity field</td><td>35</td></tr>
+</table>
+
+<h5>A.2.7 Part VIII: computing under encryption (Chapters 38&ndash;41)</h5>
+
+<table>
+<tr><th>Symbol</th><th>Meaning</th><th>First used</th></tr>
+<tr><td>$N$</td><td>CKKS ring dimension; a ciphertext holds $N/2$ complex slots</td><td>38</td></tr>
+<tr><td>$L$</td><td>level budget (also, as everywhere, transformer layer count &mdash; both appear in Chapter 38)</td><td>38</td></tr>
+<tr><td>$n_1$, $n_2$</td><td>baby-step/giant-step factorization, $d = n_1 n_2$; rotation count $n_1 + n_2 - 2$</td><td>38</td></tr>
+<tr><td>$\Delta$</td><td>CKKS scale factor; effective precision is $\log_2(\Delta/\|e\|)$</td><td>41</td></tr>
+<tr><td>$\ell$</td><td>current level, equivalently RNS limb count; ciphertext bytes are $2N\ell w$</td><td>41</td></tr>
+<tr><td>$d_{\text{tok}}$, $d_{\text{layer}}$</td><td>multiplicative depth consumed per token and per layer, $d_{\text{tok}} = L\,d_{\text{layer}}$</td><td>41</td></tr>
+<tr><td>$B$, $p_{\text{boot}}$, $\lambda$</td><td>levels available between bootstraps, precision immediately after a bootstrap, bits lost per level</td><td>41</td></tr>
+</table>
+
+<h4>A.3 Collisions You Will Actually Hit</h4>
+
+<p>A book spanning numerical linear algebra, statistical learning theory, and lattice cryptography cannot give every quantity its own letter. What it can do is say where the reuses are. Each row below was read off the manuscript.</p>
+
+<div class="warning-box">
+<div class="box-title">Common Pitfall</div>
+<p>$\beta$ is the worst offender, and it is worst precisely where readers move fastest. In Chapter 13 it is the pair of Adam moment decay rates, $m_t = \beta_1 m_{t-1} + (1-\beta_1)g_t$ and $v_t = \beta_2 v_{t-1} + (1-\beta_2)g_t\odot g_t$, with defaults near $0.9$ and $0.999$ &mdash; a number close to $1$ whose distance from $1$ sets an averaging window. In Chapter 27 it is the KL coefficient of the regularized objective $\mathbb{E}[r(x,y)] - \beta\,\mathrm{KL}(\pi\|\pi_{\text{ref}})$, whose optimum is $\pi^*(y|x) \propto \pi_{\text{ref}}(y|x)\exp(r(x,y)/\beta)$ &mdash; a temperature, typically $0.01$ to $0.5$, where smaller means sharper and further from the reference. They are unrelated. A DPO implementation that reads $\beta$ from an Adam config, or a reviewer who assumes the DPO $\beta$ should be "close to $1$ like Adam's", is making a category error. And $\beta$ has three more lives: machine balance $\beta = P/\text{BW}$ in Chapter 1, the momentum coefficient in Chapter 4 (which Chapter 13 then renames $\mu$), and the data-side exponent in Chapter 24's $\mathcal{L}(N,D) = E + AN^{-\alpha} + BD^{-\beta}$. <span class="tag tag-certain">Certain</span></p>
+</div>
+
+<table>
+<tr><th>Symbol</th><th>Meanings, by chapter of use</th></tr>
+<tr><td>$\beta$</td><td>machine balance (1) &middot; momentum (4) &middot; Adam decay rates (13) &middot; scaling-law data exponent (24) &middot; KL coefficient (27)</td></tr>
+<tr><td>$N$</td><td>matrix dimension (1) &middot; parameter count (1, 10, 24) &middot; SSM state dimension (21) &middot; CKKS ring dimension (38)</td></tr>
+<tr><td>$L$</td><td>smoothness constant (4) &middot; number of layers (10) &middot; CKKS level budget (38)</td></tr>
+<tr><td>$B$</td><td>matrix operand (1) &middot; batch size (4) &middot; scaling-law data coefficient (24) &middot; block rows $B_r$ (31) &middot; levels between bootstraps (41)</td></tr>
+<tr><td>$C$</td><td>matrix operand (1) &middot; SVM box constraint (7) &middot; training compute in FLOPs (10, 24) &middot; channel count $C_{\text{in}}$ (16)</td></tr>
+<tr><td>$T$</td><td>sequence length (1) &middot; number of leaves in a tree (8) &middot; trace length in an autodiff program (11)</td></tr>
+<tr><td>$I$</td><td>identity matrix and arithmetic intensity $I=F/Q$ &mdash; both in Chapter 1</td></tr>
+<tr><td>$P$</td><td>peak FLOP rate (1) &middot; matrix of predicted probabilities (6) &middot; preconditioner $P_t$ (13) &middot; expert gate mass $P_e$ (22)</td></tr>
+<tr><td>$Q$</td><td>bytes moved across the memory boundary (1) &middot; query matrix (18)</td></tr>
+<tr><td>$M$</td><td>fast-memory capacity (1) &middot; mantissa bit count (5) &middot; attention mask (18)</td></tr>
+<tr><td>$\mu$</td><td>mean (2) &middot; strong-convexity constant (4) &middot; cluster centroid $\mu_j$ (9) &middot; momentum coefficient (13)</td></tr>
+<tr><td>$\sigma$</td><td>logistic sigmoid (2) &middot; singular value $\sigma_i$ (1) &middot; Rademacher sign $\sigma_i$ (3) &middot; noise level $\sigma_t$ (35)</td></tr>
+<tr><td>$\varepsilon$, $\epsilon$</td><td>perturbation size (1) &middot; PAC accuracy (3) &middot; unit roundoff, alongside $u$ (5) &middot; Adam floor (13)</td></tr>
+<tr><td>$\delta$</td><td>Kronecker delta and perturbation (1) &middot; PAC failure probability (3) &middot; backprop error signal $\delta^{(l)}$ (10)</td></tr>
+<tr><td>$\lambda$</td><td>eigenvalue (1) &middot; regularization strength (2) &middot; bits of precision lost per level (41)</td></tr>
+<tr><td>$\Theta$</td><td>asymptotic tight bound (4) &middot; the neural tangent kernel $\Theta_\infty(x,x')$ (7)</td></tr>
+<tr><td>$\Omega$</td><td>asymptotic lower bound (3) &middot; the monotone regularizer $\Omega(\|f\|)$ of the representer theorem (7)</td></tr>
+<tr><td>$\mathcal{H}$</td><td>hypothesis class (3) &middot; reproducing kernel Hilbert space (7)</td></tr>
+<tr><td>$\tilde{O}$</td><td>soft-O, polylog suppressed (21) &middot; FlashAttention's unnormalized output accumulator $\tilde{O}_i$ (31)</td></tr>
+<tr><td>$u$</td><td>left singular vector $u_i$ (1) &middot; unit roundoff (5)</td></tr>
+</table>
+
+<p>Two collisions the book resolves rather than tolerates. Chapter 7 needs an angle while $\theta$ is already the parameter vector, so it writes $\vartheta = \arccos\langle x,x'\rangle$ and says in the text that this is not the parameter vector; Chapter 13 needs a momentum coefficient while $\beta_1,\beta_2$ are spoken for, so heavy ball becomes $b_t = \mu b_{t-1} + g_t$. Extend the notation the same way: a visibly different glyph plus one sentence of disclaimer.</p>
+
+<h4>A.4 Matrix Calculus: Which Layout, and Why It Matters</h4>
+
+<p>There are exactly two conventions for the derivative of a vector by a vector, they differ by a transpose, and mixing them is the most common source of shape errors in hand-derived backward passes. <strong>Numerator layout</strong> (also "Jacobian layout"): for $y = f(x)$ with $y\in\mathbb{R}^m$, $x\in\mathbb{R}^n$, the derivative $\partial y/\partial x$ is $m\times n$ &mdash; one row per output. <strong>Denominator layout</strong>: the same object is $n\times m$. A scalar function's derivative is a row vector in the first convention and a column vector in the second.</p>
+
+<p>This book uses a hybrid, and it is the hybrid essentially all of machine learning uses. <em>Jacobians are numerator layout</em>: Chapter 11 defines $J(x)\in\mathbb{R}^{m\times n}$ for $f:\mathbb{R}^n\to\mathbb{R}^m$, so the forward-mode JVP is $\dot{x}\mapsto J(x)\dot{x}$ and the reverse-mode VJP is $w \mapsto w^{\top}J(x)$, equivalently $J(x)^{\top}w$. <em>Gradients of scalars are denominator layout</em>: $\nabla_\theta\mathcal{L}$ has exactly the shape of $\theta$. That is not an aesthetic choice. An optimizer computes $\theta \leftarrow \theta - \eta\,\nabla_\theta\mathcal{L}$, an elementwise operation, and it can only do that if gradient and parameter are shape-compatible. Every framework enforces it; so does this book.</p>
+
+<p>The two conventions cohabit through one rule, which generates every backward pass in the book: for a scalar loss, <em>the gradient pulls back through the transposed Jacobian</em>,</p>
+
+<p>$$\nabla_x\mathcal{L} \;=\; J^{\top}\,\nabla_z\mathcal{L}, \qquad z = f(x).$$</p>
+
+<p>Three instances cover most of a neural network. For $z = Wx$: $\partial\mathcal{L}/\partial x = W^{\top}(\partial\mathcal{L}/\partial z)$ and $\partial\mathcal{L}/\partial W = (\partial\mathcal{L}/\partial z)\,x^{\top}$. For an elementwise $a = \phi(z)$: $\bar{z} = \bar{a}\odot\phi'(z)$. For broadcasting and summation: they are transposes of each other, so the backward pass of a broadcast is a sum over the broadcast axis, and the backward pass of a sum is a broadcast. Chapter 11 states this as a slogan &mdash; broadcasting copies entries, its transpose sums them &mdash; and it is the rule that fixes bias gradients.</p>
+
+<p>Shapes settle every remaining index question. If you cannot decide whether a term needs a transpose, write the shapes: in Chapter 10, $\delta^{(l)}$ is $d_l\times B$ and $A^{(l-1)\top}$ is $B\times d_{l-1}$, so their product is $d_l \times d_{l-1}$ &mdash; the shape of $W^{(l)}$, with nothing left to decide.</p>
+
+<div class="warning-box">
+<div class="box-title">Common Pitfall</div>
+<p>The batch axis is where hand-derived gradients and running code diverge. The math in Chapter 10 is column-per-example, $A^{(l)} \in \mathbb{R}^{d_l\times B}$; NumPy and PyTorch are row-per-example, shape $(B,d)$. Transcribing $\partial\mathcal{L}/\partial W = \delta A^{\top}$ literally into row-major code gives a $(B,B)$ matrix instead of a $(d_{\text{out}},d_{\text{in}})$ one &mdash; which at least fails loudly. The silent version is the bias: its gradient arrives with shape $(B,d)$ and must be summed over the batch axis to $(1,d)$. Broadcasting will happily let an unsummed $(B,d)$ gradient be added to a $(1,d)$ parameter in some frameworks, and you get a bias update that is $B$ times too large with no error message. Check every parameter gradient against finite differences before you trust a hand-written backward pass. <span class="tag tag-certain">Certain</span></p>
+</div>
+
+<p>For that finite-difference check, use the central difference $(\mathcal{L}(\theta + he_i) - \mathcal{L}(\theta - he_i))/2h$, whose truncation error is $O(h^2)$ against the forward difference's $O(h)$. Balancing truncation against rounding gives an optimal step near $\varepsilon_{\text{mach}}^{1/3}$, about $6\times10^{-6}$ in fp64 <span class="tag tag-certain">Certain</span>; compare relative error, not absolute, and do the check in double precision even when the model trains in bf16.</p>
+
+<h4>A.5 Probability Notation</h4>
+
+<p>The book is deliberately non-measure-theoretic. $p(x)$ denotes a density or a probability mass function according to context, and no distinction is drawn because no argument turns on one. Where a claim would need measure theory to state properly &mdash; the null-set argument for saddle escape in Chapter 4 is the clearest case &mdash; the chapter says so and gives the informal version.</p>
+
+<p>$x\sim p$ means $x$ is distributed as $p$; $\mathbb{E}_{x\sim p}[f(x)] = \sum_x p(x)f(x)$, with the subscript dropped when the law is unambiguous. $\mathrm{Var}$, $\mathrm{Cov}$ follow the same convention. Independent and identically distributed is abbreviated i.i.d., and $S \sim \mathcal{D}^n$ means a sample of $n$ i.i.d. draws.</p>
+
+<p>Information quantities, all from Chapter 2: entropy $H(p) = -\sum_x p(x)\log p(x)$; cross-entropy $H(p,q) = -\sum_x p(x)\log q(x) = \mathbb{E}_{x\sim p}[-\log q(x)]$; and $D_{\mathrm{KL}}(p\|q) = H(p,q) - H(p)$. The double bar in $D_{\mathrm{KL}}(p\|q)$ is a separator, not a norm, and the argument order matters: $D_{\mathrm{KL}}(p\|q)$ is mode-covering in $q$, $D_{\mathrm{KL}}(q\|p)$ mode-seeking, and Chapter 2 works the two-component Gaussian example that makes the difference concrete. Units are nats under $\log = \ln$ and bits under $\log_2$; a factor of $\ln 2 \approx 0.693$ separates the two and it accounts for a good fraction of the confusion in reported "loss" numbers across papers.</p>
+
+<p>Conditionals are $p(y|x)$, policies $\pi(y|x)$. Model-parameterized distributions carry the parameter as a subscript: $p_\theta$, $\pi_\theta$, $q_\phi$. An asterisk marks an optimum &mdash; $\pi^*$, $f^\star$, $N^*$ &mdash; and both glyphs mean the same thing.</p>
+
+<h4>A.6 Asymptotic Notation</h4>
+
+<p>$f = O(g)$ means $|f| \le c\,g$ for some constant $c$ and all sufficiently large argument; $f = \Omega(g)$ is the matching lower bound; $f = \Theta(g)$ is both; $\tilde{O}(g)$ suppresses polylogarithmic factors, as in Chapter 21's $\tilde{O}(N+T)$ for the S4 convolution. Bounds are worst case unless a chapter says otherwise. Three conventions on top of that.</p>
+
+<p><strong>Name the variable going to infinity.</strong> "$O(1)$" is meaningless on its own. Chapter 12's $\Theta(1)$ logit variance is $\Theta(1)$ <em>in the width</em>; Chapter 18's $O(n^2 d)$ attention cost is asymptotic <em>in sequence length</em> at fixed width. The same expression can be $O(1)$ in one variable and unbounded in another, and much of Part III turns on exactly that distinction.</p>
+
+<p><strong>Asymptotics classify algorithms; constants predict runtime.</strong> The book states both, and where they disagree the constant wins. Attention and the feed-forward block are $O(n^2d)$ and $O(nd^2)$; that comparison is useless until Chapter 18 supplies the coefficients ($4n^2d$ against a feed-forward term several times $d$) and locates the crossover at a sequence length a few times the residual width. Chapter 1 makes the same point in hardware: two algorithms with identical FLOP counts differ fiftyfold in wall-clock because one moves $2n^3$ words and the other $\Theta(n^3/\sqrt{M})$.</p>
+
+<p><strong>Watch for the overloads.</strong> $\Theta$ is also the neural tangent kernel (Chapter 7) and $\Omega$ is also the representer theorem's regularizer (Chapter 7) &mdash; and both overloads live in the same chapter. Disambiguate by arity: asymptotic $\Theta(\cdot)$ takes a growth rate, the NTK $\Theta_\infty(x,x')$ takes two data points.</p>
+
+<h4>A.7 What This Book Assumes, and Where to Get It</h4>
+
+<p>Assumed: linear algebra through eigendecomposition and the SVD, including what a matrix norm is; multivariable calculus, especially the chain rule for compositions of vector-valued maps; probability at the level of expectation, variance, conditioning, and Bayes' rule; enough real analysis to read a supremum, a limit, and a convexity argument without stumbling; and fluency in Python and NumPy, since every artifact is NumPy-first and the exercises are code.</p>
+
+<p>Not assumed, and built where needed: measure theory (never required); functional analysis (Chapter 7 constructs the RKHS it needs); convex optimization as a course (Chapter 4 derives its own rates); GPU programming (Chapters 30 and 31 start at the execution model); and any cryptography (Chapter 38 states the CKKS facts a transformer engineer needs and derives nothing about lattices).</p>
+
+<p>If a prerequisite is thin, these are the shortest routes to repair. For linear algebra: Strang's <em>Introduction to Linear Algebra</em> for the computational picture, Axler's <em>Linear Algebra Done Right</em> if you want the structural one; either is more than enough for Chapter 1. For probability: Blitzstein and Hwang's <em>Introduction to Probability</em>, or Wasserman's <em>All of Statistics</em> if you prefer density. For optimization: Boyd and Vandenberghe's <em>Convex Optimization</em>, free from the authors, of which Chapters 2&ndash;3 and 9 cover everything Chapter 4 assumes. For the machine-learning background: Goodfellow, Bengio, and Courville's <em>Deep Learning</em> remains the canonical treatment of Parts I&ndash;III, and Prince's <em>Understanding Deep Learning</em> is free and has the best diagrams in the field. For coding fluency before Part III, Karpathy's <em>Neural Networks: Zero to Hero</em> and Trask's <em>Grokking Deep Learning</em> both build backpropagation by hand, which is the single most useful thing you can do before Chapter 11. <span class="tag tag-certain">Certain</span></p>
+
+<p>To check a symbol's usage yourself rather than trusting this table, the manuscript is one HTML file and grep is sufficient:</p>
+
+<pre><code># first uses of a symbol, as fixed strings (-F, so braces are literal)
+grep -Fn 'd_{\text{model}}' ml-book.html | head -3
+
+# every chapter heading, to map a line number back to a chapter
+grep -n 'class="ch-label"' ml-book.html
+</code></pre>
+
+<p>The remaining appendices divide the rest of the reference material. Appendix B is environment setup: the pinned interpreter and packages every artifact was executed against, currently NumPy 2.4.6, SciPy 1.17.1, and a CPU build of PyTorch 2.13.0 <span class="tag tag-verify">Verify</span>. Appendix C collects the complete runnable code for all artifacts. Appendix D is sources and further reading, chapter by chapter; Appendix E is a reading crosswalk onto the companion texts and courses. Appendix F collects the dated reference numbers &mdash; hardware throughputs, prices, model sizes &mdash; that carry a <span class="tag tag-verify">Verify</span> tag in the body, so that when they go stale there is exactly one place to fix them.</p>
+
+</div>
