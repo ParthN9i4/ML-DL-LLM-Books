@@ -1,0 +1,357 @@
+<div class="chapter" id="ch42">
+<div class="chapter-header"><div class="ch-label">Chapter 42</div><h3>The Research Frontier: Where a Contribution Fits</h3></div>
+
+<div class="learning-objectives">
+<div class="lo-title">Learning Objectives</div>
+<ul>
+<li>Apply a fixed nine-point extraction template to read any paper in the encrypted-inference literature critically, and use it to decide in under an hour whether a result is load-bearing for your own work.</li>
+<li>Name the claims this literature routinely overstates &mdash; forward-pass-as-generation, fixed-degree accuracy, cross-system speedups, headline security levels &mdash; and state the experiment that would settle each.</li>
+<li>Derive the multiplicative-depth and rotation comparison between an attention block and a selective-scan SSM block under CKKS at matched width: $28$ levels ($T$-independent) versus $19 + \lceil \log_2 T \rceil$ levels under this chapter's counting conventions.</li>
+<li>Map the open problems &mdash; encrypted selective SSMs, encrypted MoE routing, scheme switching, encrypted PEFT, generation at depth &mdash; to the chapters of this book that set each one up.</li>
+<li>Implement the attention-versus-SSM encrypted-cost comparison in working code, with the parallel scan verified against the sequential recurrence and every depth claim asserted.</li>
+</ul>
+</div>
+
+<div class="read-alongside"><strong>Read alongside</strong> &mdash; Stanford <strong>CS336</strong> (Language Modeling from Scratch): the assignment discipline &mdash; build it, measure it, ablate it &mdash; is exactly the posture this chapter asks you to bring to a research problem. <strong>Raschka</strong>, <em>Build a Large Language Model (From Scratch)</em>: the from-scratch implementation habits transfer directly to building the encrypted-SSM block proposed here. For the CKKS mechanics this chapter uses without re-teaching, keep a dedicated FHE reference at hand &mdash; the OpenFHE paper (ePrint 2022/915) and its documentation are the practical choice.</div>
+
+<p>This is the last chapter, and it has one job: to show that the open problems in encrypted machine learning are not exotic. They are the places where this book's own chapters collide. Chapter 38 priced a transformer block in CKKS's currency of levels and rotations; Chapter 39 approximated the non-polynomial core; Chapters 40 and 41 surveyed the systems and the serving problem. Meanwhile, back in Part IV, Chapter 21 established that selective state space models match transformers on language modeling at linear cost in $T$ &mdash; using an associative scan of logarithmic depth and no softmax anywhere. Those two facts have an obvious product, and Section 42.3 computes it. Before that, Sections 42.1 and 42.2 equip you to read this fast-moving literature without being misled, and Sections 42.4 and 42.5 lay out five open problems and three concrete entry points, each mapped to the chapters that prepare you for it.</p>
+
+<h4>42.1 How to Read This Literature</h4>
+
+<p>The encrypted-inference literature is small enough to read exhaustively &mdash; a few dozen load-bearing papers &mdash; but it punishes casual reading, because the headline numbers are generated under wildly different conventions. Chapter 40 showed the failure concretely: latency figures across systems differ in threat model, sequence length, hardware, and what is excluded from the clock, so they are not comparable, and any table that juxtaposes them without saying so is an error. The defense is a fixed extraction template. Fill in all nine fields before you let a paper update your beliefs; a field you cannot fill from the paper is itself a finding.</p>
+
+<table>
+<tr><th>#</th><th>Question</th><th>What to extract</th><th>Red flag</th></tr>
+<tr><td>1</td><td>Threat model</td><td>Who holds keys; what each party learns (weights? architecture? $T$? access pattern?)</td><td>"Privacy-preserving" with no adversary defined</td></tr>
+<tr><td>2</td><td>Scheme and parameters</td><td>CKKS/2PC/hybrid; ring dimension, level budget, scale; claimed security bits and the estimator used</td><td>Parameters absent or only "128-bit"</td></tr>
+<tr><td>3</td><td>Interactivity</td><td>Rounds, bandwidth, client compute; who evaluates the nonlinearities</td><td>Client secretly does the hard layers</td></tr>
+<tr><td>4</td><td>Encryption boundary</td><td>What is actually ciphertext end to end: embeddings? logits? the argmax?</td><td>Decryption mid-pipeline, mentioned in an appendix</td></tr>
+<tr><td>5</td><td>Approximation inventory</td><td>Every replaced non-polynomial, its degree, its interval, whether the model was retrained</td><td>"We approximate softmax" with no interval stated</td></tr>
+<tr><td>6</td><td>Accuracy accounting</td><td>Baseline identity: original model, or the retrained polynomial one? Which tasks, which $T$?</td><td>Accuracy vs. the already-modified plaintext model only</td></tr>
+<tr><td>7</td><td>What the clock includes</td><td>Key generation, encoding, encryption, transport, bootstrapping; amortized versus latency, and over what batch</td><td>"Amortized" with the batch size in a footnote</td></tr>
+<tr><td>8</td><td>Hardware parity</td><td>Threads/GPU for the encrypted run <em>and</em> for the plaintext baseline</td><td>Encrypted on 64 cores, baseline on 1</td></tr>
+<tr><td>9</td><td>Scaling claim</td><td>Measured sizes versus extrapolated ones; where depth, memory, or bootstrap count bends the curve</td><td>One point at $T=128$, a claim about "LLMs"</td></tr>
+</table>
+
+<p>Run the template on NEXUS (NDSS 2025), Chapter 40's reference non-interactive system, and it works exactly as intended: the paper reports a BERT-base forward pass in 37.3 s on GPU and 164 MB of bandwidth &mdash; and the template forces you to notice that this is field 4's forward pass, not generation (field 9), at a fixed short sequence length, with client-side costs outside the clock (field 7). <span class="tag tag-verify">Verify</span> None of that is a criticism of the paper, which states its conventions; it is a criticism of how such numbers get quoted. The template is also how Section 42.4's open-problem list was built: every "open" below is a field that no paper fills.</p>
+
+<h4>42.2 What Is Routinely Overclaimed</h4>
+
+<p>Five claims recur. Each is stated here with the experiment that would settle it &mdash; and each settling experiment is, deliberately, a publishable contribution.</p>
+
+<p><strong>One forward pass, sold as inference.</strong> "GPT-2 under FHE in $X$ minutes" almost always times one prefill. Chapter 41 showed why generation is a different problem: an encrypted KV cache, per-step repacking, and bootstrap placement across hundreds of sequential decode steps. Settling experiment: report per-token latency for a 64-token generation, encrypted cache included, decode step timed separately from prefill. Recent preprints have begun exactly this &mdash; Cachemir (arXiv 2602.11470) and CryptoGen (arXiv 2602.08798) both target encrypted KV-cache reuse &mdash; which is why the claim is now overclaimed rather than unexamined. <span class="tag tag-verify">Verify</span></p>
+
+<p><strong>Fixed-degree accuracy.</strong> "Our softmax replacement preserves accuracy" is validated at $T \le 128$ and quietly assumed to hold at $T = 8192$. Chapter 39 explained why it will not: the softmax denominator is a sum of $T$ exponentials, its dynamic range grows with $T$, and a polynomial fitted on a fixed interval degrades as its inputs leave that interval. Settling experiment: hold every degree fixed, sweep $T$, plot accuracy against $T$. To my knowledge no paper publishes this curve for a transformer under CKKS. <span class="tag tag-likely">Likely</span></p>
+
+<p><strong>Cross-system speedup ratios.</strong> "16&times; faster than [prior system]" where the two numbers share no model, hardware, threat model, or timing boundary. Chapter 40 dissected this; the settling experiment is a single-harness reimplementation under one threat model &mdash; tedious, unglamorous, and probably the highest-value service paper available in this field. <span class="tag tag-certain">Certain</span></p>
+
+<p><strong>Headline security.</strong> "128-bit secure" from a lattice estimator, while the protocol shares decryptions of approximate CKKS results. Li and Micciancio (EUROCRYPT 2021) showed that CKKS's approximation noise leaks secret-key information when decryptions are revealed; the fix &mdash; noise flooding &mdash; costs precision and must be parameterized and reported. Settling experiment: state the flooding parameters and the resulting effective precision, or state explicitly that decryptions are never shared. <span class="tag tag-certain">Certain</span></p>
+
+<p><strong>Counting models presented as measurements.</strong> This book's own genre. A depth-and-rotation model like Chapter 38's (and this chapter's artifact) predicts <em>ordering</em>, not wall clock: it weighs every level equally, ignores memory traffic, and ignores the fact that a rotation's cost depends on the level it happens at. Settling experiment: calibrate the counting model against per-operation microbenchmarks from a real library and report where the ordering it predicts survives contact. That is candidate B in Section 42.5.</p>
+
+<div class="warning-box"><div class="box-title">Common Pitfall</div>
+<p>Computing a block's multiplicative depth by summing the ledger instead of taking the critical path. Depth is the longest chain of ciphertext multiplications; parallel branches meet at $\max(\cdot)+1$, because CKKS lets you drop the fresher operand to the deeper operand's level for free. The first version of this chapter's artifact summed the SSM ledger and got $23 + \lceil \log_2 T \rceil$; the gate branch (SiLU on $z$) runs in parallel with the scan branch, and the true critical path is $19 + \lceil \log_2 T \rceil$. Four phantom levels is the difference between fitting a leveled parameter set and paying for a bootstrap. The same bug in reverse &mdash; treating serial softmax stages as parallel &mdash; flatters attention. Tag every value with its depth and propagate $\max$, as the artifact's scan simulation does; never add up a list by eye.</p></div>
+
+<h4>42.3 The SSM Opportunity: Depth Arithmetic</h4>
+
+<p>The CKKS facts this section uses, stated once (Chapter 38 derived them; a dedicated FHE text covers the cryptography): a ciphertext holds a vector of slots; plaintext&ndash;ciphertext and ciphertext&ndash;ciphertext multiplications each consume one level of a fixed budget after rescaling; rotations and additions consume none; a degree-$k$ polynomial costs $\lceil \log_2(k+1) \rceil$ levels via Paterson&ndash;Stockmeyer; and when the budget runs out, bootstrapping refreshes it at a cost of hundreds of milliseconds to seconds per ciphertext plus ~10&ndash;20 levels of overhead. Depth is the scarce resource; parallel work is nearly free.</p>
+
+<p>Now recall Chapter 21. A selective SSM (Mamba-style) processes a sequence through the recurrence $h_t = \bar A_t \odot h_{t-1} + \bar B_t \odot x_t$, where the decay $\bar A_t$ and input gate $\bar B_t$ are functions of the input &mdash; that is the selectivity &mdash; and the output is $y_t = C_t^\top h_t$, gated by $\mathrm{SiLU}(z_t)$. In the clear, its virtues are linear time and constant state. Under encryption, it has three virtues that matter more. First, <em>there is no softmax</em>: no $\exp$ over a $T \times T$ score matrix, no encrypted reciprocal of a sum whose range grows with $T$. The non-polynomial inventory shrinks to elementwise gates on inputs whose range is fixed by the preceding norm &mdash; precisely the case where Chapter 39's fixed-interval approximations are honest. Second, <em>there is no $T \times T$ object at all</em>: the largest tensor is the state sequence, $O(T \cdot d \cdot n_{\text{state}})$ versus attention's $O(H T^2)$ scores. Third, the recurrence is an associative scan, and associative scans have logarithmic depth.</p>
+
+<div class="definition"><div class="box-title">Definition 42.1 (Critical-path depth)</div>
+<p>For a circuit of ciphertext operations, the depth of a value is the length of the longest chain of level-consuming multiplications from any input to that value; the depth of a block is the maximum over its outputs. Parallel branches do not add: if $u$ and $v$ have depths $d_u, d_v$, then $u \odot v$ has depth $\max(d_u, d_v) + 1$.</p></div>
+
+<div class="theorem"><div class="box-title">Theorem 42.1 (Scan depth)</div>
+<p>Let $f_t(h) = a_t h + b_t$ with $a_t, b_t$ ciphertexts of depth $0$, and let $h_t = (f_t \circ \cdots \circ f_1)(h_0)$. The Hillis&ndash;Steele scan computes all of $h_1, \dots, h_T$ in exactly $\lceil \log_2 T \rceil$ levels, and no algorithm computes $h_T$ in fewer.</p>
+<p><strong>Proof.</strong> Represent $f_t$ by the pair $(a_t, b_t)$. Composition is $(a_2, b_2) \circ (a_1, b_1) = (a_2 a_1,\; a_2 b_1 + b_2)$, which is associative: composing three pairs in either order yields $(a_3 a_2 a_1,\; a_3 a_2 b_1 + a_3 b_2 + b_3)$. One composition costs two multiplications that can be executed in parallel, hence one level, with the new depth $\max$ of the operands' depths plus one. The scan performs stages $s = 1, 2, 4, \dots$: at stage $s$, every position $t \ge s$ composes with position $t - s$. By induction, after stage $2^j$ each position holds the composite of at most $2^{j+1}$ consecutive $f$'s at depth at most $j+1$, so $\lceil \log_2 T \rceil$ stages produce every prefix composite $h_t = A_t h_0 + B_t$. For the lower bound: $h_T$ contains the monomial $a_T a_{T-1} \cdots a_1 b_0'$-free term $\prod$-structure &mdash; concretely, $A_T = \prod_{t=1}^{T} a_t$ is a product of $T$ depth-$0$ ciphertexts, and any multiplication tree over $T$ leaves has depth at least $\lceil \log_2 T \rceil$. $\blacksquare$</p></div>
+
+<div class="example"><div class="box-title">Example 42.1 (A four-step scan by hand)</div>
+<p>Take $T=4$, $a = (0.5, 0.5, 0.5, 0.5)$, $b = (1,1,1,1)$, $h_0 = 0$. Sequentially: $h_1 = 1$, $h_2 = 1.5$, $h_3 = 1.75$, $h_4 = 1.875$. Scan, stage $s=1$ (positions $2..4$ compose with their left neighbor): $A = (0.5, 0.25, 0.25, 0.25)$, $B = (1, 1.5, 1.5, 1.5)$, depth tags $(0,1,1,1)$. Stage $s=2$ (positions $3, 4$ compose with positions $1, 2$): $A = (0.5, 0.25, 0.125, 0.0625)$, $B = (1,\; 1.5,\; 0.25 \cdot 1 + 1.5 = 1.75,\; 0.25 \cdot 1.5 + 1.5 = 1.875)$, depth tags $(0, 1, 2, 2)$. Two stages, matching $\lceil \log_2 4 \rceil = 2$, and $B$ equals the sequential $h$ exactly.</p></div>
+
+<h5>42.3.1 The two ledgers</h5>
+
+<p>Chapter 38's attention sub-block ledger, at degree-15 polynomials and 4 Goldschmidt iterations: norm ($1 + 8 + 1$), QKV projection ($1$), scale ($1$), $QK^\top$ ($1$), softmax $\exp$ ($4$), softmax reciprocal ($8$), normalize ($1$), attention-times-$V$ ($1$), output projection ($1$) &mdash; $28$ levels, independent of $T$, because the $T$-indexed work is all rotations and additions. The selective-SSM block at the same conventions: norm ($10$), input projection ($1$), depthwise convolution ($1$), gating polynomial for the decay and input gate ($4$), scan ($\lceil \log_2 T \rceil$), readout $C \odot h$ ($1$); in parallel, the SiLU gate branch reaches depth $15$; the branches merge at $\max(\cdot) + 1$, then the output projection adds one more. Critical path: $19 + \lceil \log_2 T \rceil$. The softmax-related line items &mdash; $\exp$, reciprocal, normalize, $13$ levels in the attention ledger &mdash; are zero by construction: there is no softmax to approximate.</p>
+
+<p>So neither block dominates. At these conventions the SSM wins depth strictly for $T \le 256$, ties through $T = 512$ ($28 = 28$), and loses from $T = 513$ up: $\lceil \log_2 T \rceil$ eventually exceeds a constant. But the constant is not constant. The attention figure holds the softmax approximation fixed while $T$ grows, and Section 42.2's second overclaim says exactly why that flatters it: raise the $\exp$ to degree 63 and the reciprocal to 6 iterations &mdash; a defensible budget for long sequences &mdash; and attention costs $34$ levels, which the SSM beats all the way to $T = 32768$. Meanwhile the SSM's $\lceil \log_2 T \rceil$ levels buy <em>exact</em> multiplications: the scan is arithmetic, not approximation, so its depth cost carries no accuracy cost, only CKKS's precision drift (Chapter 41), which is a calibration problem, not a degree problem. <span class="tag tag-likely">Likely</span> And depth is only one axis: the artifact's counting model puts attention at $3{,}777{,}024$ rotations and $\sim 3.39$M ciphertext multiplications per block at $T = 8192$ against the SSM's $132{,}864$ and $\sim 0.18$M &mdash; an $18.9\times$ multiplication gap that grows with $T$ because attention materializes $24{,}576$ score ciphertexts where the SSM's state sequence needs $6{,}144$.</p>
+
+<p>Has anyone built it? Almost, and honestly: not yet. Brito's "Public-Decay Homomorphic State Space Models for Private Sequence Inference" (arXiv 2605.16647, 2026) is, as far as I can determine, the first published encrypted-SSM inference result &mdash; and its central design choice concedes exactly the hard part. The decay is <em>public</em>: the state transition is a plaintext&ndash;ciphertext multiplication, keeping the recurrence cheap, and the model is evaluated sequentially over frozen fastText features on sentence classification. The paper reports 0.7505 and 0.7420 accuracy on Rotten Tomatoes and SST-2 with the encrypted path matching plaintext classifications exactly, and roughly $5\times$ lower latency than an HE-friendly polynomial-attention baseline on the same workload. <span class="tag tag-verify">Verify</span> That is a real data point in favor of the architecture-fit thesis &mdash; and it leaves the actual prize untouched: <em>selective</em> transitions, where $\bar A_t$ is itself a ciphertext, the scan's products are ciphertext&ndash;ciphertext, the depth analysis above becomes load-bearing, and the model class is the one that Chapter 21 showed matches transformers. Nobody has published that, at any scale, as of this writing. <span class="tag tag-verify">Verify</span></p>
+
+<h4>42.4 Open Problems, Mapped to Chapters</h4>
+
+<p>Five problems, each stated with its current state of the art (attributed, so you can check whether it has moved by the time you read this) and the chapters that equip you for it.</p>
+
+<table>
+<tr><th>Open problem</th><th>State of the art, as of writing</th><th>Chapters that equip you</th></tr>
+<tr><td>Encrypted <em>selective</em> SSM inference: ciphertext-gated transitions, log-depth scan, transformer-competitive scale</td><td>Public-decay HSSMs only (arXiv 2605.16647): plaintext transitions, sequential evaluation, small classifiers</td><td>17 (recurrence), 21 (selective SSMs, SSD), 38 (cost model), 39 (gate polynomials)</td></tr>
+<tr><td>Encrypted MoE routing: top-$k$ expert selection without revealing the route</td><td>CryptoMoE (NeurIPS 2025) via balanced routing and SecMoE (arXiv 2601.06790) via oblivious select-then-compute &mdash; both interactive MPC-side; no non-interactive FHE routing</td><td>22 (routing, load balancing), 39 (comparison/argmax), 40 (protocol taxonomy)</td></tr>
+<tr><td>Scheme switching as an ML systems problem: which layers run CKKS, which TFHE, and when switching amortizes</td><td>CHIMERA and PEGASUS established the bridges; OpenFHE ships CKKS&harr;FHEW switching; per-slot switching cost still dominates, and no compiler places switches for transformer-scale models</td><td>30 (thinking in cost models), 34 (quantization, which TFHE rewards), 38&ndash;39</td></tr>
+<tr><td>Encrypted PEFT: LoRA-style adaptation with gradients under encryption, non-interactively</td><td>Active: an encryption-friendly LLM architecture with HE LoRA fine-tuning (arXiv 2410.02486); PrivTuner's FHE+LoRA formulation (arXiv 2410.00433); interactive HE LoRA on Llama-3.2-1B (arXiv 2505.07329); federated selective-HE variants (SHE-LoRA, arXiv 2505.21051). Non-interactive training at depth remains open</td><td>11 (backprop), 26 (LoRA), 34 (quantized training), 41 (bootstrap placement)</td></tr>
+<tr><td>Generation at depth: autoregressive decoding with encrypted cache, argmax/sampling, and bootstrap scheduling across steps</td><td>EDEN's cutmax and HE nucleus sampling (Findings of IJCNLP-AACL 2025); encrypted-KV-cache preprints (arXiv 2602.11470, 2602.08798); no end-to-end long-generation system</td><td>33 (serving, speculative decoding), 39 (argmax), 41 (the whole chapter)</td></tr>
+</table>
+
+<p>Notice the pattern the table makes explicit: every row pairs a Part VIII chapter with a chapter from Parts III&ndash;VI. That is the thesis of this book's structure. The open problems are not cryptography problems that happen to mention ML, nor ML problems with encryption sprinkled on; each one is a collision between a specific piece of ML machinery and a specific line of the CKKS bill. <span class="tag tag-certain">Certain</span></p>
+
+<h4>42.5 Choosing a Problem: Three Concrete Candidates</h4>
+
+<p><strong>Candidate A &mdash; build the encrypted selective-SSM block.</strong> One Mamba-style block under RNS-CKKS in OpenFHE: RMSNorm via Goldschmidt, gate polynomials from Chapter 39's toolkit, the Hillis&ndash;Steele scan over packed ciphertexts, benchmarked at matched width against a polynomial attention block (Zimerman et al., ICML 2024, is the natural baseline recipe). The first milestone is deliberately small: block-level latency and precision at $T = 1024$, with the depth ledger measured, not asserted. The risk is also concrete: the scan's ciphertext&ndash;ciphertext products chain $\lceil \log_2 T \rceil$ rescalings, and precision drift across them (Chapter 41) is the experiment's real question &mdash; if effective precision collapses at $T = 8192$, that negative result is itself the paper. Equipped by Chapters 17, 21, 38, 39.</p>
+
+<p><strong>Candidate B &mdash; calibrate the crossover.</strong> Turn the counting model of Chapter 38 and this chapter into a measured cost atlas: per-operation microbenchmarks (multiply, rotate, rescale, bootstrap, at each level) from one library on one machine, then a validated predictor of block cost over $(T, d, \text{degrees}, \text{packing})$. This is the field's missing methods paper; it converts every cross-system comparison complaint in Section 42.2 into a tool, exactly as scaling-law methodology (Chapter 24) converted architecture debates into fits. Equipped by Chapters 24, 30, 38, 40, 41.</p>
+
+<p><strong>Candidate C &mdash; encrypted PEFT on an HE-friendly backbone.</strong> If candidate A works, LoRA on top of it: the backward pass of the SSM block is itself a scan (Chapter 17's BPTT, Chapter 11's reverse mode), so gradient computation inherits the same log-depth structure &mdash; adapters $\Delta W = BA$ with rank $r \ll d$ keep the optimizer state small enough to bootstrap sanely. The existing encrypted-LoRA line (Section 42.4) is interactive or federated; the non-interactive version on a backbone designed for depth is unclaimed. <span class="tag tag-verify">Verify</span> Equipped by Chapters 11, 26, 34, 38, 41.</p>
+
+<h4>42.6 Closing: The Two Books, Joined</h4>
+
+<p>There are two books inside this one. Parts I through VII are a book about learned functions: what they can represent, how they are trained, what they cost. Part VIII is a book about a compiler target &mdash; an arithmetic in which multiplication is metered, comparison is a research problem, and a forward pass is a circuit with a depth budget. Neither book is novel on its own; both have excellent dedicated treatments. The contribution surface is their join, and the join is computable: this chapter's final artifact is nothing but Chapter 38's cost model meeting Chapter 21's architecture, and it yields a concrete, falsifiable research pitch in two hundred lines of arithmetic. That is the general method being demonstrated, and it is the last thing this book has to teach. Take an object from the first book &mdash; a scan, a router, an adapter, a decoding loop. Price it in the second book's currency. Where the price is surprising and the literature is silent, you have found the frontier &mdash; and you are, at that moment, better equipped for it than almost anyone, because you have both books in your head at once.</p>
+
+<div class="artifact-box"><div class="box-title">Artifact 42.1 &mdash; The Research Pitch as Arithmetic</div>
+<p>This artifact extends Chapter 38's CKKS counting model &mdash; a counting model, not an FHE implementation; nothing is encrypted &mdash; with a selective-SSM block and compares it against the attention sub-block at matched width across $T \in \{128, 512, 2048, 8192\}$ under two softmax budgets. It verifies the Hillis&ndash;Steele scan against the sequential recurrence in NumPy, tracks a per-element depth tag to confirm Theorem 42.1, reproduces Chapter 38's 28-level attention figure, asserts the $19 + \lceil \log_2 T \rceil$ SSM depth law and the zero-softmax-levels property, computes the crossover interval under both scenarios, and prints the three candidate problems with their chapters.</p>
+<pre><code>"""Artifact 42.1 -- The research pitch as arithmetic.
+
+Extends the Chapter 38 CKKS COUNTING MODEL (no ciphertext is ever created)
+with a selective-SSM block and compares it against the attention sub-block
+at matched width across T in {128, 512, 2048, 8192}.
+
+Conventions inherited from Artifact 38.1: pt-ct mult = 1 level, ct-ct mult
+= 1 level, rotations/additions = 0 levels; a degree-k polynomial via
+Paterson-Stockmeyer costs ceil(log2(k+1)) levels; Goldschmidt reciprocal
+and rsqrt cost 2 levels per iteration.  Depth here is the CRITICAL PATH
+(parallel branches do not add), which is what CKKS actually charges.
+
+Self-checks: (1) a NumPy Hillis-Steele scan for h_t = a_t h_{t-1} + b_t is
+verified against the sequential recurrence, and a per-element depth tag is
+tracked through the scan to confirm max depth == ceil(log2 T); (2) the
+attention ledger reproduces the 28-level figure of Artifact 38.1; (3) the
+crossover interval is computed and asserted, not eyeballed.
+"""
+import numpy as np
+from math import ceil, log2, isqrt
+
+# ------------------------------------------------------------- depth atoms
+def poly_depth(k):   # Paterson-Stockmeyer depth of a degree-k polynomial
+    return ceil(log2(k + 1))
+
+def poly_mults(k):   # PS non-scalar mult count ~ sqrt(2k) + log2 k
+    return ceil((2 * k) ** 0.5) + max(0, ceil(log2(k + 1)) - 1)
+
+RSQ_D, RSQ_M = 2, 3          # Goldschmidt rsqrt: 2 levels, 3 mults / iter
+REC_D, REC_M = 2, 2          # Goldschmidt reciprocal: 2 levels, 2 mults / iter
+
+def rot_bsgs(d):             # BSGS rotations for one d x d pt-ct matvec
+    n1 = isqrt(d)
+    while d % n1:
+        n1 -= 1
+    return n1 + d // n1 - 2
+
+# ---------------------------------------------------- attention sub-block
+def attn_ledger(kx, r_ln, r_sm):
+    """(label, levels) chain; the attention path is a single serial chain."""
+    return [("norm variance (ct-ct square)",             1),
+            ("norm rsqrt, %d Goldschmidt iters" % r_ln,  RSQ_D * r_ln),
+            ("norm apply (ct-ct)",                       1),
+            ("Q,K,V projections (pt-ct)",                1),
+            ("scale by 1/sqrt(d_k) (pt)",                1),
+            ("Q K^T (ct-ct matmul)",                     1),
+            ("softmax exp poly deg %d" % kx,             poly_depth(kx)),
+            ("softmax reciprocal, %d iters" % r_sm,      REC_D * r_sm),
+            ("softmax normalize (ct-ct)",                1),
+            ("attention @ V (ct-ct matmul)",             1),
+            ("output projection W_O (pt-ct)",            1)]
+
+def attn_depth(kx, r_ln, r_sm):
+    return sum(v for _, v in attn_ledger(kx, r_ln, r_sm))
+
+def softmax_levels(ledger):
+    return sum(v for name, v in ledger if name.startswith("softmax"))
+
+# ---------------------------------------------------- selective-SSM block
+def ssm_ledger(T, kg, r_ln):
+    """Two parallel branches after the shared trunk; depth = critical path.
+    State path:  norm -&gt; in_proj -&gt; conv -&gt; gating poly (decay a_t and
+                 input gate, deg kg) -&gt; scan (ceil(log2 T)) -&gt; C (.) h.
+    Gate path:   norm -&gt; in_proj -&gt; SiLU poly (deg kg) on z.
+    Then y (.) gate (1 ct-ct) and out_proj (1 pt-ct).  NO softmax lines
+    exist by construction: no exp over scores, no reciprocal, no normalize."""
+    trunk = [("norm variance (ct-ct square)",            1),
+             ("norm rsqrt, %d Goldschmidt iters" % r_ln, RSQ_D * r_ln),
+             ("norm apply (ct-ct)",                      1),
+             ("in_proj to (x, z) (pt-ct)",               1)]
+    state = [("depthwise conv1d (pt-ct)",                1),
+             ("gating poly (decay+input), deg %d" % kg,  poly_depth(kg)),
+             ("parallel scan, ceil(log2 T) stages",      ceil(log2(T))),
+             ("readout C (.) h (ct-ct)",                 1)]
+    gate = [("SiLU poly on z, deg %d" % kg,              poly_depth(kg))]
+    tail = [("gated product y (.) SiLU(z) (ct-ct)",      1),
+            ("out_proj (pt-ct)",                         1)]
+    return trunk, state, gate, tail
+
+def ssm_depth(T, kg, r_ln):
+    trunk, state, gate, tail = ssm_ledger(T, kg, r_ln)
+    s = lambda part: sum(v for _, v in part)
+    return s(trunk) + max(s(state), s(gate)) + s(tail)
+
+# ----------------------------------- operation counts (rotations &amp; mults)
+def attn_ops(T, d, H, kx, r_ln, r_sm, slots):
+    dk = d // H
+    n_x = ceil(T * d / slots)               # activation ciphertexts
+    n_s = ceil(H * T * T / slots)           # T x T score ciphertexts (!)
+    n_kv = ceil(T * dk / slots)             # one head's K (or V)
+    rot = 4 * n_x * rot_bsgs(d) + 2 * H * T * (ceil(log2(T)) + ceil(log2(dk)))
+    mults = (2 * n_x + RSQ_M * r_ln                     # one norm
+             + 2 * H * T * n_kv                         # QK^T and attn@V
+             + poly_mults(kx) * n_s                     # exp on every score ct
+             + REC_M * r_sm + n_s)                      # reciprocal + normalize
+    return rot, mults, n_s
+
+def ssm_ops(T, d, kg, r_ln, slots, d_state=16, conv_k=4):
+    d_in = 2 * d                            # Mamba-style expansion factor 2
+    n_x = ceil(T * d / slots)
+    n_g = ceil(T * d_in / slots)            # gate/channel sequences
+    n_h = ceil(T * d_in * d_state / slots)  # the scanned state sequence
+    S = ceil(log2(T))
+    rot = (5 * n_x * rot_bsgs(d)            # in/out/x-dependent projections
+           + (conv_k - 1) * n_g             # depthwise conv shifts
+           + S * n_h)                       # one rotation per ct per stage
+    mults = (2 * n_x + RSQ_M * r_ln                     # norm
+             + poly_mults(kg) * (2 * n_g)               # gating + SiLU polys
+             + n_h                                      # b_t = Bbar (.) x write
+             + 2 * S * n_h                              # scan: 2 mults / stage
+             + n_h + n_g)                               # readout + gated product
+    return rot, mults, n_h
+
+# --------------------------------------------- scan verification (NumPy)
+def scan_check(T, lanes=4, rng=None):
+    """Hillis-Steele scan of f_t(h) = a_t h + b_t with per-element depth tags.
+    Returns (max residual vs sequential loop, number of stages, max depth)."""
+    a = 0.5 + 0.5 * rng.random((T, lanes))              # decays in (0.5, 1)
+    b = rng.standard_normal((T, lanes)) * 0.1
+    A, B, depth, s, stages = a.copy(), b.copy(), np.zeros(T, int), 1, 0
+    while s &lt; T:
+        A2, B2, d2 = A.copy(), B.copy(), depth.copy()
+        A2[s:] = A[s:] * A[:-s]                         # compose F_t o F_{t-s}
+        B2[s:] = A[s:] * B[:-s] + B[s:]                 # (2 mults, in parallel
+        d2[s:] = np.maximum(depth[s:], depth[:-s]) + 1  #  =&gt; +1 level)
+        A, B, depth, s, stages = A2, B2, d2, 2 * s, stages + 1
+    h_seq, h = np.zeros(lanes), np.zeros((T, lanes))    # sequential reference
+    for t in range(T):
+        h_seq = a[t] * h_seq + b[t]
+        h[t] = h_seq
+    return np.abs(B - h).max(), stages, depth.max()     # h0 = 0 =&gt; h_t = B_t
+
+# ------------------------------------------------------------------- main
+if __name__ == "__main__":
+    d, H, slots, r_ln, kg = 768, 12, 2 ** 15, 4, 15
+    grid = (128, 512, 2048, 8192)
+    scenarios = [("modest softmax  (exp deg 15, 4 recip iters)", 15, 4),
+                 ("faithful softmax (exp deg 63, 6 recip iters)", 63, 6)]
+
+    print("ASSUMPTIONS (every number below follows from these):")
+    for line in [
+        "counting model only -- no FHE library, nothing is encrypted",
+        "pt-ct mult / ct-ct mult = 1 level; rotations and adds = 0 levels",
+        "degree-k poly = ceil(log2(k+1)) levels (Paterson-Stockmeyer)",
+        "Goldschmidt: rsqrt &amp; reciprocal = 2 levels/iter; LayerNorm/RMSNorm "
+        "use %d iters" % r_ln,
+        "depth = critical path; parallel branches meet at max(.)+1",
+        "matched width d=%d, H=%d heads, slots=%d; SSM: expand 2x, "
+        "d_state=16, conv 4, gate polys deg %d" % (d, H, slots, kg),
+        "attention softmax degree held FIXED across T (Ch. 39: the honest "
+        "degree grows with T; that shifts the crossover toward the SSM)"]:
+        print("  - " + line)
+
+    print("\n=== Scan self-check: parallel == sequential, depth == log2 T ===")
+    rng = np.random.default_rng(0)
+    for T in grid:
+        res, stages, dmax = scan_check(T, rng=rng)
+        print("T=%5d  stages=%2d  max depth tag=%2d  residual=%.2e"
+              % (T, stages, dmax, res))
+        assert stages == dmax == ceil(log2(T)) and res &lt; 1e-9
+
+    a28 = attn_depth(15, r_ln, 4)
+    assert a28 == 28, a28                     # reproduces Artifact 38.1 ledger
+    ssm_const = ssm_depth(128, kg, r_ln) - ceil(log2(128))
+    for T in grid:                            # HARD ASSERTION 1: shape of both
+        assert ssm_depth(T, kg, r_ln) == ssm_const + ceil(log2(T))
+        assert attn_depth(15, r_ln, 4) == a28 # T-independent
+    print("\nattention sub-block depth (modest): %d levels, T-independent"
+          % a28)
+    print("selective-SSM block depth: %d + ceil(log2 T) levels" % ssm_const)
+
+    # HARD ASSERTION 2: zero softmax levels in the SSM, by construction.
+    trunk, state, gate, tail = ssm_ledger(2048, kg, r_ln)
+    ssm_sm = softmax_levels(trunk + state + gate + tail)
+    at_sm = softmax_levels(attn_ledger(15, r_ln, 4))
+    print("softmax-related levels: attention %d, SSM %d" % (at_sm, ssm_sm))
+    assert ssm_sm == 0 and at_sm == poly_depth(15) + REC_D * 4 + 1 == 13
+
+    print("\n=== Comparison table (depth | rotations | ct-ct mults) ===")
+    hdr = ("%6s %9s %9s | %11s %11s | %11s %11s | %8s %8s"
+           % ("T", "attnDep", "ssmDep", "attnRot", "ssmRot",
+              "attnMult", "ssmMult", "scoreCt", "stateCt"))
+    for label, kx, r_sm in scenarios:
+        print("\n-- scenario: %s --\n%s" % (label, hdr))
+        ad = attn_depth(kx, r_ln, r_sm)
+        for T in grid:
+            sd = ssm_depth(T, kg, r_ln)
+            ar, am, ns = attn_ops(T, d, H, kx, r_ln, r_sm, slots)
+            sr, sm, nh = ssm_ops(T, d, kg, r_ln, slots)
+            print("%6d %9d %9d | %11d %11d | %11d %11d | %8d %8d"
+                  % (T, ad, sd, ar, sr, am, sm, ns, nh))
+
+    # HARD ASSERTION 3: the crossover interval, per scenario, computed.
+    def crossover(kx, r_sm):
+        ad = attn_depth(kx, r_ln, r_sm)
+        c = ad - ssm_const                    # SSM wins iff ceil(log2 T) &lt; c
+        return 2 ** (c - 1), 2 ** c           # strict-win bound, tie bound
+    w1, t1 = crossover(15, 4)
+    w2, t2 = crossover(63, 6)
+    print("\ncrossover (modest): SSM wins depth for T &lt;= %d, tie through "
+          "T = %d, attention wins for T &gt;= %d" % (w1, t1, t1 + 1))
+    print("crossover (faithful): SSM wins depth for T &lt;= %d, tie through "
+          "T = %d, attention wins for T &gt;= %d" % (w2, t2, t2 + 1))
+    assert (w1, t1) == (256, 512) and (w2, t2) == (16384, 32768)
+    assert ssm_depth(512, kg, r_ln) == attn_depth(15, r_ln, 4) == 28
+    assert ssm_depth(128, kg, r_ln) &lt; 28 &lt; ssm_depth(2048, kg, r_ln)
+    for T in grid:                            # faithful softmax: SSM sweeps
+        assert ssm_depth(T, kg, r_ln) &lt;= attn_depth(63, r_ln, 6)
+    # Op counts: the SSM advantage grows with T (no T x T score object).
+    ratios = [attn_ops(T, d, H, 15, r_ln, 4, slots)[1]
+              / ssm_ops(T, d, kg, r_ln, slots)[1] for T in grid]
+    print("ct-ct mult ratio attention/SSM across T: "
+          + ", ".join("%.1f" % r for r in ratios))
+    # ceil() packing effects make small-T ratios lumpy; from T=512 on the
+    # ratio grows monotonically and exceeds 10x at T=8192.
+    assert all(x &lt; y for x, y in zip(ratios[1:], ratios[2:])) and ratios[-1] &gt; 10
+
+    print("\n=== Three concrete candidate problems (and the chapters that "
+          "equip you) ===")
+    for c in ["1. Build the encrypted selective-SSM block: a Mamba-style "
+              "block under RNS-CKKS,\n   benchmarked against a polynomial "
+              "attention block at matched width.\n   [Chapters 17, 21, 38, 39]",
+              "2. Calibrate the crossover: turn this counting model into a "
+              "measured cost atlas\n   over (T, d, degrees) with FHE-library "
+              "microbenchmarks. [Chapters 24, 30, 38, 40, 41]",
+              "3. Encrypted PEFT on an HE-friendly backbone: LoRA updates on "
+              "the SSM block,\n   gradients under encryption. [Chapters 11, "
+              "26, 34, 38, 41]"]:
+        print(c)
+    print("\nHonest conclusion: which block wins on DEPTH depends on T and "
+          "on the softmax\ndegree you believe (Ch. 39); the SSM wins on "
+          "operations and memory at long T\nby construction. The point is "
+          "that the comparison is computable -- and the\nencrypted-SSM "
+          "column of it has not been published at transformer scale.")
+    print("All assertions passed.")
+</code></pre>
+<p>Running it prints the assumption list, then the scan self-check: for every $T$ in the grid, stages equal the max depth tag equal $\lceil \log_2 T \rceil$ (7, 9, 11, 13) with residual $2.22 \times 10^{-16}$ against the sequential recurrence. The depth laws come out as $28$ ($T$-independent) versus $19 + \lceil \log_2 T \rceil$, softmax-related levels $13$ versus $0$. Under the modest softmax the crossover is "SSM wins for $T \le 256$, tie through $T = 512$, attention wins from $T = 513$"; under the faithful softmax (attention at $34$ levels) the SSM wins through $T = 16384$ with the tie extending to $32768$. The operation columns are one-sided regardless: at $T = 8192$, attention needs $3{,}777{,}024$ rotations and $3{,}391{,}892$ ciphertext multiplications per block against the SSM's $132{,}864$ and $179{,}724$ &mdash; a $18.9\times$ multiplication ratio &mdash; and $24{,}576$ score ciphertexts against $6{,}144$ state ciphertexts. It ends by printing the three candidate problems and the honest conclusion, and every assertion passes in about 0.14 s.</p>
+</div>
+
+<div class="key-takeaways">
+<div class="kt-title">Key Takeaways</div>
+<ul>
+<li>Latency numbers across encrypted-inference systems are not comparable &mdash; threat models, sequence lengths, hardware, and timing boundaries all differ &mdash; so read every paper through the nine-point template and treat any unfilled field as a finding. <span class="tag tag-certain">Certain</span></li>
+<li>Under Chapter 38's counting conventions, an attention block costs a $T$-independent 28 levels while a selective-SSM block costs $19 + \lceil \log_2 T \rceil$; which wins on depth depends on $T$ and on the softmax degree you believe, and the crossover is computable rather than a matter of taste. <span class="tag tag-likely">Likely</span></li>
+<li>The SSM block needs zero softmax-related levels by construction and never materializes a $T \times T$ score object, so its rotation and multiplication counts beat attention's by a growing margin at long $T$ in the counting model. <span class="tag tag-likely">Likely</span></li>
+<li>Encrypted SSM inference exists only in embryonic form &mdash; public-decay transitions on small classifiers (arXiv 2605.16647) &mdash; and the selective, ciphertext-gated, log-depth-scan version at transformer scale is unpublished as of this writing; check before you build. <span class="tag tag-verify">Verify</span></li>
+<li>Counting models predict orderings, not wall clock: any depth-and-rotation argument, including this chapter's, must be calibrated against per-operation measurements from a real FHE library before it supports a systems claim. <span class="tag tag-certain">Certain</span></li>
+</ul>
+</div>
+</div>

@@ -1,0 +1,3327 @@
+{
+ "source": "/workspace/ml-dl-llm-books/ml-book.html",
+ "book_title": "Foundations of Modern Machine Learning",
+ "chapters": [
+  {
+   "n": 1,
+   "title": "Linear Algebra as Computation",
+   "sections": [
+    "1.1 Vectors, Matrices, and the Memory Hierarchy",
+    "1.2 Matrix Multiplication and Its Cost Model",
+    "1.3 Eigendecomposition and Spectral Radius",
+    "1.4 The SVD and Optimal Low-Rank Approximation",
+    "1.5 Norms, Conditioning, and Numerical Sensitivity",
+    "1.6 Arithmetic Intensity: the Number That Predicts Runtime"
+   ],
+   "subsections": [
+    "1.2.1 Blocking and Cache Reuse",
+    "1.4.1 Eckart–Young–Mirsky"
+   ],
+   "artifact_title": "Artifact 1.1 — Blocked Matmul and a From-Scratch Jacobi SVD",
+   "artifact_count": 1,
+   "definitions": [
+    "Definition 1.1 (Spectral radius)",
+    "Definition 1.2 (Singular value decomposition)",
+    "Definition 1.3 (Condition number)",
+    "Definition 1.4 (Arithmetic intensity, machine balance, roofline)"
+   ],
+   "theorems": [
+    "Theorem 1.1 (Hong–Kung communication lower bound)",
+    "Theorem 1.2 (Existence of the SVD)",
+    "Theorem 1.3 (Eckart–Young–Mirsky)",
+    "Theorem 1.4 (Perturbation bound for a linear solve)"
+   ],
+   "examples": [
+    "Example 1.1 (FLOPs in one transformer feed-forward block)",
+    "Example 1.2 (Spectral radius lies about finite horizons)",
+    "Example 1.3 (A $2 \\times 2$ SVD you can check by hand)",
+    "Example 1.4 (Four digits gone, verified by hand)",
+    "Example 1.5 (Why the 4096-square matmul is compute-bound and the matvec is not)"
+   ],
+   "warning_boxes": [
+    "Common Pitfall",
+    "Common Pitfall"
+   ],
+   "has_encrypted_note": true,
+   "encrypted_note_count": 1,
+   "read_alongside": "Read alongside — Goodfellow, Bengio & Courville, Deep Learning, for the linear-algebra and numerical-computation preliminaries: the cleanest short statement of the SVD, pseudoinverse, and conditioning in the ML literature. Stanford CS336 (Language Modeling from Scratch), whose first assignment forces exactly the FLOP-and-bytes accounting this chapter formalizes. The HuggingFace Ultra-Scale Playbook, for measured memory-hierarchy numbers on current accelerators — use it to replace the hardware figures here when they age.",
+   "learning_objectives": [
+    "Express any neural network layer as a composition of linear maps and pointwise functions, and state its exact FLOP count: $2mnk$ for an $(m \\times k)(k \\times n)$ product.",
+    "Derive the SVD from the spectral theorem, prove the Eckart–Young–Mirsky theorem, and explain why low-rank adaptation (Chapter 26) is a direct corollary rather than a heuristic.",
+    "Compute the condition number $\\kappa_2(A) = \\sigma_1/\\sigma_n$ and predict the number of significant decimal digits a linear solve will destroy.",
+    "Compute arithmetic intensity in FLOPs per byte for matmul versus matvec, and explain why a $4096$-square matmul is compute-bound while a $4096 \\times 1$ matvec runs about two and a half orders of magnitude below peak.",
+    "Implement blocked matrix multiplication and a from-scratch one-sided Jacobi SVD in working code, and verify both against a reference."
+   ],
+   "key_takeaways": [
+    "An $(m\\times k)(k\\times n)$ product costs exactly $mn(2k-1) \\approx 2mnk$ FLOPs with an FMA counted as two operations; the $2ND$ inference and $6ND$ training rules of Chapters 24 and 32 are this count applied once and three times. Certain",
+    "FLOP count is fixed by the mathematics, byte count is not: blocking cuts traffic from $2n^3$ words to $\\approx 2\\sqrt{3}n^3/\\sqrt{M}$, and Hong–Kung proves no reordering of the classical algorithm does asymptotically better. Certain",
+    "The truncated SVD is the globally optimal rank-$k$ approximation in every unitarily invariant norm at once, with error $\\sigma_{k+1}$ in spectral norm and $(\\sum_{i>k}\\sigma_i^2)^{1/2}$ in Frobenius — a global result over a nonconvex set, which is why low-rank adaptation rests on a theorem rather than a heuristic. Certain",
+    "Whether LoRA's rank constraint is free depends on the spectrum of the true update $\\Delta W$, and the field genuinely disagrees; the discriminating variable is fine-tuning token count relative to domain distance, and a matched-compute spectrum measurement would settle it. Contested",
+    "Arithmetic intensity, not FLOP count, predicts runtime: fp32 matmul scales as $I = n/6$ while matvec is pinned at $I = 1/2$ for every $n$, so against an H100 ridge point of 295 FLOP/byte a $4096$-square matmul can approach peak while batch-1 decoding is capped near $0.34\\%$ of it. Verify"
+   ],
+   "tags": {
+    "certain": 6,
+    "likely": 3,
+    "verify": 6,
+    "contested": 2
+   },
+   "part": "Part I",
+   "line_span": [
+    807,
+    1271
+   ]
+  },
+  {
+   "n": 2,
+   "title": "Probability, Information, and Why Cross-Entropy Is the Only Loss",
+   "sections": [
+    "2.1 Distributions, Expectation, Concentration",
+    "2.2 Maximum Likelihood as a Design Principle",
+    "2.3 Entropy, Cross-Entropy, KL",
+    "2.4 Mutual Information and the InfoNCE Bound",
+    "2.5 Compression Equals Prediction",
+    "2.6 Bayes, Priors, and What Regularization Really Is"
+   ],
+   "subsections": [
+    "2.3.1 Forward versus Reverse KL"
+   ],
+   "artifact_title": "Artifact 2.1 — An integer arithmetic coder that measures your loss in bytes",
+   "artifact_count": 1,
+   "definitions": [
+    "Definition 2.1 (Cross-entropy)",
+    "Definition 2.2 (Entropy and KL divergence)",
+    "Definition 2.3 (Mutual information)"
+   ],
+   "theorems": [
+    "Theorem 2.1 (Hoeffding's inequality)",
+    "Theorem 2.2 (MLE = cross-entropy = forward KL)",
+    "Theorem 2.3 (Jensen, Gibbs, and the ELBO)",
+    "Theorem 2.4 (InfoNCE lower bound)"
+   ],
+   "examples": [
+    "Example 2.1 (How many tokens does an eval set need?)",
+    "Example 2.2 (KL as an itemized bill)",
+    "Example 2.3 (Mode-covering costs 0.462 nats; mode-seeking costs 0.689)",
+    "Example 2.4 (Three numbers, one model)",
+    "Example 2.5 (What prior does weight decay 0.1 correspond to?)"
+   ],
+   "warning_boxes": [
+    "Common Pitfall",
+    "Common Pitfall"
+   ],
+   "has_encrypted_note": true,
+   "encrypted_note_count": 1,
+   "read_alongside": "Read alongside — Murphy, Probabilistic Machine Learning: Advanced Topics, for the measure-theoretic statements this chapter states informally and for the variational-inference machinery behind the ELBO; Goodfellow/Bengio/Courville, Deep Learning, whose information-theory and maximum-likelihood sections cover the same ground at a gentler pace and with the same notation; and Karpathy's Neural Networks: Zero to Hero, where the negative-log-likelihood loss is built by hand from bigram counts before any framework appears — the closest thing in video form to Sections 2.2 and 2.3 of this chapter.",
+   "learning_objectives": [
+    "Prove that minimizing cross-entropy is exactly maximum likelihood, and that the minimum attainable value equals the entropy $H(p)$ of the data distribution.",
+    "Derive $D_{\\mathrm{KL}}(p\\,\\|\\,q)$ as expected excess code length, and explain why forward KL is mode-covering and reverse KL is mode-seeking — the distinction that returns in Chapter 27.",
+    "State Jensen's inequality and use it to derive the evidence lower bound, the object that Chapter 35 turns into VAEs and diffusion.",
+    "Convert freely between perplexity, bits-per-token, and bits-per-byte, and explain why only bits-per-byte is comparable across tokenizers (Chapter 23).",
+    "Implement an integer arithmetic coder in working code that verifies the model-loss $\\leftrightarrow$ compressed-size identity to under one percent."
+   ],
+   "key_takeaways": [
+    "Maximum likelihood, cross-entropy minimization, and forward-KL minimization differ only by the additive constant $H(\\hat p)$, which does not depend on $\\theta$; the printed training loss is a KL divergence plus an unmeasured offset, so only its differences carry meaning. Certain",
+    "$D_{\\mathrm{KL}}(p\\|q)$ is the expected excess bits from coding $p$-distributed data with $q$'s codebook; forward KL is zero-avoiding and mode-covering, reverse KL is zero-forcing and mode-seeking, and RLHF's KL penalty is the reverse kind, which is why it collapses entropy. Likely",
+    "Jensen's inequality applied once yields the ELBO, whose gap is exactly $D_{\\mathrm{KL}}(r\\|p_\\theta(\\cdot\\mid x))$ — not slack from an approximation but a quantity you can drive to zero, which is the whole content of variational inference and of the diffusion objective in Chapter 35. Certain",
+    "Perplexity and bits-per-token are tokenizer-dependent and therefore incomparable across models; bits-per-byte is the only unit that compares a BPE model, a byte-level model, and gzip on the same axis. The artifact shows a 73× perplexity spread for one identical compressed file. Certain",
+    "An arithmetic coder turns a model into a lossless compressor whose output length equals the model's cumulative loss in bits to within a two-bit flush — measured here at 42,025 versus 42,024.4 bits, a gap of 0.0015%. Verify"
+   ],
+   "tags": {
+    "certain": 8,
+    "likely": 4,
+    "verify": 3,
+    "contested": 1
+   },
+   "part": "Part I",
+   "line_span": [
+    1271,
+    1664
+   ]
+  },
+  {
+   "n": 3,
+   "title": "Generalization: Classical Theory and Its Deep-Learning Failure",
+   "sections": [
+    "3.1 The Learning Problem, Formally",
+    "3.2 Uniform Convergence and PAC Bounds",
+    "3.3 VC Dimension and Rademacher Complexity",
+    "3.4 The Bias–Variance Decomposition",
+    "3.5 Interpolation, Double Descent, Benign Overfitting",
+    "3.6 Why the Bounds Are Vacuous and What Replaces Them",
+    "3.7 Memorization versus Generalization"
+   ],
+   "subsections": [
+    "3.3.1 Rademacher complexity, and why tightening does not help"
+   ],
+   "artifact_title": "Artifact 3.1 — Double descent, and the bound it violates",
+   "artifact_count": 1,
+   "definitions": [
+    "Definition 3.1 (The statistical learning problem)",
+    "Definition 3.2 (PAC learnability)",
+    "Definition 3.3 (Shattering, growth function, VC dimension)",
+    "Definition 3.4 (Empirical Rademacher complexity)",
+    "Definition 3.5 (Interpolation threshold)"
+   ],
+   "theorems": [
+    "Theorem 3.1 (Uniform convergence for a finite class)",
+    "Theorem 3.2 (VC dimension of halfspaces)",
+    "Theorem 3.3 (VC generalization bound)",
+    "Theorem 3.4 (Bias–variance–noise decomposition)",
+    "Theorem 3.5 (Norm blow-up of the minimum-norm interpolant)"
+   ],
+   "examples": [
+    "Example 3.1 (The counting bound on a 79,510-weight MLP)",
+    "Example 3.2 (Shattering, counted by brute force in the plane)",
+    "Example 3.3 (Evaluating the VC bound, by hand)",
+    "Example 3.4 (Three estimators on two points, computed exactly)"
+   ],
+   "warning_boxes": [
+    "Common Pitfall"
+   ],
+   "has_encrypted_note": false,
+   "encrypted_note_count": 0,
+   "read_alongside": "Read alongside — Hastie, Tibshirani and Friedman, The Elements of Statistical Learning, for the bias–variance decomposition and the classical model-selection picture in its strongest form, which is exactly the picture this chapter attacks; Prince, Understanding Deep Learning, whose treatment of double descent and the interpolation regime has the clearest figures available and is free online; and Goodfellow, Bengio and Courville, Deep Learning, for the capacity/VC framing as it stood before 2017 — useful here as the position being argued against rather than as current doctrine.",
+   "learning_objectives": [
+    "State the PAC learning framework and derive a uniform-convergence generalization bound from Hoeffding's inequality and a union bound over $\\mathcal{H}$.",
+    "Compute the VC dimension of linear classifiers, bound it for a small MLP, and show numerically that the resulting bound exceeds $1$ — and is therefore vacuous — for any network anyone actually trains.",
+    "Decompose test error into bias, variance, and noise, and locate precisely where the decomposition stops carrying information once the model interpolates.",
+    "Explain the interpolation threshold and double descent, distinguishing the model-wise, sample-wise, and epoch-wise variants and the mechanism they share.",
+    "Implement a double-descent experiment in working code that also computes, prints, and thereby falsifies the capacity bound covering the same models."
+   ],
+   "key_takeaways": [
+    "Uniform convergence bounds the generalization gap by $O(\\sqrt{\\ln|\\mathcal{H}|/n})$ via Hoeffding plus a union bound; every classical bound here refines that one step and inherits both its $n^{-1/2}$ rate and its dependence on the class rather than the solution. Certain",
+    "$\\mathrm{VCdim}$ of halfspaces in $\\mathbb{R}^d$ is $d+1$ (verified at $d=2$ by brute force: $8/8$ versus $14/16$) and $O(WL\\log W)$ — with an $\\Omega(WL\\log(W/L))$ lower bound — for ReLU networks; for a $79{,}510$-weight MLP on $60{,}000$ MNIST images the bound is $3.33$, reaching $1.0$ only at $1.14\\times10^{8}$ images, and shrinking the VC estimate by $10^{3}$ still leaves $1.292$. Certain",
+    "The bounds are not merely loose: networks fit random labels perfectly, so the class's empirical Rademacher complexity genuinely is $\\approx 1$ and no tightening of a class-based analysis can help. The failure is the quantification over $\\mathcal{H}$, not the inequality. Certain",
+    "The bias–variance identity is exact but uninformative at interpolation: training error is identically zero, $0$–$1$ loss admits no canonical decomposition, and measured variance falls rather than rises with width past the threshold. Likely",
+    "Double descent is $\\sigma_{\\min}(\\Phi)\\to 0$ at aspect ratio $1$ and nothing more exotic; the peak has infinite expectation, so its height is unstable while its location at $p=n$ is exact — measured here as $176{,}704.78$ at width $100$ against $0.2356$ at width $2000$. Verify"
+   ],
+   "tags": {
+    "certain": 15,
+    "likely": 5,
+    "verify": 4,
+    "contested": 1
+   },
+   "part": "Part I",
+   "line_span": [
+    1664,
+    2100
+   ]
+  },
+  {
+   "n": 4,
+   "title": "Optimization: Convergence Rates and the Non-Convex Reality",
+   "sections": [
+    "4.1 Convexity, Smoothness, Strong Convexity",
+    "4.2 Gradient Descent and Its Rate",
+    "4.3 Momentum: Heavy Ball and Nesterov",
+    "4.4 Stochastic Gradients and Variance",
+    "4.5 Non-Convexity: Saddles, Plateaus, Basins",
+    "4.6 Second-Order Methods and Why We Do Not Use Them",
+    "4.7 Edge of Stability"
+   ],
+   "subsections": [
+    "4.4.1 Critical Batch Size and Gradient Noise Scale"
+   ],
+   "artifact_title": "Artifact 4.1 — Measured Convergence Rates and the Edge of Stability",
+   "artifact_count": 1,
+   "definitions": [
+    "Definition 4.1 ($L$-smoothness)",
+    "Definition 4.2 ($\\mu$-strong convexity and the condition number)",
+    "Definition 4.3 (Strict saddle)"
+   ],
+   "theorems": [
+    "Theorem 4.1 (Quadratic sandwich and the PL inequality)",
+    "Theorem 4.2 (Linear convergence of gradient descent)",
+    "Theorem 4.3 (Heavy ball attains $\\sqrt{\\kappa}$ on quadratics)",
+    "Theorem 4.4 (SGD does not converge; it reaches a noise floor)",
+    "Theorem 4.5 (Saddles are escaped, but not necessarily quickly)"
+   ],
+   "examples": [
+    "Example 4.1 (Where $\\kappa$ comes from in least squares)",
+    "Example 4.2 (Counting iterations at $\\kappa = 100$)",
+    "Example 4.3 (Momentum at $\\kappa = 10^4$ costs what gradient descent costs at $\\kappa = 10^2$)",
+    "Example 4.4 (What the last doubling of batch size actually buys)",
+    "Example 4.5 (Escape time is $1/(\\eta|\\lambda_{\\min}|)$ times a logarithm)"
+   ],
+   "warning_boxes": [
+    "Common Pitfall"
+   ],
+   "has_encrypted_note": true,
+   "encrypted_note_count": 1,
+   "read_alongside": "Read alongside — Goodfellow/Bengio/Courville, Deep Learning, whose numerical-optimization material covers the same smoothness/strong-convexity vocabulary and the ill-conditioning story at a slower pace; Prince, Understanding Deep Learning, for the best pictures of momentum trajectories, condition-number ellipses, and loss-surface geometry — this chapter deliberately carries no diagrams, and Prince's are the ones to hold in your head while reading it; and Géron, Hands-On Machine Learning (2025 PyTorch edition), for the practitioner's view of the same optimizers, including the accumulation and scaling details that Section 4.4 turns into a pitfall.",
+   "learning_objectives": [
+    "Prove that gradient descent on an $L$-smooth, $\\mu$-strongly-convex objective converges at rate $(1-\\mu/L)^t$, and that momentum improves the exponent to roughly $(1-\\sqrt{\\mu/L})^t$.",
+    "Derive the optimal step size $\\eta^\\star = 2/(\\mu+L)$, and explain the edge-of-stability phenomenon in which real training runs at $\\eta > 2/L$ and descends anyway.",
+    "Characterize stochastic gradient noise and its covariance structure, and show that the ratio $B/B_{\\text{noise}}$ to the gradient noise scale — not the batch size $B$ on its own — sets the usable learning rate and the return on more batch.",
+    "Distinguish strict saddles from local minima, and explain why in $N$ dimensions strict local minima at high loss are exponentially rare.",
+    "Implement gradient descent, heavy ball, and Nesterov in working code, and verify measured convergence rates against the exact predicted contraction factors."
+   ],
+   "key_takeaways": [
+    "One number governs the deterministic rate: $\\kappa = L/\\mu$ gives $(1-1/\\kappa)^t$ at $\\eta = 1/L$, improving to $\\bigl(\\frac{\\kappa-1}{\\kappa+1}\\bigr)^t$ at $\\eta^\\star = 2/(\\mu+L)$ — a factor of exactly two and no more. Step-size tuning cannot fix conditioning. Certain",
+    "Momentum works because the roots of $z^2-(1+\\beta-\\eta\\lambda)z+\\beta$ multiply to $\\beta$, so complex roots have modulus $\\sqrt{\\beta}$ regardless of $\\lambda$; the resulting $O(\\sqrt{\\kappa})$ matches the first-order lower bound. Heavy ball's guarantee covers only quadratics — it provably cycles on a smooth strongly convex counterexample — Nesterov's covers the class. Certain",
+    "SGD reaches a noise floor of size $\\eta\\sigma^2 N/(4B)$ rather than a minimum, and the optimal step is $\\eta_{\\max}/(1+B_{\\text{noise}}/B)$: below the gradient noise scale batch is free, above it it buys nothing. The invariant is $\\eta/B$. Certain",
+    "Strict local minima are exponentially rare in high dimension — a random $N\\times N$ symmetric Hessian has no negative eigenvalue with probability $\\exp(-\\Theta(N^2))$ — and saddles are escaped almost surely in time $\\ln(1/\\delta)/(\\eta|\\lambda_{\\min}|)$, so an apparent bad minimum is nearly always a small-$\\mu$ plateau. Likely",
+    "Real training runs at $\\eta > 2/L$ with sharpness pinned near $2/\\eta$ by a self-stabilizing feedback loop; what is held at $2/\\eta$ is the secant curvature along the oscillation, verified in the artifact to 1.11e-16, not the pointwise Hessian, which is 0.495 there when $2/\\eta = 0.8$. Likely"
+   ],
+   "tags": {
+    "certain": 8,
+    "likely": 8,
+    "verify": 2,
+    "contested": 2
+   },
+   "part": "Part I",
+   "line_span": [
+    2100,
+    2528
+   ]
+  },
+  {
+   "n": 5,
+   "title": "Numerics: Floating Point, Precision, and Stability",
+   "sections": [
+    "5.1 IEEE-754 and the Anatomy of a Float",
+    "5.2 fp16 versus bf16 versus fp8 versus MX Formats",
+    "5.3 Rounding, ULP, and Error Accumulation",
+    "5.4 Catastrophic Cancellation",
+    "5.5 Stable Softmax and Log-Sum-Exp",
+    "5.6 Mixed-Precision Training: Master Weights, Loss Scaling, Accumulation dtype",
+    "5.7 Deterministic versus Non-Deterministic Reduction Order"
+   ],
+   "subsections": [
+    "5.2.1 Range is the binding constraint, not precision",
+    "5.2.2 fp8, and why fp4 is block floating point wearing a costume"
+   ],
+   "artifact_title": "Artifact 5.1 — A Bit-Exact Low-Precision Simulator, and Errors That Land Where Predicted",
+   "artifact_count": 1,
+   "definitions": [
+    "Definition 5.1 (binary floating-point format)",
+    "Definition 5.2 (ulp, machine epsilon, unit roundoff)",
+    "Definition 5.3 (condition number of a subtraction)"
+   ],
+   "theorems": [
+    "Theorem 5.1 (standard model of floating-point arithmetic)",
+    "Theorem 5.2 (error growth of three summation algorithms)",
+    "Theorem 5.3 (Sterbenz's lemma)",
+    "Theorem 5.4 (the shifted form is safe and backward stable)"
+   ],
+   "examples": [
+    "Example 5.1 (decoding 0.1 in fp32)",
+    "Example 5.2 (a million tenths)",
+    "Example 5.3 (an accumulator that stops)",
+    "Example 5.4 (variance of three numbers, by hand, in fp32)",
+    "Example 5.5 (the exact overflow thresholds)",
+    "Example 5.6 (non-associativity in three fp32 numbers)"
+   ],
+   "warning_boxes": [
+    "Common Pitfall",
+    "Common Pitfall"
+   ],
+   "has_encrypted_note": true,
+   "encrypted_note_count": 1,
+   "read_alongside": "Read alongside — Goodfellow/Bengio/Courville, Deep Learning, whose numerical-computation material states the overflow/underflow and softmax-stabilization arguments in their canonical form and is the right slow companion to Sections 5.4–5.5; Géron, Hands-On Machine Learning (2025 PyTorch edition), for the practitioner's view of automatic mixed precision, the scaler API, and which tensors PyTorch silently keeps in fp32; and the HuggingFace Ultra-Scale Playbook, which is the most current account of bf16 and fp8 in production training runs and of what the accumulation dtype costs at scale.",
+   "learning_objectives": [
+    "Decode IEEE-754 fp32, fp16 and bf16 and the OCP fp8 E4M3/E5M2 formats bit by bit, and state each format's exponent range, largest finite value, and machine epsilon $\\varepsilon = 2^{-M}$.",
+    "Explain why bf16 displaced fp16 for training on the grounds of dynamic range rather than precision, and why loss scaling is therefore unnecessary in bf16.",
+    "Derive the log-sum-exp shift, prove that it is backward stable with backward error set by the spread of the logits rather than their magnitude, and compute the exact logit at which naive softmax overflows in fp32 and in fp16.",
+    "Diagnose catastrophic cancellation through the condition number $(|a|+|b|)/|a-b|$, and explain why normalization statistics and optimizer moments stay in fp32 under mixed-precision training.",
+    "Implement a bit-exact low-precision simulator in working code and verify it against hardware casts, then use it to predict a measured overflow threshold exactly."
+   ],
+   "key_takeaways": [
+    "Exponent bits buy dynamic range and mantissa bits buy relative precision; the two are independent, and bf16 beat fp16 by reallocating three bits from precision to range, making its exponent field identical to fp32's and loss scaling — whose only job was sliding gradients into fp16's window — unnecessary. Certain",
+    "Naive summation carries error $\\gamma_{n-1}\\sum|x_i|$, pairwise $\\gamma_{\\log_2 n}$, Kahan $2u$; a low-precision accumulator fed a constant $c$ stalls dead at $2^{M+1}c$ — $256$ for bf16, $2048$ for fp16 — which is why every reduction over $d_{\\text{model}}$ terms accumulates in fp32. Certain",
+    "The log-sum-exp shift is not a heuristic: the maximizing term is exactly $1$, the sum is in $[1,n]$, and the backward error scales with the logit spread $R$ rather than the magnitude, so the unshifted form's hard ceiling — a last safe logit of $88.722831726$ in fp32 and $11.0859375$ in fp16, measured to the bit by the artifact — becomes a non-issue, while unshifted it is fatal for attention scores that routinely reach $20$–$50$. Certain",
+    "fp32 master weights exist because of swamping, not forward accuracy: with $w \\approx 2^{-6}$ and a late-schedule AdamW step of $3\\times10^{-5}$, the bf16 half-ulp is $6.1\\times10^{-5}$ and the update is discarded silently in every parameter, every step, while the loss curve still looks plausible. Certain",
+    "Bitwise reproducibility is cheap to lose and expensive to want: atomics, split-K and collective-algorithm selection make reduction order non-deterministic, a one-ulp divergence becomes an $O(1)$ loss difference within a few hundred steps, and whether that costs final quality — as opposed to costing debuggability, which it certainly does — is not settled by any published paired-run study at scale. Contested"
+   ],
+   "tags": {
+    "certain": 5,
+    "likely": 4,
+    "verify": 6,
+    "contested": 3
+   },
+   "part": "Part I",
+   "line_span": [
+    2528,
+    2966
+   ]
+  },
+  {
+   "n": 6,
+   "title": "Linear and Logistic Regression: the Atom",
+   "sections": [
+    "6.1 Least Squares, Geometrically and Probabilistically",
+    "6.2 Ridge, Lasso, and Sparsity",
+    "6.3 Logistic Regression and the Bernoulli Likelihood",
+    "6.4 Convexity, Separability, and Implicit Bias",
+    "6.5 Softmax and Multinomial Regression",
+    "6.6 GLMs and Link Functions",
+    "6.7 Calibration: probabilities that mean something"
+   ],
+   "subsections": [
+    "6.1.1 The probabilistic reading",
+    "6.2.1 Ridge in the SVD basis",
+    "6.2.2 Lasso and why $\\ell_1$ produces exact zeros",
+    "6.6.1 IRLS is Newton in disguise"
+   ],
+   "artifact_title": "Artifact 6.1 — Logistic regression from scratch: IRLS and gradient descent",
+   "artifact_count": 1,
+   "definitions": [
+    "Definition 6.1 (Ridge estimator)",
+    "Definition 6.2 (Linear separability)",
+    "Definition 6.3 (Generalized linear model)",
+    "Definition 6.4 (Calibration and ECE)"
+   ],
+   "theorems": [
+    "Theorem 6.1 (Normal equations and orthogonal projection)",
+    "Theorem 6.2 (Ridge is MAP under a Gaussian prior)",
+    "Theorem 6.3 (Gradient, Hessian, and convexity)",
+    "Theorem 6.4 (Separability destroys the minimizer)",
+    "Theorem 6.5 (Implicit bias of gradient descent, Soudry et al. 2018)",
+    "Theorem 6.6 (Canonical-link gradient)",
+    "Theorem 6.7 (MLE is calibrated in-sample along every feature)"
+   ],
+   "examples": [
+    "Example 6.1 (Three points, by hand)",
+    "Example 6.2 (Shrinkage across three decades of spectrum)",
+    "Example 6.3 (One Newton step by hand)",
+    "Example 6.4 (Softmax on three logits)"
+   ],
+   "warning_boxes": [
+    "Common Pitfall",
+    "Common Pitfall"
+   ],
+   "has_encrypted_note": true,
+   "encrypted_note_count": 1,
+   "read_alongside": "Read alongside — Hastie, Tibshirani & Friedman, The Elements of Statistical Learning, for the shrinkage and subset-selection material: its treatment of ridge in the SVD basis and of the lasso solution path is the reference version. Bishop, Pattern Recognition and Machine Learning, for the probabilistic derivation of logistic regression and for IRLS presented as Newton’s method on the Bernoulli likelihood. Murphy, Probabilistic Machine Learning: Advanced Topics (2023), for exponential families, canonical links, and the calibration material, which it states more carefully than most textbooks.",
+   "learning_objectives": [
+    "Derive the OLS normal equations $X^{\\top}Xw = X^{\\top}y$ and their ridge-regularized form, and explain ridge as MAP estimation under a Gaussian prior with $\\lambda = \\sigma^2/\\tau^2$.",
+    "Derive the logistic loss from the Bernoulli likelihood and show its gradient is $X^{\\top}(\\sigma(Xw) - y)$ — the identical form taken by the final layer of every classifier in this book.",
+    "Prove the logistic loss is convex but has no closed-form minimizer, and explain why linearly separable data drives $\\|w\\|_2 \\to \\infty$ while the decision boundary converges.",
+    "Generalize to softmax regression and to generalized linear models, identifying the link function — not the loss — as the actual design choice.",
+    "Implement logistic regression with both IRLS and gradient descent in working code, verified against finite differences and a reference solver."
+   ],
+   "key_takeaways": [
+    "Squared loss is the Gaussian likelihood and cross-entropy is the Bernoulli likelihood; the loss is never the design choice, the response distribution and link are. Certain",
+    "Every canonical-link GLM has gradient $X^{\\top}(\\mu - y)$ — prediction minus target, back-projected through the inputs — which is why the last layer of every classifier in this book has the same backward pass. Certain",
+    "Ridge is MAP under $w \\sim \\mathcal{N}(0, \\tau^2 I)$ with $\\lambda = \\sigma^2/\\tau^2$, and in the SVD basis it shrinks direction $j$ by $s_j^2/(s_j^2+\\lambda)$; the effective degrees of freedom is the sum of those factors. Certain",
+    "On separable data the unregularized logistic minimizer does not exist, $\\|w\\|$ grows like $\\log t$, and the direction converges to the max-margin separator at the glacial worst-case rate $O(1/\\log t)$ — measured here as a cosine gap falling only $60\\times$ across three decades of steps. Likely",
+    "MLE with an intercept is calibrated in-sample by algebra alone, so calibration claims mean nothing off held-out data; regularization and shrunk logits break calibration without touching accuracy, which is why temperature scaling works. Certain"
+   ],
+   "tags": {
+    "certain": 7,
+    "likely": 4,
+    "verify": 3,
+    "contested": 2
+   },
+   "part": "Part II",
+   "line_span": [
+    2966,
+    3388
+   ]
+  },
+  {
+   "n": 7,
+   "title": "Kernels, Margins, and the Bridge to Infinite-Width Networks",
+   "sections": [
+    "7.1 Feature Maps and the Kernel Trick",
+    "7.2 RKHS, Mercer, and the Representer Theorem",
+    "7.3 Maximum-Margin Classification",
+    "7.4 Kernel Ridge Regression",
+    "7.5 Scaling Limits of Kernel Methods",
+    "7.6 The Neural Tangent Kernel"
+   ],
+   "subsections": [
+    "7.3.1 The Dual and KKT Conditions",
+    "7.6.1 Lazy Training versus Feature Learning"
+   ],
+   "artifact_title": "Artifact 7.1 — SMO from Scratch and the Empirical NTK",
+   "artifact_count": 1,
+   "definitions": [
+    "Definition 7.1 (Positive semi-definite kernel)",
+    "Definition 7.2 (Reproducing kernel Hilbert space)",
+    "Definition 7.3 (Neural Tangent Kernel)"
+   ],
+   "theorems": [
+    "Theorem 7.1 (Mercer)",
+    "Theorem 7.2 (Representer theorem, Schölkopf–Herbrich–Smola form)",
+    "Theorem 7.3 (Support vectors are the active constraints)",
+    "Theorem 7.4 (NTK of a two-layer ReLU network)"
+   ],
+   "examples": [
+    "Example 7.1 (The quadratic kernel, computed both ways)",
+    "Example 7.2 (A three-point SVM solved by hand)",
+    "Example 7.3 (Kernel ridge in two points)"
+   ],
+   "warning_boxes": [
+    "Common Pitfall",
+    "Common Pitfall"
+   ],
+   "has_encrypted_note": true,
+   "encrypted_note_count": 1,
+   "read_alongside": "Read alongside — Bishop, PRML, for the cleanest treatment of kernels, RKHS, and the SVM dual including the sparsity argument. Hastie, Tibshirani & Friedman, ESL, for the complementary view of the SVM as penalized hinge-loss regression, the framing that ties this chapter to Chapter 6. Murphy, Advanced Topics, for the Gaussian-process side of the same mathematics and the infinite-width limits.",
+   "learning_objectives": [
+    "State Mercer's theorem and the representer theorem, and explain why together they collapse an infinite-dimensional optimization onto $n$ coefficients — what makes the dual tractable.",
+    "Derive the hard-margin and soft-margin SVM duals from the Lagrangian, and identify support vectors as exactly the training points whose KKT inequality constraints are active.",
+    "Explain the $\\Theta(n^2d)$ Gram construction and $\\Theta(n^3)$ exact solve, and compute the sample count $n^\\star$ at which an $N$-parameter model trained by SGD becomes cheaper.",
+    "Derive the Neural Tangent Kernel of a two-layer ReLU network and state precisely where it holds — infinite width, lazy training, bounded learning rate — and where it fails.",
+    "Implement SMO and an empirical NTK in working code, verifying both against reference implementations."
+   ],
+   "key_takeaways": [
+    "Mercer's theorem supplies an implicit feature space of arbitrary dimension and the representer theorem confines the optimum to the $n$-dimensional span of the training data; the dual is tractable because of the second result, not the first. Certain",
+    "Support vectors are exactly the training points whose margin constraint is active, split by the KKT conditions into free ($0<\\alpha_i<C$, on the margin) and bounded ($\\alpha_i=C$, inside it) — and bounded ones are usually the majority, which is why the bias must be recovered from free support vectors only. Certain",
+    "Exact kernel training costs $\\Theta(n^2d)$ time and $\\Theta(n^2)$ memory to build the Gram matrix plus $\\Theta(n^3)$ to solve, and inference cost grows with $n$ because support-vector counts grow linearly; against an $N$-parameter model trained for $E$ epochs the crossover is near $n^\\star\\approx 3\\sqrt{NE}$, about $3\\times10^4$ samples for $N=10^6$, $E=100$. Certain",
+    "A two-layer ReLU network in the NTK parameterization has tangent kernel $(\\sin\\vartheta+2(\\pi-\\vartheta)\\cos\\vartheta)/2\\pi$ on the unit sphere, approached at rate $m^{-1/2}$; under infinite width, lazy training and a bounded learning rate, gradient descent on such a network is exactly kernel regression with that kernel. Certain",
+    "Laziness is a scaling regime rather than a property of neural networks, and $\\mu$P shows infinite width can be taken with feature learning intact — so the NTK is best read as a proof that the interesting part of deep learning is precisely what the kernel limit throws away. Likely"
+   ],
+   "tags": {
+    "certain": 11,
+    "likely": 5,
+    "verify": 4,
+    "contested": 1
+   },
+   "part": "Part II",
+   "line_span": [
+    3388,
+    3822
+   ]
+  },
+  {
+   "n": 8,
+   "title": "Trees, Bagging, and Gradient Boosting",
+   "sections": [
+    "8.1 Decision Trees and Impurity",
+    "8.2 Overfitting, Pruning, Depth",
+    "8.3 Bagging and Random Forests",
+    "8.4 Gradient Boosting as Functional Gradient Descent",
+    "8.5 The Tabular-Data Question"
+   ],
+   "subsections": [
+    "8.4.1 Second-Order Boosting",
+    "8.4.2 Histogram Binning and Ordered Boosting"
+   ],
+   "artifact_title": "Artifact 8.1 — Gradient-Boosted Regression Trees, Exact and Histogram",
+   "artifact_count": 1,
+   "definitions": [
+    "Definition 8.1 (Impurity and the CART criterion)",
+    "Definition 8.2 (Bagging)",
+    "Definition 8.3 (Gradient boosting)"
+   ],
+   "theorems": [
+    "Theorem 8.1 (Optimal tree construction is NP-hard)",
+    "Theorem 8.2 (Invariance to strictly monotone feature transforms)",
+    "Theorem 8.3 (Variance of an average of correlated predictors)",
+    "Theorem 8.4 (Optimal leaf weights and the structure score)"
+   ],
+   "examples": [
+    "Example 8.1 (One split, computed three ways by hand)",
+    "Example 8.2 (What the correlation floor costs)",
+    "Example 8.3 (A second-order split by hand)"
+   ],
+   "warning_boxes": [
+    "Common Pitfall",
+    "Common Pitfall"
+   ],
+   "has_encrypted_note": true,
+   "encrypted_note_count": 1,
+   "read_alongside": "Read alongside — Hastie, Tibshirani & Friedman, ESL, which is still the reference treatment of CART, cost-complexity pruning, bagging, and Friedman's original gradient boosting, and which contains the misclassification-versus-Gini counterexample reproduced in Section 8.1. Géron, Hands-On Machine Learning, for the practical side: what the hyperparameters of a production GBDT actually do and the discipline of early stopping on a held-out split.",
+   "learning_objectives": [
+    "Derive the CART splitting criterion for Gini impurity, entropy, and squared error, and compute one split by hand from the class counts.",
+    "Explain bagging as pure variance reduction and derive the identity $\\rho\\sigma^2 + (1-\\rho)\\sigma^2/B$ that caps what averaging $B$ trees can buy you.",
+    "Derive gradient boosting as functional gradient descent, and derive the second-order leaf weight $-G_j/(H_j+\\lambda)$ and split gain used by XGBoost.",
+    "Quantify the histogram-binning speedup over exact-greedy split finding, and state the conditions under which gradient-boosted trees beat neural networks on tabular benchmarks.",
+    "Implement gradient-boosted trees with second-order splits in working code, with both exact and histogram split finders."
+   ],
+   "key_takeaways": [
+    "CART is greedy because optimal tree construction is NP-hard, and it uses Gini or entropy rather than misclassification error because strict concavity guarantees a strictly positive impurity decrease for any split that changes the class proportions — the $(400,400)$ counterexample shows misclassification tying two splits that Gini separates by $33\\%$. Certain",
+    "Bagging reduces variance only, and Theorem 8.3 caps the reduction at $\\rho\\sigma^2 + (1-\\rho)\\sigma^2/B$: at $\\rho=0.6$, ten trees already capture $1-1/B = 90\\%$ of the achievable gain and a thousand cannot go below $0.6\\sigma^2$, so decorrelation via feature subsampling — not more trees — is the only lever with real upside. Certain",
+    "Second-order boosting is diagonal Newton in function space: the leaf weight $-G_j/(H_j+\\lambda)$ and the split gain follow from a two-line minimization of a separable quadratic, $\\lambda$ is Tikhonov damping on the Newton step, $\\gamma$ is greedy cost-complexity pruning, and min_child_weight bounds curvature rather than sample count. Certain",
+    "Histogram binning turns $n-1$ candidate thresholds per feature into at most $255$, cuts feature storage to one byte per value, and enables sibling histograms by subtraction; the artifact measures a $6$–$7\\times$ end-to-end fit speedup at $n=10^5$, $d=16$ with no accuracy loss — $64$ bins scored $0.001$ RMSE better than exact-greedy. Verify",
+    "Gradient-boosted trees remain the right default above roughly $10^4$ tabular rows because of axis alignment, monotone invariance, and indifference to uninformative columns; random rotation of the features destroys that advantage and leaves MLPs untouched, which is the cleanest available proof that the advantage is inductive bias and not tuning. Below $10^4$ rows, prior-fitted transformers now win. Contested"
+   ],
+   "tags": {
+    "certain": 8,
+    "likely": 7,
+    "verify": 7,
+    "contested": 3
+   },
+   "part": "Part II",
+   "line_span": [
+    3822,
+    4223
+   ]
+  },
+  {
+   "n": 9,
+   "title": "Unsupervised Learning: PCA, Clustering, and Latent Variables",
+   "sections": [
+    "9.1 PCA: Three Derivations",
+    "9.2 Whitening and the Covariance Structure of Data",
+    "9.3 $k$-Means and Lloyd's Algorithm",
+    "9.4 Gaussian Mixtures and EM",
+    "9.5 Manifold Learning and Visualization Pitfalls",
+    "9.6 Autoencoders as Nonlinear PCA"
+   ],
+   "subsections": [
+    "9.4.1 The ELBO and Monotone Improvement"
+   ],
+   "artifact_title": "Artifact 9.1 — PCA by Power Iteration and Gaussian-Mixture EM from Scratch",
+   "artifact_count": 1,
+   "definitions": [
+    "Definition 9.1 (Centered data matrix, sample covariance)",
+    "Definition 9.2 (Whitening transform)",
+    "Definition 9.3 ($k$-means objective)",
+    "Definition 9.4 (Gaussian mixture)",
+    "Definition 9.5 (Evidence lower bound)"
+   ],
+   "theorems": [
+    "Theorem 9.1 (Variance maximization)",
+    "Theorem 9.2 (The three derivations coincide)",
+    "Theorem 9.3 (Power-iteration rate)",
+    "Theorem 9.4 (Lloyd is monotone and terminates)",
+    "Theorem 9.5 (Exact decomposition of the log-evidence)",
+    "Theorem 9.6 (EM is coordinate ascent on $\\mathcal{F}$, and the likelihood is monotone)",
+    "Theorem 9.7 ($k$-means is the zero-variance limit)",
+    "Theorem 9.8 (Linear autoencoders recover the PCA subspace, not the PCA basis)"
+   ],
+   "examples": [
+    "Example 9.1 (Four points, done by hand)",
+    "Example 9.2 (Whitening the four points)",
+    "Example 9.3 (A fixed point that is $67\\times$ worse than optimal)",
+    "Example 9.4 (Responsibilities harden as $\\sigma^2$ shrinks)",
+    "Example 9.5 (A rank-one autoencoder on the four points)"
+   ],
+   "warning_boxes": [
+    "Common Pitfall",
+    "Common Pitfall"
+   ],
+   "has_encrypted_note": true,
+   "encrypted_note_count": 1,
+   "read_alongside": "Read alongside — Bishop, PRML, for the canonical treatment of PCA, probabilistic PCA, mixture models and EM; its ELBO derivation is the one this chapter follows. Hastie, Tibshirani & Friedman, ESL, for clustering as a combinatorial problem and for the vantage that $k$-means is one algorithm among many for a badly-posed question. Murphy, Probabilistic Machine Learning: Advanced Topics, for the modern latent-variable view that connects Section 9.6 to VAEs and self-supervised objectives.",
+   "learning_objectives": [
+    "Derive PCA three ways — maximizing projected variance, minimizing reconstruction error, and truncating the SVD of the centered data matrix — and prove the three produce the same subspace.",
+    "Derive EM as coordinate ascent on the ELBO $\\mathcal{F}(q,\\theta)$ and prove that $\\log p(x\\mid\\theta)$ is monotone non-decreasing across iterations, with the exact condition under which the increment is zero.",
+    "Show that $k$-means is the $\\sigma^2\\to0$ limit of a Gaussian mixture with isotropic covariances $\\sigma^2 I$, and read Lloyd's algorithm off the E and M steps.",
+    "Explain why $t$-SNE and UMAP embedded distances are not a metric on the input space, and state precisely which conclusions an embedding plot cannot support.",
+    "Implement PCA by power iteration and Gaussian-mixture EM from scratch in working code, verified against the SVD and against a hard monotonicity assertion."
+   ],
+   "key_takeaways": [
+    "Maximizing projected variance, minimizing reconstruction error, and truncating the SVD of the centered data matrix are the same optimization; the identity $\\frac{1}{n-1}\\sum_i\\|\\tilde x_i - P\\tilde x_i\\|^2 = \\mathrm{tr}(C)-\\mathrm{tr}(W^\\top CW)$ is the whole proof, and it pins down only the subspace, never the basis. Certain",
+    "EM is coordinate ascent on $\\mathcal{F}(q,\\theta)$, and monotonicity follows because the E step makes the bound tight while the M step raises it; the guarantee says nothing about optimality, and for free covariances it can march monotonically into a singularity where one component captures one point. Certain",
+    "$k$-means is a Gaussian mixture with $\\Sigma_j=\\sigma^2I$ as $\\sigma^2\\to0$: responsibilities become nearest-centroid indicators and $-2\\sigma^2$ times the expected complete log-likelihood becomes the within-cluster sum of squares; in float64 the limit arrives by $\\sigma^2=0.01$, where labels match Lloyd's exactly and centroids to $4\\times10^{-15}$. Certain",
+    "$t$-SNE and UMAP penalize broken neighbourhoods severely and distorted global distances not at all, so an embedding plot supports no claim about cluster size, inter-cluster distance, density, or cluster count: an $11.8\\times$ spread in true cluster radii came out $1.0\\times$, and an exact isometric unrolling gave 10-NN overlap $0.983$ with distance correlation $0.106$. Certain",
+    "Modern self-supervised objectives are classical latent-variable objectives under a richer function class — masked prediction is a denoising autoencoder, a linear VAE is probabilistic PCA, contrastive learning's spectral form is PCA on the augmentation graph — and their identifiability limits carry over: without extra structure such as sparsity, only the representation's equivalence class is learnable, not its coordinates. Likely"
+   ],
+   "tags": {
+    "certain": 22,
+    "likely": 4,
+    "verify": 2,
+    "contested": 1
+   },
+   "part": "Part II",
+   "line_span": [
+    4223,
+    4680
+   ]
+  },
+  {
+   "n": 10,
+   "title": "The Multilayer Perceptron and What Depth Buys",
+   "sections": [
+    "10.1 From Perceptron to MLP",
+    "10.2 Universal Approximation and Its Limits",
+    "10.3 Depth versus Width: Linear Regions",
+    "10.4 Activation Functions",
+    "10.5 Parameter and FLOP Accounting",
+    "10.6 The Forward and Backward Pass by Hand"
+   ],
+   "subsections": [
+    "10.4.1 Gated Linear Units and SwiGLU"
+   ],
+   "artifact_title": "Artifact 10.1 — A 3-Layer MLP with a Hand-Derived Backward Pass, and Linear Regions Counted",
+   "artifact_count": 1,
+   "definitions": [
+    "Definition 10.1 (Multilayer perceptron)",
+    "Definition 10.2 (Activation pattern, linear region)"
+   ],
+   "theorems": [
+    "Theorem 10.1 (Universal approximation, sharp form)",
+    "Theorem 10.2 (Zaslavsky bound for one hidden layer)",
+    "Theorem 10.3 (Sawtooth: exponential regions from linear depth)",
+    "Theorem 10.4 (The $6ND$ rule)"
+   ],
+   "examples": [
+    "Example 10.1 (XOR in two ReLU units)",
+    "Example 10.2 (Cost of a 7B-parameter run)"
+   ],
+   "warning_boxes": [
+    "Common Pitfall"
+   ],
+   "has_encrypted_note": true,
+   "encrypted_note_count": 1,
+   "read_alongside": "Read alongside — Prince, Understanding Deep Learning, whose figures of ReLU networks folding input space are the best visual account of the linear-region argument in Section 10.3. Trask, Grokking Deep Learning, for backpropagation written out by hand with no framework, which is exactly what Section 10.6 and the artifact do. Goodfellow, Bengio & Courville, Deep Learning, for the historical framing of universal approximation and of the depth–width literature that preceded the modern separation results.",
+   "learning_objectives": [
+    "State the universal approximation theorem precisely, and state what it does not claim — nothing about learnability, nothing about sample complexity, and nothing usable about the width required.",
+    "Show that a deep ReLU network can represent a number of linear regions growing exponentially in depth $L$ but only polynomially in width $h$, and explain why that asymmetry, not universal approximation, is the argument for depth.",
+    "Compare sigmoid, tanh, ReLU, GELU, SiLU and the gated linear unit family on gradient flow and empirical quality, and derive the two-thirds hidden-dimension convention used with SwiGLU.",
+    "Compute the exact parameter count and forward FLOPs of an MLP and derive the $C = 6ND$ training-FLOP rule that Chapter 24 builds on.",
+    "Implement a 3-layer MLP with a hand-derived backward pass in working code, verified against central finite differences."
+   ],
+   "key_takeaways": [
+    "Universal approximation holds for a one-hidden-layer network iff the activation is not a polynomial; it is an existence statement with no width bound, no learnability claim, and no sample complexity, and a pathological activation satisfies it with $9d+3$ units, which is proof that the theorem is not about neural networks. Certain",
+    "A single ReLU layer of width $h$ gives $\\Theta(h^d)$ linear regions, polynomial in parameters, while composing $L$ layers gives $\\Omega(\\lfloor h/d\\rfloor^{d(L-1)})$ — parameters spent on depth enter an exponent, parameters spent on width enter a base, and that asymmetry, not universal approximation, is the argument for depth. Certain",
+    "Representable is not typical: the hand-built depth-6 width-4 network realizes all $4^6 = 4096$ regions on the unit square while the same architecture at He initialization realizes $58$, so the exponential capacity is available but not used at initialization, and what training does with it is genuinely unsettled. Contested",
+    "Activation choice is a gradient-flow decision: sigmoid caps the per-layer factor at $1/4$ and hence at $9.5\\times10^{-7}$ over ten layers, ReLU removes the cap at the cost of dead units, and GELU/SiLU differ from each other by less than seed noise; SwiGLU's $d_{\\text{ff}} = \\tfrac83 d$ is arithmetic that holds parameters fixed against a dense $4d$ MLP, not an empirical optimum. Likely",
+    "Each parameter costs $2$ FLOPs forward and $4$ backward, giving $C = 6ND$ for matmul-dominated training — $8.4\\times10^{22}$ FLOPs for 7B parameters on 2T tokens — and the rule excludes attention's $T^2$ term, assumes no recomputation, and says nothing about achieved throughput. Verify"
+   ],
+   "tags": {
+    "certain": 8,
+    "likely": 2,
+    "verify": 5,
+    "contested": 2
+   },
+   "part": "Part III",
+   "line_span": [
+    4680,
+    5071
+   ]
+  },
+  {
+   "n": 11,
+   "title": "Automatic Differentiation and Backpropagation",
+   "sections": [
+    "11.1 The Chain Rule as a Graph Operation",
+    "11.2 Forward Mode (JVP)",
+    "11.3 Reverse Mode (VJP) and the Tape",
+    "11.4 Building an Engine: Tensor, Broadcasting, Matmul",
+    "11.5 Activation Checkpointing",
+    "11.6 Higher-Order Derivatives and Double Backward",
+    "11.7 What PyTorch and JAX Actually Do"
+   ],
+   "subsections": [
+    "11.4.1 Non-differentiable points and in-place mutation"
+   ],
+   "artifact_title": "Artifact 11.1 — A Reverse-Mode Autodiff Engine in 236 Lines",
+   "artifact_count": 1,
+   "definitions": [
+    "Definition 11.1 (Evaluation trace)",
+    "Definition 11.2 (Jacobian-vector product, forward mode)",
+    "Definition 11.3 (Vector-Jacobian product, reverse mode)"
+   ],
+   "theorems": [
+    "Theorem 11.1 (Forward-mode cost)",
+    "Theorem 11.2 (Cheap gradient principle)",
+    "Theorem 11.3 (Square-root checkpointing schedule)"
+   ],
+   "examples": [
+    "Example 11.1 (Broadcast reduction, by hand)"
+   ],
+   "warning_boxes": [
+    "Common Pitfall"
+   ],
+   "has_encrypted_note": false,
+   "encrypted_note_count": 0,
+   "read_alongside": "Read alongside — Trask, Grokking Deep Learning, for backpropagation worked by hand on scalars before any framework exists; it is the cleanest antidote to treating loss.backward() as magic. Karpathy, Neural Networks: Zero to Hero, whose micrograd is the scalar ancestor of the tensor engine built in Section 11.4 — watch the video, then note exactly which lines below exist only because we moved from scalars to arrays. Goodfellow, Bengio & Courville, Deep Learning, for the general-form statement of the algorithm on arbitrary computational graphs, including the symbol-to-symbol view that Section 11.6 needs.",
+   "learning_objectives": [
+    "Distinguish symbolic, numerical, and automatic differentiation, and explain why only the third is viable at $N \\approx 10^{11}$ parameters.",
+    "Derive forward-mode and reverse-mode AD as Jacobian-vector and vector-Jacobian products, and prove that reverse mode costs a constant number of passes per output while forward mode costs a constant number per input.",
+    "Explain the memory–compute tradeoff of activation checkpointing and derive the $\\sqrt{L}$-memory schedule.",
+    "Explain how broadcasting, in-place operations, and non-differentiable points such as ReLU at zero are handled correctly in practice.",
+    "Implement a reverse-mode automatic differentiation engine in working code, verified against finite differences and against a reference framework."
+   ],
+   "key_takeaways": [
+    "Reverse-mode AD computes the entire gradient at a cost independent of the parameter count — one forward plus one reverse sweep, measured here at $3.4\\times$ the forward pass — whereas finite differences cost $2N$ evaluations and forward-mode AD costs $N$ passes; at $N = 10^{11}$ that is the difference between a training step and an impossibility. Certain",
+    "Forward mode computes $J\\dot x$ and needs one pass per input; reverse mode computes $J^\\top w$ and needs one pass per output. Choose by the aspect ratio of the Jacobian: losses have one output and $10^{11}$ inputs, which is the maximally favorable case for reverse mode and the maximally unfavorable one for forward. Certain",
+    "Reverse mode's cost is memory: the local Jacobians depend on forward values, so the trace must be retained. The $\\sqrt{L}$ checkpointing schedule cuts peak activation memory from $L$ to $2\\sqrt{L}$ — $15.8\\times$ at $L=1000$ — for exactly one extra forward pass, a $33\\%$ compute overhead; $O(\\log L)$ schedules exist but rarely pay in practice. Likely",
+    "Broadcasting is a linear copy map whose transpose is a sum, so a gradient flowing back through a broadcast must be reduced over the broadcast axes; getting this wrong is the defining bug of hand-written engines and can be silent rather than loud when the update is written out of place. Certain",
+    "At non-differentiable points every engine picks a subgradient by convention ($\\mathrm{relu}'(0)=0$ in PyTorch 2.13 and here), and the convention can be wrong even where the composite function is differentiable — $\\mathrm{relu}(x)-\\mathrm{relu}(-x)$ is the identity, yet AD reports derivative $0$ at the origin. It has never been shown to matter for training; NaN-producing derivatives such as $\\sqrt{\\cdot}$ at $0$ demonstrably do. Contested"
+   ],
+   "tags": {
+    "certain": 6,
+    "likely": 2,
+    "verify": 4,
+    "contested": 3
+   },
+   "part": "Part III",
+   "line_span": [
+    5071,
+    5463
+   ]
+  },
+  {
+   "n": 12,
+   "title": "Initialization, Normalization, and Signal Propagation",
+   "sections": [
+    "12.1 The Variance Propagation Problem",
+    "12.2 Xavier and He Initialization",
+    "12.3 Residual Connections as Identity Priors",
+    "12.4 BatchNorm: Mechanism and Myth",
+    "12.5 LayerNorm, RMSNorm, QK-Norm",
+    "12.6 Pre-Norm versus Post-Norm",
+    "12.7 Scaling Residual Branches"
+   ],
+   "subsections": [
+    "12.4.1 What it computes",
+    "12.4.2 The internal-covariate-shift story is wrong"
+   ],
+   "artifact_title": "Artifact 12.1 — Signal-Propagation Analyzer",
+   "artifact_count": 1,
+   "definitions": [
+    "Definition 12.1 (Variance map)",
+    "Definition 12.2 (Scale invariance)"
+   ],
+   "theorems": [
+    "Theorem 12.1 (Forward and backward variance recursion for ReLU)",
+    "Theorem 12.2 (Norm–direction decoupling)",
+    "Theorem 12.3 (Gradient paths)"
+   ],
+   "examples": [
+    "Example 12.1 (Fifty layers at width 256)",
+    "Example 12.2 (How much the mean actually matters)"
+   ],
+   "warning_boxes": [
+    "Common Pitfall"
+   ],
+   "has_encrypted_note": true,
+   "encrypted_note_count": 1,
+   "read_alongside": "Read alongside — Prince, Understanding Deep Learning, for the clearest published pictures of variance decay through depth and of what a residual stream is. Karpathy, Neural Networks: Zero to Hero, where the \"makemore\" episodes plot per-layer activation and gradient histograms and re-derive the Kaiming gain on screen; that video is this chapter's artifact in interactive form. Stanford CS336 for the modern design point — pre-norm, RMSNorm, QK-norm — treated as engineering decisions with measured consequences.",
+   "learning_objectives": [
+    "Derive Xavier and He initialization from the requirement that activation variance be preserved layer to layer, and state the gain factor each activation demands.",
+    "Explain what BatchNorm actually does — smoothing the loss landscape and decoupling weight norm from weight direction — and why the original internal-covariate-shift story is now considered wrong.",
+    "Contrast LayerNorm, RMSNorm, and QK-norm, and quantify why dropping the mean subtraction is safe at width $d$.",
+    "Derive why post-norm transformers need warmup and gradient clipping while pre-norm ones do not, and characterize the residual-stream variance growth that pre-norm buys this with.",
+    "Implement a signal-propagation analyzer in working code that measures forward and backward variance at every depth of a 50-layer network."
+   ],
+   "key_takeaways": [
+    "A depth-$L$ plain network multiplies its signal by $g^L$ with $g = n\\sigma^2/\\gamma^2$ for gain $\\gamma$; initialization is the one-line problem of setting $g=1$, and He ($\\sigma^2 = 2/n_{\\text{in}}$) is that solution for ReLU. Certain",
+    "Residual connections convert the depth dependence from multiplicative to additive, which is why they, not any initialization scheme, are what made depth past 30 layers possible. Certain",
+    "BatchNorm's benefit is loss-landscape smoothing plus scale invariance — the gradient is orthogonal to the weight, so $\\|W\\|$ only grows and the effective learning rate self-anneals — not reduced internal covariate shift. Likely",
+    "RMSNorm differs from LayerNorm by a term of relative size $\\sqrt{2/(\\pi d)}$, about $1.2\\%$ at $d=4096$; it is cheaper in FLOPs, in memory passes, and in ciphertext operations. Certain",
+    "Pre-norm's final normalizer shrinks top-block gradients by $\\sqrt{L}$ at initialization, which is why it survives without warmup; the price is a residual stream whose variance grows linearly in depth and blocks whose relative contribution decays as $1/l$. Likely"
+   ],
+   "tags": {
+    "certain": 6,
+    "likely": 7,
+    "verify": 5,
+    "contested": 1
+   },
+   "part": "Part III",
+   "line_span": [
+    5463,
+    5875
+   ]
+  },
+  {
+   "n": 13,
+   "title": "Optimizers: SGD to Muon",
+   "sections": [
+    "13.1 SGD and Momentum",
+    "13.2 Adaptive Methods: AdaGrad and RMSProp",
+    "13.3 Adam and Bias Correction",
+    "13.4 Weight Decay versus $L_2$: the AdamW Correction",
+    "13.5 Lion and Sign-Based Optimizers",
+    "13.6 Matrix Preconditioning: Shampoo, SOAP, Muon",
+    "13.7 Optimizer Memory Accounting"
+   ],
+   "subsections": [
+    "13.3.1 Adam as Sign Descent"
+   ],
+   "artifact_title": "Artifact 13.1 — Optimizers from scratch, verified against torch.optim",
+   "artifact_count": 1,
+   "definitions": [
+    "Definition 13.1 (Heavy-ball momentum)",
+    "Definition 13.2 (Spectral-norm steepest descent)"
+   ],
+   "theorems": [
+    "Theorem 13.1 (Adam is scaled sign descent)",
+    "Theorem 13.2 (Adam's trust-region radius)",
+    "Theorem 13.3 ($L_2$ and weight decay are inequivalent under preconditioning)"
+   ],
+   "examples": [
+    "Example 13.1 (Bias correction at the first step)"
+   ],
+   "warning_boxes": [
+    "Common Pitfall"
+   ],
+   "has_encrypted_note": false,
+   "encrypted_note_count": 0,
+   "read_alongside": "Read alongside — Goodfellow, Bengio & Courville, Deep Learning for the classical treatment of momentum, AdaGrad and RMSProp and the convergence framing they inherit from convex optimization; Prince, Understanding Deep Learning for the cleanest visual account of why per-coordinate scaling helps on an ill-conditioned loss; and Stanford CS336 for the current-practice end — AdamW hyperparameters that actually ship, and the matrix-preconditioner literature that displaced them.",
+   "learning_objectives": [
+    "Derive the Adam update and show that it factors into a signed step times a signal-to-noise trust region, so that the step is invariant to any positive rescaling of the per-parameter gradient.",
+    "Prove that $L_2$ regularization and weight decay are not equivalent under adaptive preconditioning, and state exactly what AdamW changes.",
+    "Explain bias correction and the role of $\\varepsilon$, and why $\\beta_2 \\approx 0.95$ is common for large language-model runs while $0.999$ is standard elsewhere.",
+    "Describe matrix-preconditioned optimizers — Shampoo, SOAP, and Muon with its Newton–Schulz orthogonalization — and the memory and compute they trade for a reduction in step count.",
+    "Implement SGD, Adam, AdamW, Lion, and Muon in working code."
+   ],
+   "key_takeaways": [
+    "Adam's update is $\\operatorname{sign}(\\mu_i)\\rho_i/\\sqrt{1+\\rho_i^2}$ in the stationary limit — sign descent modulated by a signal-to-noise trust region — and is exactly invariant to positive rescaling of any coordinate's gradient. Certain",
+    "$L_2$ and weight decay differ by $\\eta\\lambda(P_t - I)\\theta_t$ under any non-identity preconditioner; under Adam the $L_2$ decay is inversely proportional to gradient RMS and saturates at a $\\lambda$-independent step of $\\eta\\operatorname{sign}(\\theta)$. AdamW's fix is to keep $\\lambda\\theta$ out of the moments and shrink $\\theta$ multiplicatively. Certain",
+    "$\\beta_2 \\approx 0.95$ bounds a single Adam step at $\\sqrt{2}\\,\\eta$ where $\\beta_2 = 0.999$ permits up to $10\\eta$; at LLM batch sizes the shorter window costs almost no variance reduction and buys real stability. Likely",
+    "Muon replaces the diagonal preconditioner with steepest descent under the spectral norm, approximating $UV^\\top$ by five Newton–Schulz iterations at roughly $5d/B$ relative FLOP overhead and one buffer of state. Certain",
+    "PyTorch has shipped torch.optim.Muon since 2.9 for 2D parameters only, and production runs pair it with AdamW on embeddings, norms and the LM head; the \"$2\\times$ compute efficiency\" figure traces to Moonshot's arXiv:2502.16982, which reports matched quality at about 52% of AdamW's compute-optimal FLOPs. Verify"
+   ],
+   "tags": {
+    "certain": 6,
+    "likely": 4,
+    "verify": 5,
+    "contested": 1
+   },
+   "part": "Part III",
+   "line_span": [
+    5875,
+    6288
+   ]
+  },
+  {
+   "n": 14,
+   "title": "Regularization and the Generalization Levers That Actually Work",
+   "sections": [
+    "14.1 What Regularization Means Under Interpolation",
+    "14.2 Weight Decay and Its Implicit Bias",
+    "14.3 Dropout and Its Ensemble Interpretation",
+    "14.4 Data Augmentation and Vicinal Risk",
+    "14.5 Label Smoothing and Calibration",
+    "14.6 Early Stopping, Grokking, and Epoch-wise Double Descent",
+    "14.7 Why Language-Model Pretraining Uses Almost None of This"
+   ],
+   "subsections": [],
+   "artifact_title": "Artifact 14.1 — Regularization Ablation Harness",
+   "artifact_count": 1,
+   "definitions": [
+    "Definition 14.1 (Regularizer as a selection rule)",
+    "Definition 14.2 (Dropout)",
+    "Definition 14.3 (Vicinal risk minimization)"
+   ],
+   "theorems": [
+    "Theorem 14.1 (Weight decay on a scale-invariant block sets the effective learning rate)",
+    "Theorem 14.2 (Exact geometric-mean ensemble for a linear-softmax model)",
+    "Theorem 14.3 (Optimal logit gap under label smoothing)",
+    "Theorem 14.4 (Early stopping as implicit ridge)"
+   ],
+   "examples": [
+    "Example 14.1 (Equilibrium norm at typical LLM settings)",
+    "Example 14.2 (Reading the gap off a trained model)"
+   ],
+   "warning_boxes": [
+    "Common Pitfall",
+    "Common Pitfall"
+   ],
+   "has_encrypted_note": false,
+   "encrypted_note_count": 0,
+   "read_alongside": "Read alongside — Goodfellow, Bengio and Courville, Deep Learning, whose regularization treatment is still the most complete catalogue of the classical mechanisms and their Bayesian readings; read it knowing that its implicit assumption — that capacity control is the binding constraint — is exactly what this chapter disputes for the large-data regime. Prince, Understanding Deep Learning, for the modern framing of implicit regularization and double descent. Géron, Hands-On Machine Learning, for what the PyTorch API actually does when you type Dropout(0.2) or label_smoothing=0.1, which is not always what the paper says.",
+   "learning_objectives": [
+    "Prove that dropout with inference-time weight scaling computes the geometric-mean ensemble exactly for a linear-softmax model, and only approximately once a nonlinearity intervenes.",
+    "Derive the effect of label smoothing on the converged logit gap, $\\log\\big((K-1)(1-\\alpha)/\\alpha\\big)$, and explain why it improves calibration but degrades the same model as a distillation teacher.",
+    "Explain mixup and CutMix as vicinal risk minimization, and state where they help — vision, small data, long schedules — and where they do nothing.",
+    "Explain early stopping as an implicit norm constraint with effective ridge parameter $\\gamma \\approx 1/(\\eta t)$, and grokking as delayed generalization driven by weight decay.",
+    "Implement a regularization ablation harness in working code that verifies each mechanism against its closed form."
+   ],
+   "key_takeaways": [
+    "Under interpolation a regularizer selects which zero-training-error solution you get, and implicit selection by SGD noise, initialization, and the max-margin bias of gradient descent usually dominates any explicit penalty. Certain",
+    "Weight-scaled dropout inference is the geometric-mean ensemble exactly for linear-softmax models and, once a nonlinearity $\\phi$ intervenes, carries a second-order error $\\tfrac12\\phi''\\mathrm{Var}_m(z)$; for squared loss, input dropout is exactly an adaptive ridge with coefficient $(1-p)/p$ per feature second moment. Certain",
+    "On a scale-invariant block, decoupled weight decay does not constrain the function — it sets $\\eta_{\\text{eff}} = \\sqrt{2\\eta\\lambda}/G$, so any $\\lambda$ sweep that does not hold $\\eta_{\\text{eff}}$ fixed is a learning-rate sweep. Likely",
+    "Label smoothing pins the logit gap at $\\log((K-1)(1-\\alpha)/\\alpha)$, which improves calibration and destroys the wrong-class logit structure distillation depends on. Smooth final classifiers, never teachers. Likely",
+    "In one-epoch pretraining explicit regularizers are inert and only weight decay survives, for optimization reasons; the levers that move held-out loss are data quantity, deduplication, quality filtering, and mixture weights. Certain"
+   ],
+   "tags": {
+    "certain": 7,
+    "likely": 6,
+    "verify": 5,
+    "contested": 2
+   },
+   "part": "Part III",
+   "line_span": [
+    6288,
+    6681
+   ]
+  },
+  {
+   "n": 15,
+   "title": "Hyperparameter Transfer: muP, Schedules, and Batch Size",
+   "sections": [
+    "15.1 The Cost of Tuning at Scale",
+    "15.2 Standard Parameterization and Why It Breaks",
+    "15.3 muP and Feature Learning at Infinite Width",
+    "15.4 Coordinate Checks",
+    "15.5 Depth-muP and Residual Scaling",
+    "15.6 Learning-Rate Schedules",
+    "15.7 Batch Size and Critical Batch Size"
+   ],
+   "subsections": [
+    "15.6.1 What warmup is for",
+    "15.6.2 Cosine, WSD, and inverse square root"
+   ],
+   "artifact_title": "Artifact 15.1 — muP from Scratch with a Width-Sweep Assertion",
+   "artifact_count": 1,
+   "definitions": [
+    "Definition 15.1 (abc-parameterization)",
+    "Definition 15.2 (muP, Adam and SGD)",
+    "Definition 15.3 (Coordinate check)",
+    "Definition 15.4 (Critical batch size)"
+   ],
+   "theorems": [
+    "Theorem 15.1 (SP output blow-up after one step)"
+   ],
+   "examples": [
+    "Example 15.1 (Transferring one tuned learning rate)",
+    "Example 15.2 (What a factor of four past $B_{\\text{crit}}$ costs)"
+   ],
+   "warning_boxes": [
+    "Common Pitfall"
+   ],
+   "has_encrypted_note": false,
+   "encrypted_note_count": 0,
+   "read_alongside": "Read alongside — Stanford CS336 (Language Modeling from Scratch) is the closest course treatment: its scaling and training-recipe lectures cover muP, schedules, and batch-size selection with the same from-scratch bias as this chapter. The HuggingFace Ultra-Scale Playbook is the practical companion for the batch-size half, since global batch size is where optimization theory and data-parallel hardware constraints collide. The primary sources are Yang et al., Tensor Programs V (arXiv 2203.03466) and McCandlish et al., An Empirical Model of Large-Batch Training (arXiv 1812.06162); read the tables in both.",
+   "learning_objectives": [
+    "Derive the abc-parameterization and state the maximal-update scaling rules for initialization variance, learning rate, and output multiplier, separately for input/embedding, hidden, and readout layers.",
+    "Perform a coordinate check and use it to detect a mis-parameterized model before spending any large-run compute.",
+    "Explain what warmup is for, and compare cosine, warmup–stable–decay, and inverse-square-root schedules on horizon-dependence and final loss.",
+    "Derive the linear batch-size scaling rule from the noisy-quadratic model, state the square-root rule that replaces it under Adam, and locate the critical batch size $B_{\\text{crit}}$ beyond which scaling stops helping.",
+    "Implement muP in working code with a width-sweep verification that the argmin learning rate does not move."
+   ],
+   "key_takeaways": [
+    "Under SP the network output after one step scales as $\\Theta(\\eta n)$, forcing $\\eta \\propto 1/n$ and killing feature learning in the first layer; muP resolves this by giving different tensor classes different learning-rate exponents. Certain",
+    "With Adam the muP rules are three lines: leave embedding and bias learning rates alone, divide hidden and readout learning rates by the width multiplier $m$, and shrink the readout initialization variance by an extra factor of width. Certain",
+    "A coordinate check — activation RMS across a $16\\times$ width range after a few steps at a deliberately large learning rate — costs seconds and catches every exponent error before it costs a training run. Certain",
+    "WSD decouples the schedule from the horizon: one long run plus short cooldowns replaces $k$ full cosine runs for a scaling-law sweep, at matched or better final loss. Verify",
+    "$\\eta_{\\text{opt}}(B) = \\eta_{\\max}/(1 + B_{\\text{noise}}/B)$ gives linear scaling for SGD below $B_{\\text{crit}}$ and saturation above it; at $4B_{\\text{crit}}$ you pay $2.5\\times$ the compute of the balanced point to remove 37% of the steps. Certain"
+   ],
+   "tags": {
+    "certain": 9,
+    "likely": 3,
+    "verify": 5,
+    "contested": 1
+   },
+   "part": "Part III",
+   "line_span": [
+    6681,
+    7033
+   ]
+  },
+  {
+   "n": 16,
+   "title": "Convolutional Networks",
+   "sections": [
+    "16.1 Locality, Weight Sharing, Equivariance",
+    "16.2 Convolution Arithmetic: stride, padding, dilation",
+    "16.3 im2col and the Matmul Reduction",
+    "16.4 The Backward Pass",
+    "16.5 Pooling, Downsampling, and Receptive Fields",
+    "16.6 LeNet to ResNet to EfficientNet",
+    "16.7 ConvNeXt and What That Experiment Proved",
+    "16.8 Depthwise-Separable Convolutions"
+   ],
+   "subsections": [
+    "16.6.1 Why residuals work: two accounts"
+   ],
+   "artifact_title": "Artifact 16.1 — Conv2d forward and backward from scratch",
+   "artifact_count": 1,
+   "definitions": [
+    "Definition 16.1 (Convolution layer)"
+   ],
+   "theorems": [
+    "Theorem 16.1 (Translation equivariance)",
+    "Theorem 16.2 (Backward is a flipped convolution)",
+    "Theorem 16.3 (Receptive-field recursion)"
+   ],
+   "examples": [
+    "Example 16.1 (Every arithmetic case on one line)"
+   ],
+   "warning_boxes": [
+    "Common Pitfall"
+   ],
+   "has_encrypted_note": true,
+   "encrypted_note_count": 1,
+   "read_alongside": "Read alongside — Goodfellow, Bengio & Courville, Deep Learning, for the cleanest statement of the sparse-interaction / parameter-sharing / equivariance triple and for the variants (unshared, tiled, locally connected) this chapter compresses. Prince, Understanding Deep Learning, for the receptive-field and downsampling diagrams, which are the best in print. Géron, Hands-On Machine Learning (2025 PyTorch edition), for the practical layer-by-layer construction of ResNet-style networks and for training-recipe details that Section 16.7 argues are doing most of the work.",
+   "learning_objectives": [
+    "Express a convolution layer as an im2col matrix multiplication $Y = W_{\\text{mat}} C$ and derive its exact parameter and FLOP counts.",
+    "Derive the backward pass: $\\bar{x}$ is a correlation of $\\bar{y}$ with the spatially flipped, channel-transposed kernel, and $\\bar{w}$ is a correlation of $x$ with $\\bar{y}$.",
+    "Compute receptive-field growth analytically for a stack of strided and dilated convolutions via $r_l = r_{l-1} + (k_l-1)d_l\\,j_{l-1}$, $j_l = j_{l-1}s_l$.",
+    "Explain why residual connections enabled networks past a hundred layers, using both the identity-gradient-path account and the ensemble-of-shallow-paths account.",
+    "Implement Conv2d forward and backward from scratch in working code, verified against torch.autograd on both gradients."
+   ],
+   "key_takeaways": [
+    "A convolution is a dense layer whose matrix is constrained to be block-Toeplitz; im2col makes the reduction to GEMM exact, at the price of a $k_hk_w/s^2$ activation blowup that implicit-GEMM kernels avoid by never materializing it. Certain",
+    "The backward pass is a full correlation of $\\bar y$ with the spatially flipped, channel-transposed kernel (with zero-insertion for stride), and $\\bar w$ is a correlation of $x$ with $\\bar y$ — the same identity that makes transposed convolution the gradient of strided convolution. Certain",
+    "Receptive field follows $r_l = r_{l-1} + (k_l-1)d_lj_{l-1}$, $j_l = j_{l-1}s_l$: linear in depth without downsampling, geometric with it, and the effective field is Gaussian and grows only as $O(\\sqrt{L})$. Likely",
+    "Residual connections put an exact $I$ in $\\prod_m (I+J_m)$, which both forbids multiplicative gradient degeneracy and expands into $2^{L-l}$ paths dominated by short ones; the two readings disagree only about what “effective depth” means. Contested",
+    "ConvNeXt's ladder attributes $2.7$ of the $5.2$-point ResNet-50-to-Swin-T gap to the training recipe with the architecture untouched; the convolutional prior's remaining advantage is concentrated in the small-data regime. Likely"
+   ],
+   "tags": {
+    "certain": 5,
+    "likely": 7,
+    "verify": 3,
+    "contested": 3
+   },
+   "part": "Part IV",
+   "line_span": [
+    7033,
+    7430
+   ]
+  },
+  {
+   "n": 17,
+   "title": "Recurrence: RNNs, LSTMs, and the Gradient Pathology",
+   "sections": [
+    "17.1 Sequence Modeling and State",
+    "17.2 The Vanilla RNN and BPTT",
+    "17.3 Vanishing and Exploding Gradients",
+    "17.4 LSTM: Gates and the Cell-State Highway",
+    "17.5 GRU",
+    "17.6 Bidirectionality, Truncation, Gradient Clipping",
+    "17.7 seq2seq and the Attention Bottleneck That Started Everything"
+   ],
+   "subsections": [],
+   "artifact_title": "Artifact 17.1 — LSTM with BPTT, and the decay table",
+   "artifact_count": 1,
+   "definitions": [
+    "Definition 17.1 (Recurrent map)",
+    "Definition 17.2 (Elman RNN)",
+    "Definition 17.3 (LSTM cell)",
+    "Definition 17.4 (GRU cell)",
+    "Definition 17.5 (Norm clipping)"
+   ],
+   "theorems": [
+    "Theorem 17.1 (BPTT gradient decomposition)",
+    "Theorem 17.2 (Growth rate of the Jacobian product)",
+    "Theorem 17.3 (Constant error carousel)",
+    "Theorem 17.4 (Sequential depth, and when it collapses)"
+   ],
+   "examples": [
+    "Example 17.1 (Two units, done by hand)"
+   ],
+   "warning_boxes": [
+    "Common Pitfall"
+   ],
+   "has_encrypted_note": true,
+   "encrypted_note_count": 1,
+   "read_alongside": "Read alongside — Goodfellow, Bengio & Courville, Deep Learning, for the canonical treatment of BPTT, the vanishing-gradient analysis, and echo-state initialization; its sequence-modeling material is the reference derivation for Sections 17.2–17.4. Prince, Understanding Deep Learning, for the clearest gate diagrams. Chakraborty, Introduction to Large Language Models (and the NPTEL lectures), for how seq2seq with attention became the Transformer — Section 17.7 compresses that arc.",
+   "learning_objectives": [
+    "Derive backpropagation through time and exhibit the gradient as a sum over source steps of a product of Jacobians $\\prod_{k} \\partial h_k/\\partial h_{k-1}$, whose growth or decay is governed by the spectral radius $\\rho(W_h)$.",
+    "Explain the LSTM constant-error carousel and prove that along the cell-state path the gradient multiplier is exactly the forget gate: $\\partial c_t/\\partial c_{t-1} = \\mathrm{diag}(f_t)$.",
+    "Compare LSTM and GRU parameter counts — $4(d_h d_{\\text{in}} + d_h^2 + d_h)$ against $3(d_h d_{\\text{in}} + d_h^2 + d_h)$ — and state the empirical verdict on when the $25\\%$ difference matters.",
+    "Quantify the parallelism deficit: $\\Theta(T)$ sequential operations for recurrence against $\\Theta(1)$ for attention, and convert that into a measured hardware-utilization gap.",
+    "Implement an LSTM cell with backpropagation through time in working code, verified against torch.nn.LSTM and instrumented to measure gradient decay."
+   ],
+   "key_takeaways": [
+    "BPTT is reverse mode on the unrolled graph with weight tying, so the gradient is a double sum whose inner term is $J_{t\\leftarrow k} = \\prod_{j=k+1}^t D_jW_h$; long-range credit assignment is entirely a statement about the magnitude of that matrix product. Certain",
+    "The asymptotic per-step growth factor is the spectral radius $\\rho(W_h)$, not $\\|W_h\\|_2$; measured $\\|W_h^T\\|_2^{1/T}$ converges to $0.50077$, $0.90138$ and $1.20184$ for $\\rho = 0.5, 0.9, 1.2$ at $T=256$, and saturation of $\\tanh$ turns even $\\rho>1$ into decay. Certain",
+    "Along the LSTM cell path the gradient multiplier is exactly $\\mathrm{diag}(f_t)$ — diagonal, bounded by 1, and directly settable through the forget-gate bias — which is why the measured $\\|\\partial h_T/\\partial h_0\\|_2$ at $T=256$ is $2.311$ for an LSTM and $2.828\\times10^{-46}$ for a $\\tanh$ RNN. Certain",
+    "The GRU has exactly $75\\%$ of the LSTM's parameters by dropping the output gate and coupling input to forget; across large ablations neither architecture consistently wins, so the difference matters for memory and bandwidth, not accuracy. Contested",
+    "Recurrence costs $\\Theta(T)$ sequential steps against attention's $\\Theta(1)$, each step too small to fill a GPU — a measured $24\\times$ utilization gap at batch 1, even on CPU — and the fix is not better gating but making the recurrence associative, which is Chapter 21. Likely"
+   ],
+   "tags": {
+    "certain": 6,
+    "likely": 6,
+    "verify": 6,
+    "contested": 3
+   },
+   "part": "Part IV",
+   "line_span": [
+    7430,
+    7821
+   ]
+  },
+  {
+   "n": 18,
+   "title": "Attention and the Transformer",
+   "sections": [
+    "18.1 From seq2seq Attention to Self-Attention",
+    "18.2 Queries, Keys, Values",
+    "18.3 Multi-Head Attention",
+    "18.4 Masking and the Mask-Then-Softmax Ordering Bug",
+    "18.5 The Full Block: Residual Stream, Feed-Forward, Norms",
+    "18.6 MQA, GQA, and KV-Cache Economics",
+    "18.7 Complexity Accounting and the Quadratic Wall",
+    "18.8 The Residual Stream as a Communication Channel"
+   ],
+   "subsections": [
+    "18.2.1 Why the Scaling Factor"
+   ],
+   "artifact_title": "Artifact 18.1 — Multi-head attention and a pre-norm transformer block in NumPy",
+   "artifact_count": 1,
+   "definitions": [
+    "Definition 18.1 (Scaled dot-product attention)",
+    "Definition 18.2 (Self-attention)",
+    "Definition 18.3 (Multi-head attention)"
+   ],
+   "theorems": [
+    "Theorem 18.1 (Softmax Jacobian and its contraction)",
+    "Theorem 18.2 (Logit variance under standard initialization)"
+   ],
+   "examples": [
+    "Example 18.1 (Saturation in four dimensions)"
+   ],
+   "warning_boxes": [
+    "Common Pitfall"
+   ],
+   "has_encrypted_note": true,
+   "encrypted_note_count": 1,
+   "read_alongside": "Read alongside — Raschka, Build a Large Language Model (From Scratch), for the line-by-line construction of causal multi-head attention and the KV cache, which is the closest text to this chapter's artifact. Karpathy, nanoGPT and the Zero to Hero attention lecture, for the same block written as compactly as it can be written and still be read. Prince, Understanding Deep Learning, for the clearest picture of what the attention matrix is actually doing to a sequence, and for the pre-norm/post-norm comparison.",
+   "learning_objectives": [
+    "Derive scaled dot-product attention and prove that the $1/\\sqrt{d_k}$ factor holds logit variance at $\\Theta(1)$ under standard initialization.",
+    "Derive the attention backward pass, including the softmax Jacobian $J = \\mathrm{diag}(p) - pp^{\\top}$ and its contraction $\\bar{s} = p \\odot (\\bar{p} - \\langle \\bar{p}, p\\rangle)$.",
+    "Compute exact parameter counts and FLOPs for a transformer block, and locate the sequence length at which the $4n^2d$ attention term overtakes the feed-forward term.",
+    "Explain multi-head, multi-query, and grouped-query attention, and compute the KV-cache reduction each buys.",
+    "Implement multi-head attention and a complete pre-norm transformer block in working code, verified against a reference implementation, finite differences, and a cached-decode identity."
+   ],
+   "key_takeaways": [
+    "Attention is soft dictionary lookup: $\\mathrm{softmax}(QK^{\\top}/\\sqrt{d_k})V$ produces a convex combination of value rows, so it can interpolate among stored values but never extrapolate beyond them. Certain",
+    "The $1/\\sqrt{d_k}$ factor exists solely to keep logit variance at $\\Theta(1)$ at initialization, because $\\mathrm{Var}(q^{\\top}k) = d_k$ and a saturated softmax has a vanishing Jacobian $\\mathrm{diag}(p) - pp^{\\top}$. Certain",
+    "Mask by adding $-\\infty$ to logits, never by multiplying the probabilities: the second version leaves the softmax denominator wrong, trains anyway, and silently converges worse. Certain",
+    "A block costs $12d^2 + 13d$ parameters and $8nd^2 + 4nd\\,d_{\\text{ff}} + 4n^2d$ forward FLOPs; the quadratic term overtakes the FFN at $n = d_{\\text{ff}} = 4d$ and all linear terms at $n = 6d$. Certain",
+    "GQA at $H_{kv} = 8$ cuts the KV cache $4\\times$ (MQA, $32\\times$) at little measured quality cost, but whether head-count reduction or low-rank latent caching is the right axis is unsettled and needs a matched-cache-byte comparison. Contested"
+   ],
+   "tags": {
+    "certain": 11,
+    "likely": 3,
+    "verify": 1,
+    "contested": 2
+   },
+   "part": "Part IV",
+   "line_span": [
+    7821,
+    8216
+   ]
+  },
+  {
+   "n": 19,
+   "title": "Positional Information and Long Context",
+   "sections": [
+    "19.1 Why Attention Needs Position at All",
+    "19.2 Sinusoidal and Learned Embeddings",
+    "19.3 Relative Position Biases and ALiBi",
+    "19.4 RoPE: Derivation and Properties",
+    "19.5 Context Extension: PI, NTK-aware, YaRN",
+    "19.6 Base-Frequency Changes in Practice",
+    "19.7 Attention Sinks and Sliding Windows",
+    "19.8 What Long-Context Benchmarks Actually Measure"
+   ],
+   "subsections": [],
+   "artifact_title": "Artifact 19.1 — RoPE Two Ways, and the Wavelength Ledger",
+   "artifact_count": 1,
+   "definitions": [
+    "Definition 19.1 (Rotary position embedding)",
+    "Definition 19.2 (Rotation count)"
+   ],
+   "theorems": [
+    "Theorem 19.1 (Relative-position property)",
+    "Theorem 19.2 (Uniqueness of the rotary form)"
+   ],
+   "examples": [
+    "Example 19.1 (Which pairs get interpolated, by hand)"
+   ],
+   "warning_boxes": [
+    "Common Pitfall"
+   ],
+   "has_encrypted_note": false,
+   "encrypted_note_count": 0,
+   "read_alongside": "Read alongside — Raschka, Build a Large Language Model (From Scratch) for a line-by-line rotary implementation you can diff against the artifact below; Prince, Understanding Deep Learning for the clearest pictures of what a position encoding does to an attention map; and Stanford CS336, whose assignments make you write the rotary cache and then break it at long context, which is the fastest way to internalise Section 19.5.",
+   "learning_objectives": [
+    "Prove that rotary position embedding makes the query–key inner product a function of the position difference alone, and derive the block-rotation form from that requirement.",
+    "Compare sinusoidal, learned-absolute, ALiBi, rotary, and no-positional-encoding on extrapolation, and state precisely what each one generalizes.",
+    "Explain position interpolation, NTK-aware scaling, and YaRN in terms of wavelength relative to trained context length $T_{\\text{train}}$, and compute which rotary pairs are long-wavelength for a given base $b$.",
+    "Explain the attention-sink phenomenon and why the first key–value pair must be retained under streaming or windowed attention.",
+    "Implement rotary embeddings and a context-extension scheme in working code."
+   ],
+   "key_takeaways": [
+    "Attention is permutation-equivariant; the causal mask supplies an ordering but no metric, so position must be injected at the input, the logit, or the $q$–$k$ product. Certain",
+    "Any continuous, norm-preserving linear position map whose inner product depends only on $n-m$ is a set of $2\\times2$ rotations in some basis. RoPE is not one option among many — it is the general solution, and the only free choice is the frequencies. Certain",
+    "PI, NTK-aware scaling and YaRN differ only in which pairs get $\\theta_i \\mapsto \\theta_i/s$: all of them, a geometric sweep, or exactly those with rotation count $r_i = T_{\\text{train}}/\\lambda_i$ below $\\alpha=1$, ramping to untouched above $\\beta=32$. Certain",
+    "Deployed base frequencies have moved from $10^4$ to $5\\times10^5$ (Llama 3.1) and $10^7$ (Qwen3.6); read the value from the checkpoint's config rather than from any book, including this one. Verify",
+    "The first token absorbs surplus softmax mass; evicting it shrinks the denominator and inflates every surviving weight (measured: $10.75\\times$ on the largest). Current models replace the improvised sink with a learned per-head scalar in the denominator that needs no KV entry. Verify"
+   ],
+   "tags": {
+    "certain": 5,
+    "likely": 1,
+    "verify": 9,
+    "contested": 2
+   },
+   "part": "Part IV",
+   "line_span": [
+    8216,
+    8613
+   ]
+  },
+  {
+   "n": 20,
+   "title": "Vision Transformers and Multimodal Encoders",
+   "sections": [
+    "20.1 Images as Token Sequences",
+    "20.2 The ViT Architecture and Its Costs",
+    "20.3 Data Hunger, DeiT, and Distillation",
+    "20.4 Masked Image Modeling",
+    "20.5 Contrastive Vision–Language: CLIP",
+    "20.6 Self-Distillation: DINO and Its Successors",
+    "20.7 Hierarchical and Windowed ViTs",
+    "20.8 Feeding Vision to a Language Model"
+   ],
+   "subsections": [
+    "20.5.1 SigLIP and the Sigmoid Loss"
+   ],
+   "artifact_title": "Artifact 20.1 — ViT Forward Pass, InfoNCE, and the Sigmoid Loss",
+   "artifact_count": 1,
+   "definitions": [
+    "Definition 20.1 (Patch embedding)",
+    "Definition 20.2 (Symmetric InfoNCE / contrastive image–text loss)",
+    "Definition 20.3 (Pairwise sigmoid loss)",
+    "Definition 20.4 (Self-distillation with an EMA teacher)"
+   ],
+   "theorems": [
+    "Theorem 20.1 (Where attention starts to dominate)",
+    "Theorem 20.2 (The sigmoid loss decomposes over pairs; InfoNCE does not)"
+   ],
+   "examples": [
+    "Example 20.1 (Sequence length at standard resolution)",
+    "Example 20.2 (ViT-Base/16 parameter count)"
+   ],
+   "warning_boxes": [
+    "Common Pitfall"
+   ],
+   "has_encrypted_note": true,
+   "encrypted_note_count": 1,
+   "read_alongside": "Read alongside — Prince, Understanding Deep Learning, for the clearest pictures of patch tokenization and of what a windowed attention map covers. Géron, Hands-On Machine Learning (2025 PyTorch edition), for image pipelines, augmentation stacks, and fine-tuning a pretrained backbone without breaking it. The primary papers are unusually readable: Dosovitskiy (ViT), Touvron (DeiT), Radford (CLIP), Zhai (sigmoid loss).",
+   "learning_objectives": [
+    "Derive patch embedding as a convolution whose kernel equals its stride, and compute the sequence length, parameter count and FLOPs of a base-size Vision Transformer at $224\\times224$.",
+    "Explain why Vision Transformers lose to convolutional networks below roughly ten million images, and how augmentation, distillation and masked pretraining close the gap.",
+    "Derive the contrastive image–text objective, explain what the temperature $\\tau$ controls, and derive the sigmoid-loss alternative and why it removes the all-gather dependence on batch size.",
+    "Explain self-distillation with an exponential-moving-average teacher, the roles of centering and sharpening, and why representational collapse is the failure mode to guard against.",
+    "Implement a Vision Transformer forward pass and both contrastive objectives in working code, verified against analytic parameter and FLOP formulas and by finite differences."
+   ],
+   "key_takeaways": [
+    "Patch embedding is a convolution with kernel equal to stride; at $224$ and $P=16$ it yields $196$ patches, $197$ tokens, and ViT-Base's $85.8$M backbone parameters follow from $N = (CP^2{+}1)d + d + nd + L(12d^2{+}13d) + 2d$. Certain",
+    "ViT's quadratic attention term is negligible at standard resolution — $4.1\\%$ of block FLOPs — and only matches the projection term at $n = 6d$, i.e. $4608$ tokens for $d=768$. Certain",
+    "ViT loses to convnets below roughly ten million images because it must learn locality rather than be given it; augmentation, hard distillation from a convnet teacher, and masked pretraining each recover the gap without touching the architecture. Likely",
+    "InfoNCE's softmax normalizer couples every pair in the batch, forcing an all-gather and a $B \\times B$ logit matrix; the sigmoid loss is a sum of independent per-pair binary problems, so it accumulates chunk-by-chunk with $O(b^2)$ memory and no global reduction. Certain",
+    "The architecture has been stable since 2020; the frontier is the objective — sigmoid alignment plus captioning and self-distillation in SigLIP 2, Gram anchoring in DINOv3, intermediate-layer alignment in Perception Encoder, and multi-teacher distillation in EUPE. Verify"
+   ],
+   "tags": {
+    "certain": 9,
+    "likely": 6,
+    "verify": 9,
+    "contested": 1
+   },
+   "part": "Part IV",
+   "line_span": [
+    8613,
+    9114
+   ]
+  },
+  {
+   "n": 21,
+   "title": "State Space Models: S4, Mamba, and the SSD Duality",
+   "sections": [
+    "21.1 Continuous SSMs and Discretization",
+    "21.2 HiPPO and Principled Initialization",
+    "21.3 S4: the Convolution View",
+    "21.4 Diagonal SSMs and Gating",
+    "21.5 Mamba: Selective State Spaces",
+    "21.6 Mamba-2 and Structured State-Space Duality",
+    "21.7 Linear Attention, RWKV, RetNet, and the Unified View",
+    "21.8 Hybrids and the Recall–Efficiency Tradeoff"
+   ],
+   "subsections": [
+    "21.5.1 The Parallel Scan"
+   ],
+   "artifact_title": "Artifact 21.1 — Three Equivalences: Scan, Convolution, and the SSD Duality",
+   "artifact_count": 1,
+   "definitions": [
+    "Definition 21.1 (Zero-order hold discretization)",
+    "Definition 21.2 (Selective SSM)"
+   ],
+   "theorems": [
+    "Theorem 21.1 (HiPPO-LegS, Gu et al. 2020)",
+    "Theorem 21.2 (Structured state-space duality)"
+   ],
+   "examples": [
+    "Example 21.1 (A first-order kernel by hand)"
+   ],
+   "warning_boxes": [
+    "Common Pitfall"
+   ],
+   "has_encrypted_note": true,
+   "encrypted_note_count": 1,
+   "read_alongside": "Read alongside — the primary papers, still the only complete treatment: Gu, Goel & Ré (S4), Gu & Dao (Mamba), Dao & Gu (Transformers are SSMs, the SSD paper), plus Albert Gu's Goomba Lab blog series, the clearest exposition of the semiseparable-matrix argument anywhere. Prince, Understanding Deep Learning, for the recurrence and convolution background assumed here.",
+   "learning_objectives": [
+    "Derive the continuous state-space equations $h' = Ah + Bx$, their zero-order-hold discretization, and the convolution kernel $K_\\ell = C\\bar{A}^\\ell\\bar{B}$ that the discretization implies.",
+    "Explain HiPPO initialization as exact online projection onto an orthogonal polynomial basis, and why diagonal-plus-low-rank structure makes the S4 kernel computable in near-linear rather than $O(N^2T)$ time.",
+    "Explain why making $\\Delta$, $B$, $C$ input-dependent destroys time-invariance, forbids the FFT convolution, and forces a hardware-aware parallel scan.",
+    "State the structured state-space duality — a selective SSM with scalar-identity transitions equals a masked matrix multiply $Y = (L \\odot CB^\\top)X$ with $L$ 1-semiseparable — and what that equality buys.",
+    "Implement a selective scan both sequentially and as a Blelloch associative parallel scan in working code, and verify the SSD equality numerically."
+   ],
+   "key_takeaways": [
+    "A linear time-invariant recurrence is a convolution: ZOH discretization gives $\\bar A = e^{\\Delta A}$, $\\bar B = A^{-1}(e^{\\Delta A}-I)B$, and $K_\\ell = C\\bar A^\\ell \\bar B$, so training runs an FFT in $O(T\\log T)$ and inference runs the recurrence in $O(N)$ per token. Certain",
+    "HiPPO is not a heuristic: the coefficients of the optimal Legendre projection of the input history satisfy exactly a linear ODE, and its matrix is normal-plus-rank-one, which is what makes the S4 kernel computable in $\\tilde O(N+T)$ via Woodbury and a Cauchy kernel. Certain",
+    "Selectivity means $\\Delta_t, B_t, C_t$ depend on $x_t$; this is precisely what LTI forbids and precisely what content-based recall requires. It costs the FFT and buys gating, leaving an associative scan — $2T-2$ work, $2\\lceil \\log_2 T\\rceil$ depth — as the only parallel training algorithm. Certain",
+    "SSD: with $\\bar A_t = a_tI$, the recurrence equals $Y = (L\\odot CB^\\top)X$ with $L$ 1-semiseparable — masked attention with softmax deleted and the binary mask replaced by a decay mask. The artifact asserts this to $4.2\\times10^{-14}$. Certain",
+    "Pure SSMs do not replace transformers: they win on perplexity-per-FLOP and lose on in-context recall, and the near-universal adoption of hybrids is the field's own verdict. Mamba-3 (2026) narrows the gap with complex transitions and half the state; treat any claim about the frontier as dated. Contested"
+   ],
+   "tags": {
+    "certain": 6,
+    "likely": 2,
+    "verify": 5,
+    "contested": 2
+   },
+   "part": "Part IV",
+   "line_span": [
+    9114,
+    9467
+   ]
+  },
+  {
+   "n": 22,
+   "title": "Mixture of Experts and Conditional Computation",
+   "sections": [
+    "22.1 Conditional Computation: the FLOPs/Parameters Decoupling",
+    "22.2 Top-k Routing and the Gate",
+    "22.3 Load Balancing",
+    "22.4 Capacity, Dropping, Expert-Choice Routing",
+    "22.5 Shared and Fine-Grained Experts",
+    "22.6 Expert Parallelism and All-to-All",
+    "22.7 Training Instabilities: Router z-Loss and Expert Collapse",
+    "22.8 Serving: Memory, Batching, Offload"
+   ],
+   "subsections": [
+    "22.3.1 Auxiliary-Loss-Free Balancing"
+   ],
+   "artifact_title": "Artifact 22.1 — A Routed MoE Layer with Both Balancing Schemes",
+   "artifact_count": 1,
+   "definitions": [
+    "Definition 22.1 (Sparse MoE layer)"
+   ],
+   "theorems": [
+    "Theorem 22.1 (The auxiliary loss is minimized at uniform routing)"
+   ],
+   "examples": [
+    "Example 22.1 (Parameter accounting for DeepSeek-V3)",
+    "Example 22.2 (Top-2 gating by hand)"
+   ],
+   "warning_boxes": [
+    "Common Pitfall"
+   ],
+   "has_encrypted_note": true,
+   "encrypted_note_count": 1,
+   "read_alongside": "Read alongside — Stanford CS336 has the closest lecture treatment of MoE architectures and routing trade-offs; the HuggingFace Ultra-Scale Playbook covers expert parallelism and all-to-all communication from the systems side; Raschka, Build a Large Language Model (From Scratch), for the from-scratch implementation discipline this chapter's artifact follows.",
+   "learning_objectives": [
+    "Derive top-$k$ gating and compute the active-versus-total parameter ratio for a real production configuration such as DeepSeek-V3's 37B-of-671B.",
+    "Explain the load-balancing problem, derive the standard auxiliary loss $\\mathcal{L}_{\\text{aux}} = \\alpha E \\sum_e f_e P_e$, and explain the auxiliary-loss-free bias-adjustment alternative and precisely what it removes from the gradient.",
+    "Explain capacity factor, token dropping, and the difference between token-choice and expert-choice routing.",
+    "Compute the all-to-all communication volume of expert parallelism and explain why MoE models are bandwidth-bound during batched inference and memory-capacity-bound at serving.",
+    "Implement a routed mixture-of-experts layer with dispatch/combine, capacity dropping, and both load-balancing schemes in working code."
+   ],
+   "key_takeaways": [
+    "MoE decouples parameters from FLOPs: a token activates $k$ of $E$ experts, so capacity scales with $E$ while per-token compute scales with $k$; production ratios have fallen to 3–6% active (DeepSeek-V3: 37B of 671B). Verify",
+    "Top-$k$ selection passes no gradient; routers learn only through the gate values of the winners, and the resulting rich-get-richer feedback makes load balancing the central training problem of the architecture. Certain",
+    "The auxiliary loss $\\alpha E \\sum_e f_e P_e$ is minimized exactly at uniform load (Chebyshev) but injects an interference gradient into every token representation; loss-free bias adjustment achieves balance through a per-expert selection bias updated by a sign rule, contributing zero gradient anywhere. Certain",
+    "Expert-choice routing gives perfect balance by construction but breaks causality for autoregressive decoding, which is why decoder LLMs remain token-choice with capacity-and-drop or dropless kernels. Likely",
+    "Expert parallelism moves $2kd$ elements per token per layer through all-to-all collectives ($\\approx$13 MB/token/forward for DeepSeek-V3 in bf16), making training and batched inference interconnect-bandwidth-bound, while serving is memory-capacity-bound because all $E$ experts must stay resident for a 5% utilization. Verify"
+   ],
+   "tags": {
+    "certain": 3,
+    "likely": 8,
+    "verify": 13,
+    "contested": 0
+   },
+   "part": "Part V",
+   "line_span": [
+    9467,
+    9756
+   ]
+  },
+  {
+   "n": 23,
+   "title": "Tokenization and the Language-Modeling Objective",
+   "sections": [
+    "23.1 Next-Token Prediction as Maximum Likelihood",
+    "23.2 Why Not Characters or Words",
+    "23.3 BPE: Training and Encoding",
+    "23.4 WordPiece and Unigram",
+    "23.5 Vocabulary Size as a Scaling Variable",
+    "23.6 Tokenizer Pathologies: Digits, Whitespace, Code, Glitch Tokens",
+    "23.7 Perplexity, Bits-per-Byte, and Cross-Tokenizer Comparison",
+    "23.8 Tokenizer-Free Approaches"
+   ],
+   "subsections": [
+    "23.3.1 Byte-level fallback",
+    "23.3.2 Pre-tokenization regexes",
+    "23.3.3 Encoding must replay training",
+    "23.5.1 The multilingual token tax"
+   ],
+   "artifact_title": "Artifact 23.1 — Byte-Level BPE and a Bits-per-Byte Evaluator",
+   "artifact_count": 1,
+   "definitions": [
+    "Definition 23.1 (Language-modeling objective)",
+    "Definition 23.2 (Byte-pair encoding)",
+    "Definition 23.3 (Perplexity and bits-per-byte)"
+   ],
+   "theorems": [
+    "Theorem 23.1 (Perplexity is tokenizer-relative; bits-per-byte is not)"
+   ],
+   "examples": [
+    "Example 23.1 (Two merges by hand)",
+    "Example 23.2 (Converting the artifact’s numbers)"
+   ],
+   "warning_boxes": [
+    "Common Pitfall",
+    "Common Pitfall"
+   ],
+   "has_encrypted_note": true,
+   "encrypted_note_count": 1,
+   "read_alongside": "Read alongside — Raschka, Build a Large Language Model (From Scratch), whose opening chapters build the tokenizer-to-dataloader pipeline line by line; Karpathy, the “Let’s build the GPT tokenizer” lecture and the accompanying minbpe repository, the cleanest reference implementation of byte-level BPE; Stanford CS336, whose first assignment is training a byte-level BPE tokenizer at scale and confronting exactly the efficiency problems Section 23.3 glosses.",
+   "learning_objectives": [
+    "Implement byte-pair-encoding training and inference, and explain why byte-level fallback and pre-tokenization regexes exist.",
+    "Compare BPE, WordPiece, Unigram, and byte-level tokenization on compression ratio and downstream compute cost.",
+    "Quantify the multilingual token tax and its consequences for both API price and effective context length.",
+    "Prove that perplexity is not comparable across tokenizers while bits-per-byte is, and convert between them via $\\log_2 \\mathrm{PPL} = \\mathrm{BPB} \\times (\\text{bytes per token})$.",
+    "Implement a byte-level BPE tokenizer and a bits-per-byte evaluator in working code."
+   ],
+   "key_takeaways": [
+    "Next-token prediction is maximum-likelihood estimation via the chain rule; the tokenizer fixes the sample space before the first gradient step and is itself trained only by counting. Certain",
+    "Byte-level BPE can never fail on unseen input, but a correct encoder must reproduce training-time segmentation — round-trip success alone does not certify a tokenizer. Certain",
+    "Production vocabularies grew from 32k–50k to 128k–256k (Llama 3: 128,256; Qwen: 151,936; Gemma 2: 256,128; o200k: ∼200k), trading $2Vd$ embedding parameters for compression and effective context. Verify",
+    "Tokenizer fertility differences reach 15× across languages, multiplying price, per-byte FLOPs, and effective context loss for non-Latin scripts. Verify",
+    "Perplexity is exponential in the tokenizer’s compression ratio and can even invert model rankings; only bits-per-byte (total bits over an invariant denominator) is comparable across tokenizers. Certain"
+   ],
+   "tags": {
+    "certain": 9,
+    "likely": 4,
+    "verify": 9,
+    "contested": 1
+   },
+   "part": "Part V",
+   "line_span": [
+    9756,
+    10126
+   ]
+  },
+  {
+   "n": 24,
+   "title": "Scaling Laws",
+   "sections": [
+    "24.1 Power Laws and Why They Appear",
+    "24.2 Kaplan et al. (2020)",
+    "24.3 Chinchilla (2022)",
+    "24.4 The Chinchilla Replication and Its Corrections",
+    "24.5 Inference-Aware and Over-Training Regimes",
+    "24.6 Data-Constrained Scaling",
+    "24.7 Scaling Laws for MoE and for Downstream Tasks",
+    "24.8 Where Scaling Laws Break"
+   ],
+   "subsections": [
+    "24.2.1 The Compute Ledger: $C \\approx 6ND$ and $2N$ per Token",
+    "24.2.2 The Kaplan Laws",
+    "24.4.1 The 2024 Refit",
+    "24.4.2 Why Kaplan and Chinchilla Disagreed"
+   ],
+   "artifact_title": "Artifact 24.1 — Chinchilla Fit, Compute-Optimal Allocation, and the Inference-Aware Correction",
+   "artifact_count": 1,
+   "definitions": [
+    "Definition 24.1 (Neural scaling law)"
+   ],
+   "theorems": [
+    "Theorem 24.1 (Compute-optimal allocation)"
+   ],
+   "examples": [
+    "Example 24.1 (The ledger for a 7B model)"
+   ],
+   "warning_boxes": [
+    "Common Pitfall"
+   ],
+   "has_encrypted_note": false,
+   "encrypted_note_count": 0,
+   "read_alongside": "Read alongside — Stanford CS336 (Language Modeling from Scratch) devotes a full unit to scaling laws and is the closest course treatment of this chapter, including the Chinchilla fitting mechanics. Chakraborty, Introduction to Large Language Models, covers the Kaplan-to-Chinchilla arc from the NLP side and is useful for the historical framing.",
+   "learning_objectives": [
+    "Derive the $C \\approx 6ND$ training-FLOP estimate and the $2N$ per-token inference estimate from first principles, and state when each breaks down.",
+    "State the Kaplan and Chinchilla parametric forms, and derive the compute-optimal allocation $N^* \\propto C^{\\beta/(\\alpha+\\beta)}$, $D^* \\propto C^{\\alpha/(\\alpha+\\beta)}$ from the Chinchilla loss surface.",
+    "Explain precisely why Kaplan et al. and Hoffmann et al. disagreed about optimal model size, and which was right about what.",
+    "Formulate the inference-aware optimum of Sardana and Frankle and show why counting served tokens makes the optimal model strictly smaller and the optimal dataset strictly larger than Chinchilla prescribes.",
+    "Implement a Chinchilla-form scaling-law fit — Huber loss on log-loss, multi-start L-BFGS-B, analytic allocation check — in working code."
+   ],
+   "key_takeaways": [
+    "Training costs $C \\approx 6ND$ FLOPs (2 forward + 4 backward per parameter per token) and inference costs $\\approx 2N$ per generated token; attention adds a term of relative size $\\sim T/(12\\,d_{\\text{model}})$. Certain",
+    "Minimizing $E + AN^{-\\alpha} + BD^{-\\beta}$ under $6ND = C$ gives $N^* \\propto C^{\\beta/(\\alpha+\\beta)}$; with $\\alpha \\approx \\beta$ this means scaling $N$ and $D$ equally, about 20 tokens per parameter at the training-compute optimum. Certain",
+    "Kaplan's $N^* \\propto C^{0.73}$ came from protocol artifacts — non-embedding parameter counting at small scale, last-layer cost, warmup, and untuned optimizers — not from different physics; the power-law form itself was right. Likely",
+    "The 2024 replication showed Chinchilla's published Approach 3 fit was internally inconsistent (an averaged Huber loss stopped L-BFGS-B early and produced ~600,000-run confidence intervals from <500 runs); the corrected fit re-agrees with the 20:1 policy. Certain",
+    "As deployment guidance, 20:1 is obsolete: counting served tokens makes the optimal model strictly smaller and the optimal dataset strictly larger, and flagship models are correctly over-trained by 10–100× — though Chinchilla-optimal remains right for train-once research budgets. Contested"
+   ],
+   "tags": {
+    "certain": 18,
+    "likely": 10,
+    "verify": 4,
+    "contested": 2
+   },
+   "part": "Part V",
+   "line_span": [
+    10126,
+    10408
+   ]
+  },
+  {
+   "n": 25,
+   "title": "The Pretraining Pipeline: Data, Curricula, Mid-Training",
+   "sections": [
+    "25.1 Where Tokens Come From",
+    "25.2 Extraction, Language ID, Heuristic Filters",
+    "25.3 Exact and Near Deduplication",
+    "25.4 Quality Classifiers and Model-Based Filtering",
+    "25.5 Data Mixtures and Domain Weights",
+    "25.6 Synthetic Data and Model Collapse",
+    "25.7 Decontamination and Benchmark Leakage",
+    "25.8 Mid-Training, Annealing, and Long-Context Phases",
+    "25.9 Sequence Packing"
+   ],
+   "subsections": [
+    "25.3.1 MinHash and LSH"
+   ],
+   "artifact_title": "Artifact 25.1 — MinHash LSH and a Decontamination Checker, Verified Against Brute Force",
+   "artifact_count": 1,
+   "definitions": [
+    "Definition 25.1 (Jaccard similarity)"
+   ],
+   "theorems": [
+    "Theorem 25.1 (MinHash collision probability)",
+    "Theorem 25.2 (The LSH S-curve)"
+   ],
+   "examples": [
+    "Example 25.1 (FineWeb's banding, by hand)"
+   ],
+   "warning_boxes": [
+    "Common Pitfall"
+   ],
+   "has_encrypted_note": false,
+   "encrypted_note_count": 0,
+   "read_alongside": "Read alongside — Stanford CS336 (Language Modeling from Scratch): its data lectures and the filtering/deduplication assignment are the closest thing to a lab course on this chapter. Raschka, Build a Large Language Model (From Scratch), for the mechanics of turning raw text into training batches, including packing.",
+   "learning_objectives": [
+    "Implement MinHash locality-sensitive hashing for near-duplicate detection, and state its false-positive and false-negative rates as explicit functions of the band count $b$ and rows-per-band $r$.",
+    "Compare heuristic filtering, classifier-based filtering, and perplexity filtering, citing the measured downstream effect of each in controlled experiments.",
+    "Explain data mixing and domain reweighting, and why code and mathematics data improve reasoning on tasks outside those domains.",
+    "Explain mid-training and annealing phases, and why the final few percent of training tokens carries disproportionate influence on benchmark performance.",
+    "Implement a deduplication and decontamination pipeline in working code, verified against brute-force Jaccard similarity and planted benchmark leaks."
+   ],
+   "key_takeaways": [
+    "At fixed compute and architecture, the data pipeline is the dominant lever: DCLM's dataset-only intervention moved a 7B model +6.6 MMLU points over the prior open state of the art with 40% less compute. Verify",
+    "MinHash rows collide with probability exactly $J(A,B)$; banding $k=br$ rows gives candidate probability $1-(1-s^r)^b$ with threshold $s^*=(1/b)^{1/r}$, false negatives decaying geometrically in $b$ and false positives in $r$. Certain",
+    "Classifier-based filtering beats heuristic and perplexity filtering in controlled comparisons, but aggressive filtering trades unique tokens for quality, so its optimal strength depends on the token budget $D$. Likely",
+    "Model collapse is demonstrated when synthetic data replaces real data across generations; accumulating synthetic alongside real data bounds test error in both theory and experiment, and dilution of real data — not synthetic fraction per se — is the variable to control. Likely",
+    "The final few percent of pretraining tokens, delivered during the learning-rate anneal, has disproportionate influence on benchmarks — which makes mid-training both the cheapest place to add capability and the easiest place to hide contamination. Likely"
+   ],
+   "tags": {
+    "certain": 4,
+    "likely": 12,
+    "verify": 18,
+    "contested": 1
+   },
+   "part": "Part V",
+   "line_span": [
+    10408,
+    10720
+   ]
+  },
+  {
+   "n": 26,
+   "title": "Supervised Fine-Tuning and Parameter-Efficient Adaptation",
+   "sections": [
+    "26.1 What SFT Changes",
+    "26.2 Data for SFT: Quality over Quantity",
+    "26.3 Chat Templates, Special Tokens, Loss Masking",
+    "26.4 LoRA",
+    "26.5 QLoRA: NF4, Double Quantization, Paging",
+    "26.6 DoRA, rsLoRA, and the Variants Worth Knowing",
+    "26.7 Catastrophic Forgetting and Model Merging",
+    "26.8 When to Fine-Tune versus Prompt versus Retrieve"
+   ],
+   "subsections": [
+    "26.4.1 Rank, Alpha, and Which Modules to Target"
+   ],
+   "artifact_title": "Artifact 26.1 — LoRA and a NormalFloat Quantizer from Scratch",
+   "artifact_count": 1,
+   "definitions": [
+    "Definition 26.1 (SFT objective with loss masking)",
+    "Definition 26.2 (LoRA)",
+    "Definition 26.3 (NF4, 4-bit NormalFloat)"
+   ],
+   "theorems": [
+    "Theorem 26.1 (Full-rank equivalence)"
+   ],
+   "examples": [
+    "Example 26.1 (Optimizer memory for one attention projection)"
+   ],
+   "warning_boxes": [
+    "Common Pitfall"
+   ],
+   "has_encrypted_note": true,
+   "encrypted_note_count": 1,
+   "read_alongside": "Read alongside — Raschka, Build a Large Language Model (From Scratch), whose instruction-fine-tuning chapters implement templating and loss masking line by line; Stanford CS336 for the post-training lectures that place SFT between pretraining and RLHF; Chakraborty, Introduction to Large Language Models, for the NLP-side view of instruction tuning.",
+   "learning_objectives": [
+    "Explain instruction tuning, chat templating, and loss masking, and identify the regime — long prompts, short responses, small datasets — in which masking the prompt tokens is the wrong choice.",
+    "Derive the LoRA reparameterization $W' = W + \\frac{\\alpha}{r}BA$, prove it is exactly as expressive as full fine-tuning when $r = \\min(d_{\\text{in}}, d_{\\text{out}})$, and compute the optimizer-state saving $2 d_{\\text{in}} d_{\\text{out}}$ vs. $2r(d_{\\text{in}}+d_{\\text{out}})$ floats.",
+    "Explain NF4 quantization, double quantization, and paged optimizers, and quantify NF4's round-trip error against uniform int4 on Gaussian weights.",
+    "Compare LoRA, DoRA, rank-stabilized LoRA, and full fine-tuning on quality versus memory, and state precisely where LoRA measurably loses.",
+    "Implement a LoRA linear layer and a normal-float 4-bit quantizer in working code, with merge, gradient, and full-rank-equivalence checks."
+   ],
+   "key_takeaways": [
+    "SFT is next-token cross-entropy on curated (prompt, response) pairs; it primarily selects formats and behaviors the base model already supports, which is why a thousand excellent examples can outperform a hundred thousand mediocre ones. Likely",
+    "Mask prompt tokens by default, but keep the assistant's end-of-turn token in the loss; with long prompts, short responses, and small datasets, unmasking the prompt is a measurable regularizer. Likely",
+    "LoRA's update $\\frac{\\alpha}{r}BA$ is exactly as expressive as full fine-tuning at $r = \\min(d_{\\text{in}}, d_{\\text{out}})$ (SVD factorization), and cuts Adam state from $2d_{\\text{in}}d_{\\text{out}}$ to $2r(d_{\\text{in}}+d_{\\text{out}})$ floats — $128\\times$ for $d = 4096$, $r = 16$, verified by counting. Certain",
+    "NF4 places its 16 levels at Gaussian quantiles with an exact zero; on Gaussian weights it beats uniform int4's round-trip RMSE (measured 0.0919 vs. 0.1012), and double quantization trims per-parameter metadata from 0.5 to 0.127 bits. Certain",
+    "LoRA learns less and forgets less: it matches full fine-tuning on SFT- and RL-scale data when applied to all linear layers with a $\\sim$10$\\times$ learning rate, but loses — increasingly with data — on large-corpus continued pretraining, where the true update is high-rank. Verify"
+   ],
+   "tags": {
+    "certain": 7,
+    "likely": 13,
+    "verify": 3,
+    "contested": 2
+   },
+   "part": "Part V",
+   "line_span": [
+    10720,
+    11018
+   ]
+  },
+  {
+   "n": 27,
+   "title": "Preference Optimization: RLHF, DPO, GRPO",
+   "sections": [
+    "27.1 Why Likelihood Is Not Enough",
+    "27.2 Reward Modeling and Bradley–Terry",
+    "27.3 The KL-Regularized Objective and Its Closed-Form Solution",
+    "27.4 PPO for Language Models",
+    "27.5 DPO: the Derivation, and What It Silently Assumes",
+    "27.6 The Variants: IPO, KTO, ORPO, SimPO",
+    "27.7 GRPO and Critic-Free RL",
+    "27.8 Reward Hacking, Length Bias, Over-Optimization",
+    "27.9 RLAIF and Verifiable Rewards"
+   ],
+   "subsections": [],
+   "artifact_title": "Artifact 27.1 — DPO Against the Closed Form",
+   "artifact_count": 1,
+   "definitions": [
+    "Definition 27.1 (Bradley–Terry preference model)",
+    "Definition 27.2 (KL-regularized alignment objective)"
+   ],
+   "theorems": [
+    "Theorem 27.1 (Closed-form optimal policy)",
+    "Theorem 27.2 (Population equivalence of DPO and RLHF)"
+   ],
+   "examples": [
+    "Example 27.1 (Closed form by hand)"
+   ],
+   "warning_boxes": [
+    "Common Pitfall"
+   ],
+   "has_encrypted_note": false,
+   "encrypted_note_count": 0,
+   "read_alongside": "Read alongside — Stanford CS336 covers RLHF and GRPO with the same from-scratch discipline as this chapter; Raschka, Build a Large Language Model (From Scratch), has a line-by-line DPO implementation in its supplementary material; Murphy, Probabilistic Machine Learning: Advanced Topics, is the reference for the policy-gradient machinery underneath Section 27.4.",
+   "learning_objectives": [
+    "Derive the Bradley–Terry reward model and the KL-regularized reinforcement-learning objective, and derive the closed-form optimal policy $\\pi^*(y|x) \\propto \\pi_{\\text{ref}}(y|x)\\exp(r(x,y)/\\beta)$.",
+    "Derive DPO by inverting that closed form for the reward, and state exactly which assumptions make DPO equivalent to RLHF and which fail in practice.",
+    "Explain the clipped policy-gradient objective and the value function, derive the group-relative advantage that eliminates the critic, and quantify the memory saved.",
+    "Compare KTO, ORPO, SimPO, and IPO on the data each requires and the pathology each addresses.",
+    "Implement the DPO and GRPO losses in working code, gradient-checked and verified against the closed-form RLHF optimum."
+   ],
+   "key_takeaways": [
+    "The KL-regularized objective has the closed-form optimum $\\pi^* \\propto \\pi_{\\text{ref}}\\, e^{r/\\beta}$, and DPO is an exact reparametrization of it: under Bradley–Terry preferences with full coverage, the population DPO minimizer is the RLHF optimum. Certain",
+    "The practical gaps between RLHF, DPO, and GRPO come from what the losses don't capture — on-policy sampling, finite offline coverage, and reward-model generalization — not from the objectives, which coincide in the ideal limit. Likely",
+    "GRPO replaces the learned critic with the within-group reward mean; the advantages are zero-mean per group by construction, and the deletion saves the critic's entire training state — roughly 16 bytes per critic parameter under mixed-precision Adam. Certain",
+    "GRPO's normalizations carry real biases — length normalization grows wrong answers, std division distorts prompt weighting, token-level ratios destabilize MoE — and DAPO, Dr. GRPO, and GSPO are the 2025 corrections; check current recipes before adopting any of them verbatim. Verify",
+    "Whether PPO/GRPO beat DPO under equal tuning budgets is unresolved — most head-to-heads under-tune one side; data quality dominates for offline alignment, while on-policy RL wins decisively wherever rewards are verifiable. Contested"
+   ],
+   "tags": {
+    "certain": 3,
+    "likely": 3,
+    "verify": 3,
+    "contested": 2
+   },
+   "part": "Part V",
+   "line_span": [
+    11018,
+    11311
+   ]
+  },
+  {
+   "n": 28,
+   "title": "Reasoning Models and Test-Time Compute",
+   "sections": [
+    "28.1 Chain-of-Thought and Intermediate Computation",
+    "28.2 The Expressivity Argument for Thinking Tokens",
+    "28.3 Parallel Scaling: Best-of-n, Self-Consistency, Reranking",
+    "28.4 Sequential Scaling: Revision and Budget Forcing",
+    "28.5 Process versus Outcome Reward Models",
+    "28.6 RLVR and Reasoning Models",
+    "28.7 Distilling Reasoning into Small Models",
+    "28.8 What Test-Time Compute Does Not Buy",
+    "28.9 Inference-Time Cost Accounting"
+   ],
+   "subsections": [],
+   "artifact_title": "Artifact 28.1 — A Test-Time-Compute Harness with an Exact Verifier",
+   "artifact_count": 1,
+   "definitions": [
+    "Definition 28.1 (Chain-of-thought as conditional computation)",
+    "Definition 28.2 (pass@$k$ and its unbiased estimator)",
+    "Definition 28.3 (Reinforcement learning from verifiable rewards)"
+   ],
+   "theorems": [
+    "Theorem 28.1 (Expressive power of CoT; Merrill & Sabharwal 2023–24, Li et al. 2024)",
+    "Theorem 28.2 (Plurality voting consistency)"
+   ],
+   "examples": [
+    "Example 28.1 (A two-problem pass@$k$ inversion by hand)"
+   ],
+   "warning_boxes": [
+    "Common Pitfall"
+   ],
+   "has_encrypted_note": false,
+   "encrypted_note_count": 0,
+   "read_alongside": "Read alongside — Stanford CS336 covers inference-time scaling and RL post-training closest to this chapter's level; Raschka, Build a Large Language Model (From Scratch), for the mechanics of sampling and generation loops that every method here is built on.",
+   "learning_objectives": [
+    "Explain chain-of-thought as conditional computation, and state the expressivity argument for why generating intermediate tokens strictly increases what a fixed-depth transformer can compute.",
+    "Distinguish parallel test-time scaling (sample $k$ chains, select one) from sequential scaling (one longer chain), and state the regimes where each dominates.",
+    "Explain reinforcement learning from verifiable rewards (RLVR) as used in current reasoning models, including what the cold-start-free DeepSeek-R1-Zero result does and does not show.",
+    "Distinguish pass@1 from pass@$k$ rigorously, and explain why RLVR frequently raises the former while lowering the latter at large $k$.",
+    "Implement best-of-$n$, majority voting, and verifier-guided selection in working code, and verify the analytic pass@$k$ law against an unbiased empirical estimator."
+   ],
+   "key_takeaways": [
+    "Chain-of-thought is conditional computation: without intermediate tokens a fixed-depth transformer sits in $\\mathsf{TC}^0$; polynomially many thinking tokens lift it to $\\mathsf{P}$ by letting the context serve as a Turing-machine tape. Expressivity, not learnability, is what the theorem guarantees. Certain",
+    "Pass@$k$ $= \\mathbb{E}_i[1-(1-p_i)^k]$ measures coverage of the sampler's support, not single-attempt capability; estimate it with the unbiased combinatorial estimator, never the plug-in. Certain",
+    "Sharpening a distribution — by temperature or by RLVR — raises pass@1 while lowering pass@$k$ at large $k$ whenever some problems have a wrong mode; the reported base-model-overtakes-RLVR-model inversions are this concavity effect, and standard-recipe RLVR is best read as elicitation, not capability creation. Likely",
+    "Whether prolonged, diverse-task RL escapes the base model's support (ProRL-style claims) versus merely sharpening it is unresolved; large-$k$ pass@$k$ against the same base checkpoint under strict contamination control is the deciding experiment. Contested",
+    "Parallel and sequential scaling at equal FLOPs differ in latency, KV-cache footprint, and reach: parallel extracts what the sampler can already emit and needs a verifier or a modal signal; only sequential compute adds serial depth — and only with a sound verifier does any of it convert compute to accuracy. Certain"
+   ],
+   "tags": {
+    "certain": 4,
+    "likely": 8,
+    "verify": 3,
+    "contested": 3
+   },
+   "part": "Part V",
+   "line_span": [
+    11311,
+    11590
+   ]
+  },
+  {
+   "n": 29,
+   "title": "Evaluation and the Measurement Crisis",
+   "sections": [
+    "29.1 What a Benchmark Number Is",
+    "29.2 Scoring Protocols and Rank Instability",
+    "29.3 Few-Shot, Prompt Sensitivity, and Format Effects",
+    "29.4 Contamination: Detection and Prevalence",
+    "29.5 Emergent Abilities: Claim, Rebuttal, Current Status",
+    "29.6 Judge Models and Arena-Style Ranking",
+    "29.7 Held-Out and Dynamic Benchmarks",
+    "29.8 Building an Eval You Can Trust"
+   ],
+   "subsections": [],
+   "artifact_title": "Artifact 29.1 — The Measurement Crisis in Three Experiments",
+   "artifact_count": 1,
+   "definitions": [
+    "Definition 29.1 (Evaluation protocol)",
+    "Definition 29.2 (Contamination)",
+    "Definition 29.3 (Bradley–Terry ranking)"
+   ],
+   "theorems": [
+    "Theorem 29.1 (Metric-induced sharpening)"
+   ],
+   "examples": [
+    "Example 29.1 (One item, three winners)"
+   ],
+   "warning_boxes": [
+    "Common Pitfall"
+   ],
+   "has_encrypted_note": false,
+   "encrypted_note_count": 0,
+   "read_alongside": "Read alongside — Stanford CS336 for the practitioner's view of evaluation inside a from-scratch language-modeling pipeline, and Chakraborty, Introduction to Large Language Models, for the NLP-side treatment of benchmarks and their history. The primary sources here are papers, and this chapter names them inline.",
+   "learning_objectives": [
+    "Implement the three standard multiple-choice scoring protocols — letter log-probability, length-normalized continuation log-probability, and unnormalized continuation log-probability — and demonstrate that they produce different model rankings on identical items.",
+    "Explain the main families of contamination detection and estimate the contamination rate of a corpus with planted memorized items using a Min-K%-style statistic.",
+    "Explain the argument that emergent abilities are substantially a metric artifact, and state precisely what the argument does and does not refute.",
+    "Quantify the named biases of using a language model as a judge — position, verbosity, self-preference, format — and design a pairwise-comparison protocol that controls for each.",
+    "Implement a multi-protocol evaluation harness with a contamination detector and an emergence simulator in working code."
+   ],
+   "key_takeaways": [
+    "A benchmark number is a property of the full protocol tuple — items, template, scoring rule, generation settings, aggregation — and comparisons that vary any coordinate silently are comparisons of protocols, not models. Certain",
+    "The three standard multiple-choice scoring rules produce different rankings on identical model outputs; Artifact 29.1 measures pairwise Kendall $\\tau$ as low as $-1$ between protocols, and the historical MMLU implementation split reordered real leaderboards. Certain",
+    "Contamination is easy to demonstrate when planted (Min-20% AUC 0.997 in the artifact) but hard to detect in the wild, where membership-inference methods run near chance; structural defenses — private holdouts, rolling post-cutoff collection, canaries — beat forensics. Likely",
+    "Discontinuous metrics manufacture sharp \"emergence\" from smooth improvement — exact match over $T$ tokens sharpens slopes by up to $T\\times$ and hides competence until $p > \\delta^{1/T}$ — which refutes the sharpness of most canonical curves but not the unpredictability of capability takeoffs. Contested",
+    "Judge models carry named, measurable biases — position, verbosity, self-preference, format — each with a specific control (order swapping, length-controlled aggregation, cross-family panels, style regression), and a judging protocol that omits the controls is measuring style along with substance. Likely"
+   ],
+   "tags": {
+    "certain": 2,
+    "likely": 8,
+    "verify": 12,
+    "contested": 2
+   },
+   "part": "Part V",
+   "line_span": [
+    11590,
+    11915
+   ]
+  },
+  {
+   "n": 30,
+   "title": "The GPU Execution Model and the Memory Wall",
+   "sections": [
+    "30.1 GPU Architecture for ML Engineers",
+    "30.2 The Memory Hierarchy and Its Bandwidths",
+    "30.3 The Roofline Model",
+    "30.4 Arithmetic Intensity of Common Operations",
+    "30.5 Occupancy, Tiling, Tensor Cores",
+    "30.6 Kernel Fusion and Compilers",
+    "30.7 Profiling: What to Measure and What Lies",
+    "30.8 The Hardware Landscape"
+   ],
+   "subsections": [
+    "30.1.1 Warps and SIMT",
+    "30.1.2 Tensor cores: the 15× asymmetry",
+    "30.4.1 Predicting a transformer layer"
+   ],
+   "artifact_title": "Artifact 30.1 — An Empirical Roofline Analyzer",
+   "artifact_count": 1,
+   "definitions": [
+    "Definition 30.1 (Arithmetic intensity)",
+    "Definition 30.2 (Machine balance)"
+   ],
+   "theorems": [
+    "Theorem 30.1 (Roofline bound)"
+   ],
+   "examples": [
+    "Example 30.1 (Bias + GeLU on an H100, by hand)",
+    "Example 30.2 (Decode latency of a 70B model, by hand)"
+   ],
+   "warning_boxes": [
+    "Common Pitfall"
+   ],
+   "has_encrypted_note": false,
+   "encrypted_note_count": 0,
+   "read_alongside": "Read alongside — The HuggingFace Ultra-Scale Playbook is the practitioner's companion for all of Part VI: it works the same bandwidth arithmetic on real training clusters. Stanford CS336 (Language Modeling from Scratch) covers rooflines, kernels, and profiling in its systems lectures, with assignments that measure what this chapter derives.",
+   "learning_objectives": [
+    "Describe the GPU execution hierarchy — streaming multiprocessors, warps, tensor cores, and the register / shared-memory / L2 / HBM ladder — with the approximate bandwidth of each level.",
+    "Compute the arithmetic intensity of matmul, elementwise operations, softmax, normalization, and attention, and place each on a roofline.",
+    "Predict the wall-clock time of a transformer layer from first principles — $t = \\max(\\text{FLOPs}/\\pi,\\ \\text{bytes}/\\beta)$ — and validate the prediction against measurement.",
+    "Explain kernel fusion and quantify what fusing a chain of $k$ elementwise operations saves.",
+    "Implement an empirical roofline analyzer in working code."
+   ],
+   "key_takeaways": [
+    "Runtime obeys $t \\ge \\max(W/\\pi, Q/\\beta)$: an operation whose arithmetic intensity $I = W/Q$ is below the machine balance $B^* = \\pi/\\beta$ is memory-bound, and no arithmetic optimization can save it. Certain",
+    "On current accelerators $B^*$ is roughly 150–300 bf16 FLOPs/byte (H100: $\\approx$295), and every common deep-learning operation except sufficiently large matmul sits far below it — elementwise, softmax, and normalization near $I \\approx 1$, unfused attention at $I \\approx d_h$. Verify",
+    "Matmul intensity grows with size ($n/3$ for square bf16), which is why tiling through shared memory and registers — and the tensor cores it feeds — can reach peak; batch-1 decode is a matvec at $I \\approx 1$ and is bounded by weight bytes over bandwidth (~42 ms/token for 70B bf16 on H100-class HBM). Verify",
+    "Fusing a $k$-op elementwise chain cuts HBM traffic by $k\\times$ at identical FLOPs; fusion, epilogues, and FlashAttention are all the same idea — keep intermediates on-chip. Certain",
+    "Profile against measured ceilings, not spec sheets or \"GPU utilization\": compute MFU from analytic FLOPs, synchronize before timing, warm up, and expect ~85–93% of quoted bandwidth to be attainable. Likely"
+   ],
+   "tags": {
+    "certain": 3,
+    "likely": 11,
+    "verify": 17,
+    "contested": 0
+   },
+   "part": "Part VI",
+   "line_span": [
+    11915,
+    12221
+   ]
+  },
+  {
+   "n": 31,
+   "title": "FlashAttention and Writing Fast Kernels",
+   "sections": [
+    "31.1 Attention Cost Is Memory, Not FLOPs",
+    "31.2 Online Softmax",
+    "31.3 Tiling and the Forward Pass",
+    "31.4 The Backward Pass and Recomputation",
+    "31.5 FlashAttention-2: Work Partitioning",
+    "31.6 FlashAttention-3: Asynchrony and FP8",
+    "31.7 PagedAttention, FlexAttention, Ring Attention",
+    "31.8 What Writing a Kernel Actually Involves"
+   ],
+   "subsections": [],
+   "artifact_title": "Artifact 31.1 — Tiled Online-Softmax Attention with I/O Accounting",
+   "artifact_count": 1,
+   "definitions": [
+    "Definition 31.1 (Online softmax state)"
+   ],
+   "theorems": [
+    "Theorem 31.1 (Exactness of online softmax)",
+    "Theorem 31.2 (HBM access count; Dao et al. 2022)"
+   ],
+   "examples": [
+    "Example 31.1 (Online softmax by hand)"
+   ],
+   "warning_boxes": [
+    "Common Pitfall"
+   ],
+   "has_encrypted_note": true,
+   "encrypted_note_count": 1,
+   "read_alongside": "Read alongside — Stanford CS336 (Language Modeling from Scratch): the kernel-writing assignments are the closest thing to doing this chapter by hand, including a Triton FlashAttention exercise. The HuggingFace Ultra-Scale Playbook situates fused attention kernels inside the full training-systems stack. The primary sources are short and readable: Dao et al. (2022), Dao (2023), and Shah et al. (2024).",
+   "learning_objectives": [
+    "Derive online (streaming) softmax and prove it equals batch softmax exactly, up to floating-point rounding.",
+    "Derive the tiled FlashAttention forward pass, count its HBM accesses as $\\Theta(n^2 d^2 / M)$, and explain why activation memory drops from $O(n^2)$ to $O(n)$.",
+    "Explain the backward-pass recomputation strategy and quantify the extra FLOPs it accepts (about 17% of total training matmul FLOPs for attention) in exchange for never storing the score matrix.",
+    "State what FlashAttention-2 and FlashAttention-3 each changed — work partitioning; Hopper asynchrony and FP8 — with attributed numbers.",
+    "Implement tiled online-softmax attention in working code, with explicit memory and I/O accounting."
+   ],
+   "key_takeaways": [
+    "FlashAttention performs the same $4n^2 d_k$ attention matmul FLOPs as the naive algorithm (backward: more, via recomputation) — its entire speedup comes from cutting HBM accesses from $\\Theta(n d_k + n^2)$ to $\\Theta(n^2 d_k^2 / M)$ and its memory saving from never materializing $S$ or $P$. Certain",
+    "Online softmax is exactly batch softmax under any blocking of the row — the rescale factor $e^{m_{\\text{old}}-m_{\\text{new}}}$ makes the recurrence associative — and this associativity is the single identity underlying FlashAttention, split-KV decoding, and Ring Attention. Certain",
+    "The backward pass stores only the $O(n)$ logsumexp vector and recomputes score tiles, accepting a ~17% increase in attention matmul FLOPs per training step; on memory-bound hardware, recomputation is cheaper than remembering. Certain",
+    "FlashAttention-2's gains were pure scheduling — fewer non-matmul FLOPs, sequence-length parallelism, split-Q warp partitioning — for ~2$\\times$ over FA-1 and up to 72% end-to-end MFU on A100; FlashAttention-3 rebuilt the pipeline around Hopper's TMA/WGMMA asynchrony plus FP8 with block quantization and incoherent processing, for 1.5–2$\\times$ over FA-2, ~85% H100 utilization in BF16, and ~1.3 PFLOPs/s in FP8. Verify",
+    "A kernel is an algorithm plus a schedule, and the schedule is hardware-generation-specific: FA-1→2→3 rewrote the same mathematics three times as the bottleneck moved from I/O algorithm to occupancy to pipeline overlap — expect a fourth rewrite per new architecture. Likely"
+   ],
+   "tags": {
+    "certain": 7,
+    "likely": 4,
+    "verify": 10,
+    "contested": 0
+   },
+   "part": "Part VI",
+   "line_span": [
+    12221,
+    12523
+   ]
+  },
+  {
+   "n": 32,
+   "title": "Distributed Training",
+   "sections": [
+    "32.1 Data Parallelism and Gradient All-Reduce",
+    "32.2 Collective Primitives",
+    "32.3 ZeRO and FSDP",
+    "32.4 Tensor Parallelism",
+    "32.5 Sequence and Context Parallelism",
+    "32.6 Pipeline Parallelism and Bubbles",
+    "32.7 Expert Parallelism",
+    "32.8 Composing the Parallelisms",
+    "32.9 Failures at Scale"
+   ],
+   "subsections": [],
+   "artifact_title": "Artifact 32.1 — Ring All-Reduce and a ZeRO Planner, From Scratch",
+   "artifact_count": 1,
+   "definitions": [
+    "Definition 32.1 (Collective operations)"
+   ],
+   "theorems": [
+    "Theorem 32.1 (Ring all-reduce is bandwidth-optimal)"
+   ],
+   "examples": [
+    "Example 32.1 (Counting the ring, $P=4$)",
+    "Example 32.2 (Hand count on a 46-parameter MLP)",
+    "Example 32.3 (Bubble arithmetic)"
+   ],
+   "warning_boxes": [
+    "Common Pitfall"
+   ],
+   "has_encrypted_note": false,
+   "encrypted_note_count": 0,
+   "read_alongside": "Read alongside — The HuggingFace Ultra-Scale Playbook is the single best companion: it walks the same parallelisms with profiler traces from real clusters. Stanford CS336 covers the systems half of this chapter as a graded assignment. Raschka shows the single-node DDP starting point in PyTorch.",
+   "learning_objectives": [
+    "Derive the ring all-reduce communication volume $2\\frac{P-1}{P}S$ per device and show it is bandwidth-optimal and (asymptotically) independent of worker count.",
+    "Derive the memory breakdown of mixed-precision Adam training — 16 bytes per parameter — and state exactly what each ZeRO stage shards and what it costs in communication.",
+    "Compute tensor-parallel communication volume per layer and explain why tensor parallelism stays within a node while data parallelism crosses nodes.",
+    "Derive the pipeline bubble fraction $(p-1)/(m+p-1)$ and explain the one-forward-one-backward and interleaved schedules.",
+    "Implement ring all-reduce and a parallelism planner in working code."
+   ],
+   "key_takeaways": [
+    "Ring all-reduce moves exactly $2\\frac{P-1}{P}S$ bytes per worker — bandwidth-optimal and under $2S$ for any worker count; only the $2(P-1)\\alpha$ latency term grows with scale, which is why small messages get trees and gradients get bucketed. Certain",
+    "Mixed-precision Adam costs 16 bytes per parameter (2+2 low-precision weights/grads, 12 fp32 state); ZeRO-1/2 shard 12–14 of those bytes at zero extra communication, ZeRO-3 shards all 16 for 1.5× the wire volume. Certain",
+    "Tensor parallelism pays $\\approx 8\\frac{t-1}{t}\\,B\\,n\\,d\\,b$ bytes per layer of blocking traffic, so it lives inside the NVLink domain; data and pipeline parallelism, with per-step overlappable or point-to-point traffic, take the inter-node links. Certain",
+    "The pipeline bubble is $\\frac{p-1}{m+p-1}$; 1F1B cuts activation memory from $O(m)$ to $O(p)$ without touching the bubble, interleaving with $v$ chunks divides the bubble by $\\approx v$ for $v\\times$ the communication. Certain",
+    "At $10^4$-GPU scale the cluster fails every few hours ($M_1/P$), so checkpoint at the Young–Daly interval $\\sqrt{2\\delta M}$ and expect silent data corruption to be a real line item, per public frontier-run reports. Verify"
+   ],
+   "tags": {
+    "certain": 13,
+    "likely": 4,
+    "verify": 5,
+    "contested": 1
+   },
+   "part": "Part VI",
+   "line_span": [
+    12523,
+    12800
+   ]
+  },
+  {
+   "n": 33,
+   "title": "Inference: Serving, Caching, and Speculative Decoding",
+   "sections": [
+    "33.1 Prefill versus Decode",
+    "33.2 The KV Cache",
+    "33.3 Paged Attention and Fragmentation",
+    "33.4 Continuous Batching and Chunked Prefill",
+    "33.5 Speculative Decoding",
+    "33.6 Draft Models, Medusa, EAGLE",
+    "33.7 Prefix Caching",
+    "33.8 Cost per Token"
+   ],
+   "subsections": [
+    "33.5.1 The Rejection-Sampling Proof"
+   ],
+   "artifact_title": "Artifact 33.1 — Speculative Decoding and Paged Allocation, Verified",
+   "artifact_count": 1,
+   "definitions": [
+    "Definition 33.1 (TTFT and TPOT)",
+    "Definition 33.2 (Speculative sampling rule)"
+   ],
+   "theorems": [
+    "Theorem 33.1 (Exactness of speculative sampling)",
+    "Theorem 33.2 (Expected tokens per verification cycle)"
+   ],
+   "examples": [
+    "Example 33.1 (The decode latency floor)",
+    "Example 33.2 (KV cache for a Llama-3-8B-class model)",
+    "Example 33.3 (Speedup arithmetic)"
+   ],
+   "warning_boxes": [
+    "Common Pitfall"
+   ],
+   "has_encrypted_note": true,
+   "encrypted_note_count": 1,
+   "read_alongside": "Read alongside — Stanford CS336's inference lectures are the closest course treatment of this chapter's roofline arguments and serving systems. Raschka, Build a Large Language Model (From Scratch), walks the generation loop and KV cache line by line, which makes the memory arithmetic here concrete.",
+   "learning_objectives": [
+    "Derive why prefill is compute-bound and decode memory-bandwidth-bound, and compute the KV-cache size $2 L\\, n_{\\text{kv}} d_h T b$ bytes for a given model configuration.",
+    "Explain paged KV-cache management and quantify the fragmentation it eliminates relative to contiguous max-length pre-allocation.",
+    "Explain continuous batching and chunked prefill, and predict their opposing effects on time-to-first-token and time-per-output-token.",
+    "Prove that speculative decoding preserves the target distribution exactly, and derive the expected tokens per verification cycle $(1-\\alpha^{\\gamma+1})/(1-\\alpha)$ as a function of the acceptance rate $\\alpha$.",
+    "Implement speculative decoding with a distributional-equivalence test, plus a paged KV allocator, in working code."
+   ],
+   "key_takeaways": [
+    "Prefill is compute-bound (arithmetic intensity $\\approx T$ FLOPs per weight byte); batch-1 decode is bandwidth-bound at $\\approx 1$, leaving well over 99% of peak FLOP/s idle — the surplus every serving technique spends. Certain",
+    "KV cache size is $2 L\\, n_{\\text{kv}} d_h T b$ bytes — 128 KiB/token, 1 GiB at 8K context for an 8B GQA model — and it, not the weights, usually caps batch size and hence throughput. Certain",
+    "Paged allocation with 16-token blocks cut measured KV fragmentation from 48.36% (contiguous max-length reservation) to 0.694% on uniform random lengths, and its block indirection is what enables prefix sharing and copy-on-write. Certain",
+    "Speculative decoding is exactly distribution-preserving for any draft (Theorem 33.1), with acceptance rate $1 - D_{\\mathrm{TV}}(p,q)$ and expected $(1-\\alpha^{\\gamma+1})/(1-\\alpha)$ tokens per target pass — both verified empirically in Artifact 33.1 to within $3\\times 10^{-3}$. Certain",
+    "Continuous batching plus chunked prefill trades a small TTFT increase for smooth TPOT and multiple-times higher throughput; speculation helps latency at small batch but can cost throughput near the compute roofline, so schedulers should gate it on load. Likely"
+   ],
+   "tags": {
+    "certain": 6,
+    "likely": 6,
+    "verify": 8,
+    "contested": 0
+   },
+   "part": "Part VI",
+   "line_span": [
+    12800,
+    13096
+   ]
+  },
+  {
+   "n": 34,
+   "title": "Quantization, Distillation, and Compression",
+   "sections": [
+    "34.1 Quantization Fundamentals",
+    "34.2 Outlier Features",
+    "34.3 Weight-Only PTQ: RTN, GPTQ, AWQ",
+    "34.4 Rotation-Based Methods",
+    "34.5 Activation Quantization and FP8",
+    "34.6 QAT and the Straight-Through Estimator",
+    "34.7 Ternary Models",
+    "34.8 KV-Cache Quantization",
+    "34.9 Distillation and Pruning"
+   ],
+   "subsections": [
+    "34.3.1 The optimal update",
+    "34.3.2 GPTQ's three simplifications",
+    "34.3.3 AWQ"
+   ],
+   "artifact_title": "Artifact 34.1 — GPTQ from Scratch with the Ablations That Matter",
+   "artifact_count": 1,
+   "definitions": [
+    "Definition 34.1 (Affine quantization)",
+    "Definition 34.2 (Straight-through estimator)"
+   ],
+   "theorems": [
+    "Theorem 34.1 (OBQ compensation step)"
+   ],
+   "examples": [
+    "Example 34.1 (One outlier stretches the grid)"
+   ],
+   "warning_boxes": [
+    "Common Pitfall"
+   ],
+   "has_encrypted_note": true,
+   "encrypted_note_count": 1,
+   "read_alongside": "Read alongside — Stanford CS336 covers inference-time quantization in its systems lectures and is the closest course treatment of this chapter. The HuggingFace Ultra-Scale Playbook is the best practical reference for mixed-precision and FP8 training mechanics.",
+   "learning_objectives": [
+    "Derive symmetric and asymmetric affine quantization and per-tensor versus per-group scaling, and compute the exact memory footprint of each setting in bits per weight.",
+    "Explain the emergent-outlier phenomenon in large-model activations and how mixed-precision decomposition and activation-aware scaling each address it.",
+    "Derive the GPTQ layerwise update from the optimal brain quantization framework and explain why it beats round-to-nearest.",
+    "Explain quantization-aware training, the straight-through estimator, and what ternary models have and have not demonstrated.",
+    "Implement GPTQ from scratch in working code, including the Cholesky-form inverse-Hessian error propagation."
+   ],
+   "key_takeaways": [
+    "Affine quantization error is bounded by half the scale, and the scale is set by the range of its unit — so granularity (per-tensor → per-channel → per-group) is the first lever, costing exactly $32/g$ extra bits per weight for group size $g$ with FP16 scale and zero-point. Certain",
+    "Large transformers develop a few outlier activation channels that dominate quantization error; the artifact measures 4/256 injected outlier channels carrying 97.6% of layer output error energy, and an AWQ-style channel scale cutting it 3.9×. Certain",
+    "GPTQ is exact OBQ compensation (Theorem 34.1) run column-wise with a shared Cholesky-factored inverse Hessian; on identical grids it beat RTN by ~1.5× in output MSE at 4, 3, and 2 bits in our measurement, entirely via error propagation. Certain",
+    "Rotation methods (QuIP#, QuaRot, SpinQuant) exploit the model's orthogonal invariance to dissolve outliers in a rotated basis, making 4-bit activations and KV cache viable; FP8 training with fine-grained tile scaling is production-validated at 671B by DeepSeek-V3 at <0.25% reported relative loss error. Verify",
+    "Ternary (BitNet-class) models show extreme weight precision is not fundamental at ~2B scale, but have not demonstrated frontier-scale parity under controlled comparisons; matched-memory and matched-compute baselines remain the unsettled crux. Contested"
+   ],
+   "tags": {
+    "certain": 4,
+    "likely": 4,
+    "verify": 10,
+    "contested": 2
+   },
+   "part": "Part VI",
+   "line_span": [
+    13096,
+    13416
+   ]
+  },
+  {
+   "n": 35,
+   "title": "Diffusion, Flow Matching, and Non-Autoregressive Generation",
+   "sections": [
+    "35.1 From Autoencoders to Diffusion",
+    "35.2 The Forward Process",
+    "35.3 Score Matching and the Reverse Process",
+    "35.4 The Probability-Flow ODE and Deterministic Samplers",
+    "35.5 Flow Matching and Rectified Flow",
+    "35.6 Classifier-Free Guidance",
+    "35.7 Architectures: U-Net to DiT",
+    "35.8 Latent Diffusion",
+    "35.9 Few-Step Generation",
+    "35.10 Diffusion Language Models"
+   ],
+   "subsections": [
+    "35.5.1 The equivalence, and why straightness wins"
+   ],
+   "artifact_title": "Artifact 35.1 — DDPM and Flow Matching on an Analytic Target",
+   "artifact_count": 1,
+   "definitions": [
+    "Definition 35.1 (Variance-preserving forward process)",
+    "Definition 35.2 (Conditional flow matching, linear path)"
+   ],
+   "theorems": [
+    "Theorem 35.1 (Closed-form marginal)",
+    "Theorem 35.2 (Denoising score matching / Tweedie)",
+    "Theorem 35.3 (Probability-flow ODE)",
+    "Theorem 35.4 (CFM trains the marginal field)"
+   ],
+   "examples": [
+    "Example 35.1 (Score and optimal noise prediction by hand)"
+   ],
+   "warning_boxes": [
+    "Common Pitfall"
+   ],
+   "has_encrypted_note": true,
+   "encrypted_note_count": 1,
+   "read_alongside": "Read alongside — Murphy, Probabilistic Machine Learning: Advanced Topics, for the full measure-theoretic treatment of diffusion, score matching, and SDE samplers; Prince, Understanding Deep Learning, whose diffusion diagrams are the best visual companion to the algebra below.",
+   "learning_objectives": [
+    "Derive the forward noising process, its closed-form marginal $x_t = \\sqrt{\\bar\\alpha_t}\\,x_0 + \\sqrt{1-\\bar\\alpha_t}\\,\\epsilon$, and the simplified noise-prediction loss, and connect it to denoising score matching via Tweedie's formula.",
+    "State the probability-flow ODE and explain why it shares every marginal $p_t$ with the reverse SDE, with deterministic (DDIM-style) sampling as its discretization.",
+    "Derive conditional flow matching and rectified flow, and explain why a straighter probability path permits fewer sampling steps at fixed discretization error.",
+    "Explain classifier-free guidance as score extrapolation and quantify its quality–diversity trade.",
+    "Implement DDPM and conditional flow matching in working code on an analytic 2D target, verifying the learned score and velocity against closed forms."
+   ],
+   "key_takeaways": [
+    "The forward chain's closed-form marginal $x_t = \\sqrt{\\bar\\alpha_t}x_0 + \\sqrt{1-\\bar\\alpha_t}\\epsilon$ makes training a one-line regression, and Tweedie's formula makes the trained noise predictor an exact score estimator: $s = -\\epsilon_\\theta/\\sigma_t$. Certain",
+    "The probability-flow ODE shares every marginal with the reverse SDE (a two-line Fokker–Planck rewrite), giving deterministic sampling, invertible encoding, and the trajectory structure all few-step methods rely on. Certain",
+    "Diffusion and flow matching learn the same conditional expectation under different parameterizations; flow matching's linear path wins on step count because Euler error scales with trajectory curvature — measured here as 2 vs. 8 NFE to equal sample quality. Certain",
+    "Classifier-free guidance is score extrapolation through an implicit classifier; it buys fidelity and prompt adherence at a measurable cost in diversity, and it is a heuristic field, not the score of a normalized distribution. Likely",
+    "The frontier has moved to 1–4-step generation (consistency models, MeanFlow-family objectives) and to diffusion language models decoding at 1,000–2,000+ tokens/s in vendor reports; whether the latter displace autoregression beyond code and editing niches remains open. Verify"
+   ],
+   "tags": {
+    "certain": 11,
+    "likely": 4,
+    "verify": 10,
+    "contested": 2
+   },
+   "part": "Part VII",
+   "line_span": [
+    13416,
+    13772
+   ]
+  },
+  {
+   "n": 36,
+   "title": "Agents, Tool Use, and Long-Horizon Training",
+   "sections": [
+    "36.1 What an Agent Is",
+    "36.2 ReAct, Planning, Reflection",
+    "36.3 Tool Calling and Structured Output",
+    "36.4 Retrieval and Its Limits",
+    "36.5 Environments and Verifiable Rewards",
+    "36.6 Multi-Turn Credit Assignment",
+    "36.7 Horizon Length as the Capability Axis",
+    "36.8 Multi-Agent Systems, Honestly",
+    "36.9 Evaluating Agents"
+   ],
+   "subsections": [
+    "36.1.1 Where independence fails, in both directions",
+    "36.3.1 The training data that makes it reliable"
+   ],
+   "artifact_title": "Artifact 36.1 — Horizon Compounding in a Sandbox Agent Loop",
+   "artifact_count": 1,
+   "definitions": [
+    "Definition 36.1 (LLM agent)",
+    "Definition 36.2 (Verifiable environment)",
+    "Definition 36.3 (50% time horizon)"
+   ],
+   "theorems": [
+    "Theorem 36.1 (Horizon compounding and geometric retry)"
+   ],
+   "examples": [
+    "Example 36.1 (Reliability arithmetic)"
+   ],
+   "warning_boxes": [
+    "Common Pitfall"
+   ],
+   "has_encrypted_note": true,
+   "encrypted_note_count": 1,
+   "read_alongside": "Read alongside — Stanford CS336 for the post-training and RL infrastructure that agent training sits on; Chakraborty, Introduction to Large Language Models, for the NLP-side framing of tool-augmented generation; Géron for the end-to-end evaluation discipline that agent systems need more than any other ML artifact.",
+   "learning_objectives": [
+    "Model task success as per-step reliability compounded over horizon length, compute the per-step accuracy $p = s^{1/H}$ required for end-to-end success $s$, and state where the independence assumption fails in both directions.",
+    "Explain tool calling as constrained generation and identify the training data that makes it reliable.",
+    "Explain reinforcement learning for multi-turn agents: credit assignment over trajectories, and why verifiable environments dominate current results.",
+    "Explain context management for long horizons — compaction, memory, sub-agents — and their measured failure modes.",
+    "Implement an agent loop with horizon-scaling measurement in working code."
+   ],
+   "key_takeaways": [
+    "Under independent errors, end-to-end success is $p^H$: 90% success at $H=64$ requires per-step accuracy 0.99836. Per-step reliability is the whole game; measured success tracks the formula to within binomial noise in Artifact 36.1. Certain",
+    "A sound verifier with $r$ independent retries lifts per-step success to $1-(1-p)^{r+1}$; in the artifact this turns 0.13% end-to-end success at $H=64$ into 94.7%, matching the analytic prediction. Correlated retries (same context, temperature 0) buy nothing. Certain",
+    "Constrained decoding guarantees tool-call syntax; only training data — diverse schemas, error-recovery traces, negative examples — buys tool-call semantics. Likely",
+    "Agent RL that works today is outcome-only reward in verifiable environments with group baselines; dense learned rewards trade variance for a bias the policy learns to exploit, and reward hacking is measured to grow with task size. Likely",
+    "METR's 50% time horizon doubled roughly every seven months from 2019 to early 2025, faster since; because success decays exponentially in task length, horizon growth is per-step hazard reduction — the capability axis is a reliability axis. Current horizon figures move monthly; check before quoting. Verify"
+   ],
+   "tags": {
+    "certain": 7,
+    "likely": 14,
+    "verify": 10,
+    "contested": 1
+   },
+   "part": "Part VII",
+   "line_span": [
+    13772,
+    14032
+   ]
+  },
+  {
+   "n": 37,
+   "title": "Interpretability, Safety, and Open Problems",
+   "sections": [
+    "37.1 Why Neurons Are Polysemantic",
+    "37.2 Superposition in a Toy Model",
+    "37.3 Sparse Autoencoders",
+    "37.4 Circuits and Patching",
+    "37.5 Activation Steering",
+    "37.6 Alignment Failures with Evidence",
+    "37.7 Open Problems",
+    "37.8 How to Read This Field"
+   ],
+   "subsections": [
+    "37.3.1 The Sparsity–Fidelity Frontier",
+    "37.3.2 Failure Modes"
+   ],
+   "artifact_title": "Artifact 37.1 — Superposition, a TopK SAE, and a Causal Steering Test",
+   "artifact_count": 1,
+   "definitions": [
+    "Definition 37.1 (Superposition hypothesis)",
+    "Definition 37.2 (Sparse autoencoder)"
+   ],
+   "theorems": [
+    "Theorem 37.1 (Near-orthogonal packing)"
+   ],
+   "examples": [
+    "Example 37.1 (Three features in two dimensions)"
+   ],
+   "warning_boxes": [
+    "Common Pitfall"
+   ],
+   "has_encrypted_note": false,
+   "encrypted_note_count": 0,
+   "read_alongside": "Read alongside — No textbook in our list covers this material; the field publishes on transformer-circuits.pub, arXiv, and the Alignment Forum, and Section 37.8 tells you how to read those. For the substrate being dissected: Karpathy's nanoGPT is the standard small transformer on which to replicate induction-head and patching experiments, and Raschka's Build a Large Language Model (From Scratch) gives you the activation-extraction plumbing an SAE needs.",
+   "learning_objectives": [
+    "State the superposition hypothesis and give the near-orthogonality argument for why $d$ dimensions can carry $e^{O(\\epsilon^2 d)}$ features at interference $\\epsilon$.",
+    "Derive the sparse-autoencoder objective, trace the sparsity–fidelity frontier it induces, and name the documented failure modes: shrinkage, dead latents, feature splitting, and feature absorption.",
+    "Explain circuit-level interpretability — the logit lens, activation patching, induction heads, and attribution graphs — and what each can and cannot establish causally.",
+    "Distinguish alignment failures with empirical demonstrations from those that remain speculative, citing the specific experiment for each empirical claim.",
+    "Implement a toy superposition model, a TopK sparse autoencoder with verified feature recovery, and a causal steering test in working code."
+   ],
+   "key_takeaways": [
+    "Neurons are polysemantic because concentration of measure lets $d$ dimensions hold exponentially many near-orthogonal directions, and sparse features make the resulting interference cheap; superposition is the trained-in exploitation of this, reproduced in Artifact 37.1 (15 features in 5 dimensions). Certain",
+    "Sparse autoencoders recover planted dictionaries essentially perfectly when their sparsity matches the data's, but the frontier is treacherous: at $k$ above the true sparsity, reconstruction stays perfect while the dictionary silently collapses (measured: $32/32 \\to 2/32$ recovered at identical near-zero MSE). Certain",
+    "Feature splitting and absorption are structural failures of sparsity-optimized dictionaries, and 2025's negative results (SAEs losing to linear probes on downstream tasks, DeepMind's deprioritization) narrowed the credible use case to discovering unknown concepts rather than acting on known ones. Likely",
+    "Causal tools outrank correlational ones: activation patching and steering with controls establish that directions like the refusal direction causally mediate behavior, even while the mechanism computing that behavior remains unexplained — we can steer what we cannot explain. Certain",
+    "Sleeper-agent persistence, alignment faking, emergent misalignment, and obfuscated reward hacking are replicated experiments; spontaneous scheming in deployment is not among them, and whether the experiments reveal goal-guarding or elicited role-play is genuinely unsettled — interpretability-grade evidence, not scratchpad transcripts, is what would settle it. Contested"
+   ],
+   "tags": {
+    "certain": 16,
+    "likely": 7,
+    "verify": 4,
+    "contested": 3
+   },
+   "part": "Part VII",
+   "line_span": [
+    14032,
+    14337
+   ]
+  }
+ ],
+ "unassembled_chapters": [
+  {
+   "n": 38,
+   "title": "What Breaks When You Encrypt a Transformer",
+   "sections": [
+    "38.1 The Currency Change: What CKKS Charges For",
+    "38.2 Threat Models: Who Is Hidden from Whom",
+    "38.3 The Non-Polynomial Inventory of a Transformer Block",
+    "38.4 The Depth Ledger",
+    "38.5 Matmuls, Packings, and Rotation Counts",
+    "38.6 Where the Budget Goes, and the Bootstrapping Conclusion"
+   ],
+   "subsections": [
+    "38.1.1 The fee schedule and the budget's actual size"
+   ],
+   "artifact_title": "Artifact 38.1 — A Transformer FHE Cost Model",
+   "artifact_count": 1,
+   "definitions": [
+    "Definition 38.1 (Multiplicative depth and the level budget)"
+   ],
+   "theorems": [
+    "Theorem 38.1 (Baby-step–giant-step rotation count)"
+   ],
+   "examples": [
+    "Example 38.1 (BSGS at $d=16$)"
+   ],
+   "warning_boxes": [
+    "Common Pitfall"
+   ],
+   "has_encrypted_note": false,
+   "encrypted_note_count": 0,
+   "read_alongside": "Read alongside — Raschka, Build a Large Language Model (From Scratch), for the plaintext transformer block whose every line this chapter re-prices. For CKKS itself this book deliberately defers to primary sources: Cheon, Kim, Kim, and Song (ASIACRYPT 2017) for the scheme, the Homomorphic Encryption Standard (homomorphicencryption.org, v1.1) for parameter tables, and the OpenFHE documentation for what a production library actually exposes. We use those facts; we do not re-derive them.",
+   "learning_objectives": [
+    "State the CKKS facts a transformer engineer needs — levels, rescaling, slot packing, rotations, bootstrapping — without re-deriving the scheme.",
+    "Inventory the non-polynomial operations of one transformer block and classify each by the strategy space available to it: polynomial approximation, iteration, architectural replacement, or protocol escape.",
+    "Derive the multiplicative-depth ledger of one pre-norm attention block line by line, and locate where the budget actually goes.",
+    "Compute the rotation and ciphertext cost of the block's matrix multiplications under diagonal (Halevi–Shoup) and baby-step–giant-step packings, including the $n_1+n_2-2$ rotation count.",
+    "Implement a transformer FHE cost model — depth, ciphertext-ciphertext multiplications, rotations, ciphertext counts — in working code."
+   ],
+   "key_takeaways": [
+    "CKKS re-prices the transformer: matmuls are cheap (one level, rotations parallelizable), non-polynomials are expensive, comparisons are ruinous, and depth is a budget fixed at key generation — capped near 40 levels by the 128-bit security tables at $N=2^{16}$. Certain",
+    "One pre-norm attention sub-block costs 28 multiplicative levels at degree-15 polynomials and 4 Goldschmidt iterations, the full block 44 — and 84% of that goes to LayerNorm, softmax, and GELU, inverting the plaintext cost profile where those operations were free. Certain (given the stated conventions)",
+    "Baby-step–giant-step cuts the Halevi–Shoup diagonal matvec from $d-1$ to $n_1+n_2-2 \\approx 2\\sqrt d$ rotations — 4,095 to 126 at $d=4096$ — after which the ciphertext-ciphertext attention matmuls dominate the rotation bill. Certain",
+    "Depth grows linearly in $L$ and is independent of $T$; a 32-layer model needs ~1,400 levels against a ~40-level leveled budget, so bootstrapping — seconds on CPU, tens-to-hundreds of milliseconds on GPU per ciphertext, per current reports — is the architecture, not an optimization. Verify (bootstrap costs move with hardware and library)",
+    "Whether pure-FHE or interactive HE+MPC hybrids are the right road is unsettled: hybrids report better latency on LAN benchmarks, pure FHE needs no client liveness or per-query bandwidth; published latencies are not cross-comparable, and this book bets on non-interactivity for serving. Contested"
+   ],
+   "tags": {
+    "certain": 6,
+    "likely": 4,
+    "verify": 4,
+    "contested": 2
+   },
+   "part": "Part VIII",
+   "rendered_in_book": false,
+   "source_file": "/workspace/ml-dl-llm-books/book-workspace/drafts/ch38.html"
+  },
+  {
+   "n": 39,
+   "title": "Approximating the Non-Polynomial Core",
+   "sections": [
+    "39.1 The Three Problems",
+    "39.2 Chebyshev and the Interval",
+    "39.3 Minimax and Equioscillation",
+    "39.4 Iterative Methods: Newton, Goldschmidt",
+    "39.5 Comparison and Sign: Composite Iterations",
+    "39.6 Softmax Strategies in the Wild",
+    "39.7 Domain Control: Clipping, Normalization, and the Drift Failure",
+    "39.8 The Accuracy–Depth Frontier"
+   ],
+   "subsections": [],
+   "artifact_title": "Artifact 39.1 — Three Approximation Toolkits, Measured",
+   "artifact_count": 1,
+   "definitions": [
+    "Definition 39.1 (Minimax approximation)"
+   ],
+   "theorems": [
+    "Theorem 39.1 (Chebyshev Equioscillation Theorem)",
+    "Theorem 39.2 (Quadratic convergence of Newton reciprocal)"
+   ],
+   "examples": [
+    "Example 39.1 (Degree-1 minimax for $e^x$ on $[0,1]$)"
+   ],
+   "warning_boxes": [
+    "Common Pitfall"
+   ],
+   "has_encrypted_note": false,
+   "encrypted_note_count": 0,
+   "read_alongside": "Read alongside — Trefethen, Approximation Theory and Approximation Practice, for Chebyshev interpolation, equioscillation, and the Remez algorithm done properly; the Cheon–Kim–Kim ASIACRYPT 2019 and 2020 papers on homomorphic comparison, which are short and readable and define the composite-sign machinery every CKKS system now ships; Raschka, Build a Large Language Model (From Scratch), to keep the plaintext softmax and LayerNorm you are approximating concretely in view.",
+   "learning_objectives": [
+    "Construct Chebyshev and minimax (Remez) approximations of a function on a chosen interval, and quantify the equioscillation advantage of minimax at equal degree.",
+    "Derive iterative alternatives — Newton and Goldschmidt for inverses and inverse square roots — and account for their multiplicative depth per digit of accuracy.",
+    "Explain comparison and sign via composite polynomial iteration, and why comparison remains the most expensive primitive on CKKS ciphertexts.",
+    "Survey the softmax strategies used by published systems — BOLT, NEXUS, Powerformer, THOR — including how each handles the max-subtraction problem.",
+    "Implement a minimax-versus-Chebyshev comparison, a composite sign iteration, and a softmax accuracy–depth Pareto table in working code."
+   ],
+   "key_takeaways": [
+    "Minimax beats Chebyshev interpolation at equal degree by at most the Lebesgue-constant factor — measured 1.229× for $e^x$ on $[-4,0]$ at degree 7, with textbook equioscillation (9 alternating extrema, equal to machine precision) — and the win is free at fixed depth, which is why Remez fits are standard in CKKS toolchains. Certain",
+    "Iterations beat one-shot fits wherever they apply: Newton and Goldschmidt square the error every two levels, so accuracy per depth is doubly exponential — but only from an interval-fitted initial guess, so division inherits the same domain assumption it was meant to avoid. Certain",
+    "Comparison is the most expensive primitive because sign is discontinuous: the Cheon–Kim–Kim composite iteration is asymptotically optimal, needs depth 4 per $f_4$ round for a measured ~2.4× width reduction, and diverges doubly exponentially off $[-1,1]$ ($f_4(f_4(2)) \\approx 1.3\\times 10^{13}$). Certain",
+    "The four published softmax answers to max-subtraction are: compute it exactly in MPC (BOLT), skip it and assume a bounded domain (NEXUS), replace the max with a calibrated constant (THOR), or retrain softmax away entirely (Powerformer, BRPmax) — and their latency figures are not mutually comparable across threat models and setups. Certain",
+    "Domain control is the governing trade of the whole part: every polynomial and every iteration is fitted to an interval, drift off it fails silently under encryption, and the defenses — calibration, enforcement, retraining — differ mainly in how much depth or training they spend to buy a guaranteed interval. Likely"
+   ],
+   "tags": {
+    "certain": 17,
+    "likely": 3,
+    "verify": 2,
+    "contested": 0
+   },
+   "part": "Part VIII",
+   "rendered_in_book": false,
+   "source_file": "/workspace/ml-dl-llm-books/book-workspace/drafts/ch39.html"
+  },
+  {
+   "n": 40,
+   "title": "Private Transformer Inference Systems",
+   "sections": [
+    "40.1 The Taxonomy: FHE, 2PC, Hybrid",
+    "40.2 The Interactive Line: Iron to BOLT to BumbleBee to Nimbus",
+    "40.3 The Non-Interactive Line: NEXUS, SHAFT, THOR, Powerformer",
+    "40.4 Automation and Hybrids: ATLAS and TEE–FHE Designs",
+    "40.5 Reading a Latency Claim",
+    "40.6 What Is Actually Deployed"
+   ],
+   "subsections": [
+    "40.1.1 The two currencies"
+   ],
+   "artifact_title": "Artifact 40.1 — A System-Comparison Database with Sourcing Discipline",
+   "artifact_count": 1,
+   "definitions": [
+    "Definition 40.1 (Protocol families for private transformer inference)"
+   ],
+   "theorems": [],
+   "examples": [
+    "Example 40.1 (Cross-paper numbers do not reconcile, by arithmetic)"
+   ],
+   "warning_boxes": [
+    "Common Pitfall"
+   ],
+   "has_encrypted_note": false,
+   "encrypted_note_count": 0,
+   "read_alongside": "Read alongside — No textbook covers this chapter; the primary papers are the only sources, and every record in Artifact 40.1 names its paper. Two surveys are useful as maps, never as sources of numbers: A Survey on Private Transformer Inference (arXiv 2412.08145) and Private Transformer Inference in MLaaS: A Survey (arXiv 2505.10315). For deployment ground truth, Apple's Security Research blog posts on Private Cloud Compute are primary sources in their own right.",
+   "learning_objectives": [
+    "Classify the published private-inference systems by protocol family — pure FHE, 2PC with HE subprotocols, TEE hybrids — and by the threat model each actually defends.",
+    "Extract and compare the softmax, normalization, and activation strategies across systems, and identify which are protocol innovations and which are model surgery.",
+    "Explain the packing-and-communication trade that separates interactive from non-interactive designs, and why bandwidth and multiplicative depth are the two currencies being exchanged.",
+    "State what each headline latency number actually measured — model, sequence length, hardware, network emulation — and what it excluded.",
+    "Implement a structured system-comparison database with hard consistency checks in working code."
+   ],
+   "key_takeaways": [
+    "The literature splits into three protocol families — 2PC with HE subprotocols, non-interactive FHE, and TEE hybrids — that answer different questions under different threat models; no family dominates, and cross-family comparison of headline numbers is a category error. Certain",
+    "Every system's innovation budget goes to the same three operators — softmax, normalization, activation — and the strategies form a spectrum from faithful protocol-level approximation (Iron, BOLT, NEXUS, THOR) to model surgery that trains the non-linearity away (Powerformer, Nimbus). Certain",
+    "Interactive designs pay in bandwidth and rounds to keep multiplicative depth nearly free; non-interactive designs pay in depth and bootstrapping to collapse communication to two ciphertexts — packing is optimized against opposite objectives in the two families. Certain",
+    "A latency claim is only meaningful as the tuple (threat model, model, sequence length, hardware, network emulation, exclusions, accuracy cost); cross-paper reconstructions disagree by ~1.5× even between honest papers, which is the measurement noise floor of the field. Likely",
+    "What is deployed today is trusted hardware for transformer inference (Apple's Private Cloud Compute) and homomorphic encryption only for shallow retrieval workloads (Live Caller ID Lookup, Enhanced Visual Search); no FHE transformer serves production traffic as of this writing. Verify"
+   ],
+   "tags": {
+    "certain": 11,
+    "likely": 6,
+    "verify": 4,
+    "contested": 1
+   },
+   "part": "Part VIII",
+   "rendered_in_book": false,
+   "source_file": "/workspace/ml-dl-llm-books/book-workspace/drafts/ch40.html"
+  },
+  {
+   "n": 41,
+   "title": "Encrypted LLM Serving at Scale",
+   "sections": [
+    "41.1 One Forward Pass Is Not Generation",
+    "41.2 The Encrypted KV Cache",
+    "41.3 Appending, Attending, Repacking",
+    "41.4 Bootstrapping Placement",
+    "41.5 Effective Precision: CKKS versus fp16",
+    "41.6 GPU-Accelerated FHE",
+    "41.7 An Honest Cost of One Token"
+   ],
+   "subsections": [
+    "41.3.1 Attending over the packed cache"
+   ],
+   "artifact_title": "Artifact 41.1 — An Encrypted-Generation Cost Model",
+   "artifact_count": 1,
+   "definitions": [
+    "Definition 41.1 (Packing density of a cached step)"
+   ],
+   "theorems": [
+    "Theorem 41.1 (Greedy bootstrap count)"
+   ],
+   "examples": [
+    "Example 41.1 (Cache memory at $t=1024$, GPT-2-small geometry)",
+    "Example 41.2 (Tokens per bootstrap)"
+   ],
+   "warning_boxes": [
+    "Common Pitfall"
+   ],
+   "has_encrypted_note": false,
+   "encrypted_note_count": 0,
+   "read_alongside": "Read alongside — Raschka, Build a Large Language Model (From Scratch), for the plaintext KV cache implemented line by line: you need the plaintext loop cold before encrypting it. Stanford CS336 for the serving-side framing (prefill versus decode, cache economics) that this chapter re-derives under encryption.",
+   "learning_objectives": [
+    "Compute the ciphertext count and memory footprint of an encrypted KV cache as a function of sequence position $t$, packing density, and RNS precision.",
+    "Derive the rotation and repacking cost of appending one generation step to a packed cache, and the cost of attending over it.",
+    "Place bootstrapping inside the generation loop and derive tokens-per-bootstrap $B/d_{\\text{tok}}$ for a given level budget $B$.",
+    "Compare the effective precision of a CKKS pipeline against fp16's 11-bit significand at matched settings, and state what accuracy evidence exists beyond single-pass classification.",
+    "Implement an encrypted-generation cost model — op counts, bootstrap accounting, and a bootstrap-dominance crossover — in working code."
+   ],
+   "key_takeaways": [
+    "Single-pass benchmarks structurally understate encrypted serving: decoding $T$ tokens multiplies depth by $T$, forces a ciphertext-resident KV cache, and inserts a secure argmax between every pair of passes. Certain",
+    "An encrypted KV cache costs $\\approx 4\\ell w$ bytes per cached scalar — a $\\sim$200× expansion over fp16 at typical parameters — and appending under compact packing burns rotations, masks, and one level every token. Certain",
+    "Tokens per bootstrap is $B/d_{\\text{tok}}$, which is $\\ll 1$ for any realistic transformer (0.07 at the chapter's geometry); Theorem 41.1's $\\lceil D/B\\rceil - 1$ accounting matches the artifact's simulation exactly. Certain",
+    "The bootstrap-versus-cache crossover $t^{*} = \\lfloor d_{\\text{tok}}R/(Bb)\\rfloor g + 1$ says GPU bootstrapping ($R\\sim 10^2$) relocates the bottleneck to cache traffic rather than eliminating it; the constituent cost ratios drift with every library release. Verify",
+    "Published encrypted generation results are one-token-scale (PUMA's paper reports ~5 min/token for LLaMA-7B under MPC; Cachemir's reports <100 s/token for Llama-3-8B under FHE on GPU — different threat models, not comparable); long-horizon output quality under encryption is undemonstrated, and whether approximation error compounds across steps or is erased by argmax snapping remains genuinely unsettled. Contested"
+   ],
+   "tags": {
+    "certain": 7,
+    "likely": 3,
+    "verify": 7,
+    "contested": 2
+   },
+   "part": "Part VIII",
+   "rendered_in_book": false,
+   "source_file": "/workspace/ml-dl-llm-books/book-workspace/drafts/ch41.html"
+  }
+ ],
+ "artifact_code_files": {
+  "dir": "/workspace/ml-dl-llm-books/book-workspace/code",
+  "chapters_with_code": [
+   1,
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8,
+   9,
+   10,
+   11,
+   12,
+   13,
+   14,
+   15,
+   16,
+   17,
+   18,
+   19,
+   20,
+   21,
+   22,
+   23,
+   24,
+   25,
+   26,
+   27,
+   28,
+   29,
+   30,
+   31,
+   32,
+   33,
+   34,
+   35,
+   36,
+   37,
+   38,
+   39,
+   40,
+   41
+  ],
+  "chapters_without_code": [
+   42
+  ]
+ },
+ "parts": [
+  {
+   "label": "Part I",
+   "title": "Mathematical and Statistical Foundations",
+   "chapters": [
+    1,
+    5
+   ],
+   "chapter_list": [
+    1,
+    2,
+    3,
+    4,
+    5
+   ]
+  },
+  {
+   "label": "Part II",
+   "title": "Classical Machine Learning",
+   "chapters": [
+    6,
+    9
+   ],
+   "chapter_list": [
+    6,
+    7,
+    8,
+    9
+   ]
+  },
+  {
+   "label": "Part III",
+   "title": "Neural Networks and Optimization at Scale",
+   "chapters": [
+    10,
+    15
+   ],
+   "chapter_list": [
+    10,
+    11,
+    12,
+    13,
+    14,
+    15
+   ]
+  },
+  {
+   "label": "Part IV",
+   "title": "Architectures",
+   "chapters": [
+    16,
+    21
+   ],
+   "chapter_list": [
+    16,
+    17,
+    18,
+    19,
+    20,
+    21
+   ]
+  },
+  {
+   "label": "Part V",
+   "title": "Large Language Models",
+   "chapters": [
+    22,
+    29
+   ],
+   "chapter_list": [
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29
+   ]
+  },
+  {
+   "label": "Part VI",
+   "title": "Systems and Efficiency",
+   "chapters": [
+    30,
+    34
+   ],
+   "chapter_list": [
+    30,
+    31,
+    32,
+    33,
+    34
+   ]
+  },
+  {
+   "label": "Part VII",
+   "title": "The Frontier",
+   "chapters": [
+    35,
+    37
+   ],
+   "chapter_list": [
+    35,
+    36,
+    37
+   ]
+  }
+ ],
+ "tags": {
+  "certain": 292,
+  "likely": 214,
+  "verify": 239,
+  "contested": 62
+ },
+ "notation_symbols": [
+  "x",
+  "n",
+  "p",
+  "k",
+  "d",
+  "t",
+  "\\theta",
+  "\\eta",
+  "B",
+  "b",
+  "f",
+  "z",
+  "A",
+  "w",
+  "s",
+  "\\lambda",
+  "\\alpha",
+  "m",
+  "e",
+  "O",
+  "y",
+  "T",
+  "L",
+  "q",
+  "\\sigma",
+  "N",
+  "\\mathbb{R}",
+  "\\mathcal{L}",
+  "X",
+  "W",
+  "\\mathbb{E}",
+  "h",
+  "x_{i}",
+  "\\beta",
+  "P",
+  "I",
+  "i",
+  "H",
+  "C",
+  "a",
+  "c",
+  "\\delta",
+  "l",
+  "\\mu",
+  "\\tau",
+  "r",
+  "\\varepsilon",
+  "\\pi",
+  "K",
+  "S",
+  "\\phi",
+  "\\gamma",
+  "u",
+  "M",
+  "\\Theta",
+  "g",
+  "\\rho",
+  "V",
+  "\\kappa",
+  "v",
+  "d_{h}",
+  "\\Delta",
+  "j",
+  "D",
+  "\\nabla",
+  "d_{k}",
+  "Q",
+  "E",
+  "h_{t}",
+  "\\epsilon",
+  "\\Phi",
+  "\\ell",
+  "R",
+  "y_{i}",
+  "\\mathcal{H}",
+  "\\lambda_{i}",
+  "x_{t}",
+  "\\mathcal{N}",
+  "J",
+  "d_{\\text{in}}",
+  "x_{1}",
+  "w_{t}",
+  "m_{t}",
+  "G",
+  "\\sigma_{i}",
+  "z_{i}",
+  "\\beta_{2}",
+  "W_{h}",
+  "U",
+  "\\theta_{t}",
+  "Z",
+  "x_{0}",
+  "\\Sigma",
+  "o",
+  "d_{\\text{out}}",
+  "\\alpha_{i}",
+  "\\lambda_{1}",
+  "\\pi_{\\text{ref}}",
+  "\\mathcal{F}",
+  "D_{\\text{KL}}",
+  "\\beta_{1}",
+  "g_{t}",
+  "Y",
+  "r_{i}",
+  "\\Lambda",
+  "w_{j}",
+  "a_{t}",
+  "\\mathcal{D}",
+  "s_{i}",
+  "B_{\\text{noise}}",
+  "v_{i}",
+  "v_{t}",
+  "\\theta_{i}",
+  "\\vartheta",
+  "x_{j}",
+  "d_{\\text{ff}}",
+  "\\alpha_{k}",
+  "c_{t}",
+  "\\Omega",
+  "\\mu_{j}",
+  "\\mu_{i}",
+  "y_{w}",
+  "d_{l}",
+  "\\varphi",
+  "s_{j}",
+  "v_{j}",
+  "p_{i}",
+  "F",
+  "H_{j}",
+  "y_{l}",
+  "\\sigma_{1}",
+  "\\mathcal{X}",
+  "g_{i}",
+  "z_{t}",
+  "f_{t}",
+  "f_{e}",
+  "A_{t}",
+  "x_{k}",
+  "G_{j}",
+  "\\Sigma_{j}",
+  "b_{t}",
+  "P_{e}",
+  "d_{\\text{model}}",
+  "n_{T}",
+  "B_{r}",
+  "u_{1}",
+  "u_{i}",
+  "C_{\\text{in}}",
+  "p_{t}",
+  "\\kappa_{2}",
+  "x_{2}",
+  "\\ell_{1}",
+  "T_{\\text{train}}",
+  "\\lambda_{2}",
+  "\\pi_{j}",
+  "n_{l}",
+  "C_{\\text{out}}",
+  "c_{i}",
+  "L_{2}",
+  "\\xi_{i}",
+  "m_{i}",
+  "J_{l}",
+  "k_{hk}",
+  "h_{j}",
+  "B_{t}",
+  "\\sigma_{t}",
+  "B_{\\text{crit}}",
+  "\\nu",
+  "w_{i}",
+  "P_{t}",
+  "H_{kv}",
+  "R_{n}",
+  "y_{t}",
+  "\\beta_{k}",
+  "n_{\\text{in}}",
+  "\\alpha_{t}",
+  "h_{i}",
+  "N_{j}",
+  "q_{j}",
+  "j_{l}",
+  "s_{l}",
+  "r_{l}",
+  "\\ell_{t}",
+  "R_{m}",
+  "e_{j}",
+  "A_{m}",
+  "B_{\\text{blk}}",
+  "p_{k}",
+  "F_{m}",
+  "W_{1}",
+  "\\sigma_{l}",
+  "\\eta_{\\text{eff}}",
+  "\\Delta_{t}",
+  "\\ell_{i}",
+  "\\lambda_{j}",
+  "\\ell_{2}",
+  "w_{0}",
+  "u_{j}",
+  "f_{i}",
+  "\\gamma_{ij}",
+  "\\rho_{i}",
+  "k_{l}",
+  "h_{k}",
+  "W_{o}",
+  "\\nabla_{x}",
+  "v_{1}",
+  "Z_{i}",
+  "u_{t}"
+ ],
+ "notation_symbol_counts": {
+  "x": 635,
+  "n": 521,
+  "p": 415,
+  "k": 375,
+  "d": 321,
+  "t": 285,
+  "\\theta": 281,
+  "\\eta": 266,
+  "B": 248,
+  "b": 243,
+  "f": 235,
+  "z": 234,
+  "A": 228,
+  "w": 224,
+  "s": 220,
+  "\\lambda": 219,
+  "\\alpha": 200,
+  "m": 198,
+  "e": 198,
+  "O": 186,
+  "y": 185,
+  "T": 185,
+  "L": 184,
+  "q": 179,
+  "\\sigma": 171,
+  "N": 169,
+  "\\mathbb{R}": 161,
+  "\\mathcal{L}": 159,
+  "X": 157,
+  "W": 149,
+  "\\mathbb{E}": 148,
+  "h": 148,
+  "x_{i}": 145,
+  "\\beta": 134,
+  "P": 132,
+  "I": 130,
+  "i": 128,
+  "H": 124,
+  "C": 124,
+  "a": 122,
+  "c": 110,
+  "\\delta": 108,
+  "l": 106,
+  "\\mu": 105,
+  "\\tau": 102,
+  "r": 102,
+  "\\varepsilon": 99,
+  "\\pi": 99,
+  "K": 97,
+  "S": 95,
+  "\\phi": 91,
+  "\\gamma": 89,
+  "u": 87,
+  "M": 86,
+  "\\Theta": 83,
+  "g": 83,
+  "\\rho": 82,
+  "V": 81,
+  "\\kappa": 80,
+  "v": 80,
+  "d_{h}": 76,
+  "\\Delta": 75,
+  "j": 74,
+  "D": 74,
+  "\\nabla": 69,
+  "d_{k}": 67,
+  "Q": 65,
+  "E": 65,
+  "h_{t}": 64,
+  "\\epsilon": 60,
+  "\\Phi": 60,
+  "\\ell": 58,
+  "R": 55,
+  "y_{i}": 54,
+  "\\mathcal{H}": 51,
+  "\\lambda_{i}": 50,
+  "x_{t}": 49,
+  "\\mathcal{N}": 47,
+  "J": 46,
+  "d_{\\text{in}}": 44,
+  "x_{1}": 43,
+  "w_{t}": 43,
+  "m_{t}": 42,
+  "G": 42,
+  "\\sigma_{i}": 36,
+  "z_{i}": 36,
+  "\\beta_{2}": 34,
+  "W_{h}": 34,
+  "U": 34,
+  "\\theta_{t}": 33,
+  "Z": 33,
+  "x_{0}": 32,
+  "\\Sigma": 31,
+  "o": 31,
+  "d_{\\text{out}}": 30,
+  "\\alpha_{i}": 29,
+  "\\lambda_{1}": 29,
+  "\\pi_{\\text{ref}}": 29,
+  "\\mathcal{F}": 29,
+  "D_{\\text{KL}}": 28,
+  "\\beta_{1}": 28,
+  "g_{t}": 27,
+  "Y": 27,
+  "r_{i}": 26,
+  "\\Lambda": 25,
+  "w_{j}": 25,
+  "a_{t}": 25,
+  "\\mathcal{D}": 25,
+  "s_{i}": 24,
+  "B_{\\text{noise}}": 23,
+  "v_{i}": 23,
+  "v_{t}": 23,
+  "\\theta_{i}": 23,
+  "\\vartheta": 22,
+  "x_{j}": 21,
+  "d_{\\text{ff}}": 21,
+  "\\alpha_{k}": 21,
+  "c_{t}": 20,
+  "\\Omega": 19,
+  "\\mu_{j}": 19,
+  "\\mu_{i}": 19,
+  "y_{w}": 19,
+  "d_{l}": 19,
+  "\\varphi": 18,
+  "s_{j}": 18,
+  "v_{j}": 18,
+  "p_{i}": 18,
+  "F": 18,
+  "H_{j}": 17,
+  "y_{l}": 17,
+  "\\sigma_{1}": 17,
+  "\\mathcal{X}": 17,
+  "g_{i}": 16,
+  "z_{t}": 16,
+  "f_{t}": 16,
+  "f_{e}": 16,
+  "A_{t}": 16,
+  "x_{k}": 16,
+  "G_{j}": 15,
+  "\\Sigma_{j}": 15,
+  "b_{t}": 15,
+  "P_{e}": 15,
+  "d_{\\text{model}}": 15,
+  "n_{T}": 15,
+  "B_{r}": 15,
+  "u_{1}": 14,
+  "u_{i}": 14,
+  "C_{\\text{in}}": 14,
+  "p_{t}": 14,
+  "\\kappa_{2}": 14,
+  "x_{2}": 14,
+  "\\ell_{1}": 14,
+  "T_{\\text{train}}": 14,
+  "\\lambda_{2}": 13,
+  "\\pi_{j}": 13,
+  "n_{l}": 13,
+  "C_{\\text{out}}": 13,
+  "c_{i}": 13,
+  "L_{2}": 13,
+  "\\xi_{i}": 12,
+  "m_{i}": 12,
+  "J_{l}": 12,
+  "k_{hk}": 12,
+  "h_{j}": 12,
+  "B_{t}": 12,
+  "\\sigma_{t}": 12,
+  "B_{\\text{crit}}": 12,
+  "\\nu": 11,
+  "w_{i}": 11,
+  "P_{t}": 11,
+  "H_{kv}": 11,
+  "R_{n}": 11,
+  "y_{t}": 11,
+  "\\beta_{k}": 11,
+  "n_{\\text{in}}": 11,
+  "\\alpha_{t}": 11,
+  "h_{i}": 10,
+  "N_{j}": 10,
+  "q_{j}": 10,
+  "j_{l}": 10,
+  "s_{l}": 10,
+  "r_{l}": 10,
+  "\\ell_{t}": 10,
+  "R_{m}": 10,
+  "e_{j}": 10,
+  "A_{m}": 10,
+  "B_{\\text{blk}}": 10,
+  "p_{k}": 9,
+  "F_{m}": 9,
+  "W_{1}": 9,
+  "\\sigma_{l}": 9,
+  "\\eta_{\\text{eff}}": 9,
+  "\\Delta_{t}": 9,
+  "\\ell_{i}": 9,
+  "\\lambda_{j}": 9,
+  "\\ell_{2}": 9,
+  "w_{0}": 8,
+  "u_{j}": 8,
+  "f_{i}": 8,
+  "\\gamma_{ij}": 8,
+  "\\rho_{i}": 8,
+  "k_{l}": 8,
+  "h_{k}": 8,
+  "W_{o}": 8,
+  "\\nabla_{x}": 8,
+  "v_{1}": 8,
+  "Z_{i}": 8,
+  "u_{t}": 8
+ },
+ "toc_promised": {
+  "parts": [
+   "Part I — Mathematical and Statistical Foundations",
+   "Part II — Classical Machine Learning",
+   "Part III — Neural Networks and Optimization at Scale",
+   "Part IV — Architectures",
+   "Part V — Large Language Models",
+   "Part VI — Systems and Efficiency",
+   "Part VII — The Frontier",
+   "Part VIII — Machine Learning Under Encryption",
+   "Appendices"
+  ],
+  "chapter_numbers": [
+   1,
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8,
+   9,
+   10,
+   11,
+   12,
+   13,
+   14,
+   15,
+   16,
+   17,
+   18,
+   19,
+   20,
+   21,
+   22,
+   23,
+   24,
+   25,
+   26,
+   27,
+   28,
+   29,
+   30,
+   31,
+   32,
+   33,
+   34,
+   35,
+   36,
+   37,
+   38,
+   39,
+   40,
+   41,
+   42
+  ],
+  "chapter_titles": {
+   "1": "Linear Algebra as Computation",
+   "2": "Probability, Information, and Why Cross-Entropy Is the Only Loss",
+   "3": "Generalization: Classical Theory and Its Deep-Learning Failure",
+   "4": "Optimization: Convergence Rates and the Non-Convex Reality",
+   "5": "Numerics: Floating Point, Precision, and Stability",
+   "6": "Linear and Logistic Regression: the Atom",
+   "7": "Kernels, Margins, and the Bridge to Infinite-Width Networks",
+   "8": "Trees, Bagging, and Gradient Boosting",
+   "9": "Unsupervised Learning: PCA, Clustering, and Latent Variables",
+   "10": "The Multilayer Perceptron and What Depth Buys",
+   "11": "Automatic Differentiation and Backpropagation",
+   "12": "Initialization, Normalization, and Signal Propagation",
+   "13": "Optimizers: SGD to Muon",
+   "14": "Regularization and the Generalization Levers That Actually Work",
+   "15": "Hyperparameter Transfer: muP, Schedules, and Batch Size",
+   "16": "Convolutional Networks",
+   "17": "Recurrence: RNNs, LSTMs, and the Gradient Pathology",
+   "18": "Attention and the Transformer",
+   "19": "Positional Information and Long Context",
+   "20": "Vision Transformers and Multimodal Encoders",
+   "21": "State Space Models: S4, Mamba, and the SSD Duality",
+   "22": "Mixture of Experts and Conditional Computation",
+   "23": "Tokenization and the Language-Modeling Objective",
+   "24": "Scaling Laws",
+   "25": "The Pretraining Pipeline: Data, Curricula, Mid-Training",
+   "26": "Supervised Fine-Tuning and Parameter-Efficient Adaptation",
+   "27": "Preference Optimization: RLHF, DPO, GRPO",
+   "28": "Reasoning Models and Test-Time Compute",
+   "29": "Evaluation and the Measurement Crisis",
+   "30": "The GPU Execution Model and the Memory Wall",
+   "31": "FlashAttention and Writing Fast Kernels",
+   "32": "Distributed Training",
+   "33": "Inference: Serving, Caching, and Speculative Decoding",
+   "34": "Quantization, Distillation, and Compression",
+   "35": "Diffusion, Flow Matching, and Non-Autoregressive Generation",
+   "36": "Agents, Tool Use, and Long-Horizon Training",
+   "37": "Interpretability, Safety, and Open Problems",
+   "38": "What Breaks When You Encrypt a Transformer",
+   "39": "Approximating the Non-Polynomial Core",
+   "40": "Private Transformer Inference Systems",
+   "41": "Encrypted LLM Serving at Scale",
+   "42": "The Research Frontier: Where a Contribution Fits"
+  },
+  "appendices": [
+   {
+    "letter": "A",
+    "title": "Notation and Mathematical Prerequisites"
+   },
+   {
+    "letter": "B",
+    "title": "Environment Setup"
+   },
+   {
+    "letter": "C",
+    "title": "Complete Code for All Artifacts"
+   },
+   {
+    "letter": "D",
+    "title": "Sources and Further Reading"
+   },
+   {
+    "letter": "E",
+    "title": "Reading Crosswalk"
+   },
+   {
+    "letter": "F",
+    "title": "Reference Numbers (dated)"
+   }
+  ]
+ },
+ "counts": {
+  "chapters_rendered": 37,
+  "chapters_promised_by_toc": 42,
+  "chapters_drafted_but_unassembled": 4,
+  "chapters_never_written": 1,
+  "artifacts_rendered": 37,
+  "artifacts_in_unassembled_drafts": 4,
+  "artifacts_total_existing": 41,
+  "artifacts_promised_by_toc": 42,
+  "parts_rendered": 7,
+  "parts_promised_by_toc": 8,
+  "appendices_rendered": 0,
+  "appendices_promised_by_toc": 6,
+  "definitions": 98,
+  "theorems": 102,
+  "examples": 80,
+  "warning_boxes": 46,
+  "encrypted_notes": 23,
+  "read_alongside_boxes": 37,
+  "notation_symbols": 208
+ },
+ "anomalies": [
+  "TOC promises chapters 5 that have NO rendered <div class=\"chapter\">: [38, 39, 40, 41, 42]",
+  "Placeholder region <!-- PART_VIII_START/END --> is EMPTY (no content emitted)",
+  "Placeholder region <!-- APPENDICES_START/END --> is EMPTY (no content emitted)",
+  "TOC links #appendix-a ('Notation and Mathematical Prerequisites') but no element with that id exists",
+  "TOC links #appendix-b ('Environment Setup') but no element with that id exists",
+  "TOC links #appendix-c ('Complete Code for All Artifacts') but no element with that id exists",
+  "TOC links #appendix-d ('Sources and Further Reading') but no element with that id exists",
+  "TOC links #appendix-e ('Reading Crosswalk') but no element with that id exists",
+  "TOC links #appendix-f ('Reference Numbers (dated)') but no element with that id exists",
+  "TOC lists 8 Parts but only 7 part-header blocks rendered (['Part I', 'Part II', 'Part III', 'Part IV', 'Part V', 'Part VI', 'Part VII'])",
+  "Chapters [38, 39, 40, 41] exist as finished drafts in /workspace/ml-dl-llm-books/book-workspace/drafts but were NEVER inserted into ml-book.html (the PART_VIII_START/END region is empty) -- this is an assembly gap, not missing writing",
+  "Chapter(s) [42] promised by the TOC have NO draft anywhere: never written",
+  "No artifact code file chNN_artifact.py in /workspace/ml-dl-llm-books/book-workspace/code for chapter(s) [42]"
+ ]
+}
