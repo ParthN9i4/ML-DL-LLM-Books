@@ -72,11 +72,12 @@ DB = [
     System("Nimbus", "2PC+HE (interactive)", True, "per-protocol rounds throughout inference",
         "semi-honest client+server 2PC",
         "RLWE HE, outer-product/row-wise encoding for linear layers + SS for non-linear",
-        "low-degree polynomial approx + model adaptation",
-        "handled within adapted-model protocols",
-        "low-degree polynomial GELU + fine-tuning to recover accuracy",
-        "BERT-base", NR, "LAN 3Gbps/1ms and WAN 400Mbps/10ms (as retrieved)",
-        "paper reports 2.7x-4.7x end-to-end BERT-base speedup vs prior SOTA 2PC",
+        "low-degree poly approx fitted to observed input distribution",
+        "no special optimization (paper defers LayerNorm to future work)",
+        "low-degree polynomial GELU from input distribution; model left frozen",
+        "BERT-base", NR, "CPU; LAN and WAN settings per paper evaluation",
+        "paper reports 2.7x-4.7x end-to-end BERT-base speedup vs prior SOTA 2PC "
+        "(2.9-12.5x linear layer, 2.9-4.0x poly approx; 0.08% avg accuracy loss)",
         NR, "relative speedups only; split of gains between linear-layer paradigm "
         "and polynomial approximations is per-component in the paper",
         "NeurIPS 2024 (arXiv 2411.15707)",
@@ -97,7 +98,8 @@ DB = [
         "SHAFT abstract (Kei, Chow); NDSS'25 paper page; Zenodo artifact"),
     System("NEXUS", "FHE (non-interactive)", False, "one round: send ct, receive ct",
         "semi-honest server; client offline during inference; weights plaintext server-side",
-        "RNS-CKKS with bootstrapping (SEAL+FHE-MP-CNN; HEXL CPU, Phantom GPU)",
+        "RNS-CKKS, ring 2^16, depth L=35 w/ K=14 for bootstrapping (21 usable); "
+        "SEAL + FHE-MP-CNN bootstrapping, HEXL on CPU, Phantom on GPU",
         "polynomial/iterative approx under CKKS; secure Argmax via sign polynomials",
         "LayerNorm approximated under CKKS",
         "GELU approximated under CKKS; SIMD compression/slot folding",
@@ -141,7 +143,10 @@ DB = [
         "per-layer approx budgets found by multi-objective search",
         "BERT, LLaMA3-8B, ViT (120 or 320 decision variables)", NR,
         "search runs in cleartext; 70-1000 s per candidate config (own claim)",
-        NR, NR, NR,
+        "paper reports ~20% end-to-end inference latency reduction vs prior "
+        "uniform-configuration approximation, search completed in one hour",
+        NR, "the one-hour search is offline and NOT in the ~20%; 35-50% of "
+        "candidate configs are numerically invalid (own claim)",
         "arXiv 2607.23478 (preprint, 2026)",
         "ATLAS abstract/HTML (Xie,Tan,Boddeti,Lu); 'in one hour' = search budget"),
     System("Bifrost", "TEE+FHE hybrid", False,
@@ -156,9 +161,10 @@ DB = [
         "paper reports PROJECTED 9.25x (GPT-2 1.5B) / 9.91x (LLaMA-3 8B) latency "
         "cuts; Bifrost+ TTFT 14.6-45.8x (GPT-2 124M), 15.3-53.4x (Qwen3 0.6B) vs "
         "direct CKKS",
-        NR, "PROJECTED from a cost model, not end-to-end wall clock; baselines are "
-        "direct-CKKS deployments", "arXiv 2606.17421 (preprint, 2026)",
-        "Bifrost abstract (SJTU); arXiv listing June 2026"),
+        NR, "PROJECTED from an estimator, not end-to-end wall clock; the 9.25x/9.91x "
+        "come from an estimator-style comparison following Euston's methodology, the "
+        "TTFT ratios from direct-CKKS baselines", "arXiv 2606.17421 (preprint, 2026)",
+        "Bifrost abstract (Chen,Qin,Zhang,Zhang,Gu; SJTU); arXiv 16 June 2026"),
 ]
 
 # ---------------- HARD ASSERTIONS: sourcing discipline ----------------

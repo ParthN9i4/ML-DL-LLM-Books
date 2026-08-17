@@ -1,235 +1,261 @@
-"""Artifact 42.1 -- The research pitch as arithmetic.
+"""Artifact 42.1 -- the research pitch as arithmetic: an attention block and a
+selective-SSM block, priced in CKKS depth and rotations at matched width.
 
-Extends the Chapter 38 CKKS COUNTING MODEL (no ciphertext is ever created)
-with a selective-SSM block and compares it against the attention sub-block
-at matched width across T in {128, 512, 2048, 8192}.
-
-Conventions inherited from Artifact 38.1: pt-ct mult = 1 level, ct-ct mult
-= 1 level, rotations/additions = 0 levels; a degree-k polynomial via
-Paterson-Stockmeyer costs ceil(log2(k+1)) levels; Goldschmidt reciprocal
-and rsqrt cost 2 levels per iteration.  Depth here is the CRITICAL PATH
-(parallel branches do not add), which is what CKKS actually charges.
-
-Self-checks: (1) a NumPy Hillis-Steele scan for h_t = a_t h_{t-1} + b_t is
-verified against the sequential recurrence, and a per-element depth tag is
-tracked through the scan to confirm max depth == ceil(log2 T); (2) the
-attention ledger reproduces the 28-level figure of Artifact 38.1; (3) the
-crossover interval is computed and asserted, not eyeballed.
+COUNTING MODEL in the sense of Chapter 38: nothing is encrypted, no FHE
+library is imported, every number is a longest-path count in a labelled
+circuit -- not a measurement.  Two extensions of the Chapter 38 ledger:
+depth becomes a longest path through an explicit DAG (so parallel branches
+are charged max(parents)+cost, not a sum), and a selective-SSM block is
+added -- associative scan of depth ceil(log2 T), input-dependent gating
+polynomials, no softmax.  Self-checks: DAG longest path vs. brute-force
+path enumeration; exact reproduction of Chapter 38's hand ledger; and a
+NumPy Kogge-Stone scan (np.roll for slot rotation) checked against the
+sequential recurrence with multiplicative depth tracked per slot.
+Conventions (Chapter 38): pt-ct = ct-ct mult = 1 level; rotation and
+addition = 0; degree-k polynomial = ceil(log2(k+1)) levels; Goldschmidt
+reciprocal and rsqrt = 2 levels per iteration.
 """
 import numpy as np
 from math import ceil, log2, isqrt
 
-# ------------------------------------------------------------- depth atoms
-def poly_depth(k):   # Paterson-Stockmeyer depth of a degree-k polynomial
+def poly_depth(k):                 # Paterson-Stockmeyer depth, degree k
     return ceil(log2(k + 1))
 
-def poly_mults(k):   # PS non-scalar mult count ~ sqrt(2k) + log2 k
-    return ceil((2 * k) ** 0.5) + max(0, ceil(log2(k + 1)) - 1)
+GOLD = 2                           # Goldschmidt levels per iteration
 
-RSQ_D, RSQ_M = 2, 3          # Goldschmidt rsqrt: 2 levels, 3 mults / iter
-REC_D, REC_M = 2, 2          # Goldschmidt reciprocal: 2 levels, 2 mults / iter
+# ------------------------------------------------------------- DAG machinery
+# A block is a dict: name -> (levels, [parents], category).  Sources: no parents.
+def dag_depth(nodes):
+    memo = {}
+    def d(n):
+        if n not in memo:
+            lv, par, _ = nodes[n]
+            memo[n] = lv + (max(d(p) for p in par) if par else 0)
+        return memo[n]
+    return max(d(n) for n in nodes)
 
-def rot_bsgs(d):             # BSGS rotations for one d x d pt-ct matvec
+def dag_depth_bruteforce(nodes):
+    """Every root-to-node path, enumerated. Exponential; these graphs are tiny."""
+    best = 0
+    def walk(n, acc):
+        nonlocal best
+        acc += nodes[n][0]
+        best = max(best, acc)
+        for p in nodes[n][1]:
+            walk(p, acc)
+    for n in nodes:
+        walk(n, 0)
+    return best
+
+def cat_levels(nodes, cat):
+    return sum(lv for lv, _, c in nodes.values() if c == cat)
+
+# ---------------------------------------------------------- block circuits
+def _norm(r):                      # LayerNorm / RMSNorm: square, rsqrt, apply
+    return {"ln_var": (1, [], "norm"), "ln_rsqrt": (GOLD * r, ["ln_var"], "norm"),
+            "ln_apply": (1, ["ln_rsqrt"], "norm")}
+
+def attention_block(cfg):
+    r, kx, ri = cfg["norm_iters"], cfg["exp_deg"], cfg["recip_iters"]
+    return dict(_norm(r), **{
+        "Wq":       (1, ["ln_apply"], "matmul"),
+        "Wk":       (1, ["ln_apply"], "matmul"),
+        "Wv":       (1, ["ln_apply"], "matmul"),
+        "scale":    (1, ["Wq"], "matmul"),              # 1/sqrt(d_k)
+        "QKt":      (1, ["scale", "Wk"], "matmul"),     # ct-ct: acts x acts
+        "sm_exp":   (poly_depth(kx),  ["QKt"],    "softmax"),
+        "sm_recip": (GOLD * ri,       ["sm_exp"], "softmax"),
+        "sm_norm":  (1, ["sm_recip", "sm_exp"],   "softmax"),
+        "AV":       (1, ["sm_norm", "Wv"], "matmul"),
+        "Wo":       (1, ["AV"], "matmul")})
+
+def mlp_block(cfg):
+    return dict(_norm(cfg["norm_iters"]), **{
+        "W_up":   (1, ["ln_apply"], "matmul"),
+        "gelu":   (poly_depth(cfg["gelu_deg"]), ["W_up"], "activation"),
+        "W_down": (1, ["gelu"], "matmul")})
+
+def ssm_block(cfg, T):
+    """Selective (Mamba-style) block; one such block replaces attention AND MLP.
+    RMSNorm -> in_proj -> depthwise causal conv -> SiLU -> selective Delta,B,C
+    -> discretise -> parallel scan -> output gate -> out_proj."""
+    kg = cfg["ssm_gate_deg"]
+    scan = ceil(log2(T)) * (1 + cfg["scan_mask_levels"])
+    return dict(_norm(cfg["norm_iters"]), **{
+        "in_proj_x": (1, ["ln_apply"], "matmul"),
+        "in_proj_z": (1, ["ln_apply"], "matmul"),       # gate branch, parallel
+        "conv1d":    (1, ["in_proj_x"], "matmul"),      # plaintext depthwise kernel
+        "silu_x":    (poly_depth(kg), ["conv1d"], "activation"),
+        "silu_z":    (poly_depth(kg), ["in_proj_z"], "activation"),
+        "dt_proj":   (1, ["silu_x"], "matmul"),
+        "softplus":  (poly_depth(cfg["softplus_deg"]), ["dt_proj"], "activation"),
+        "dt_A":      (1, ["softplus"], "scan"),         # Delta * diag(A), pt-ct
+        "Abar_exp":  (poly_depth(cfg["ssm_exp_deg"]), ["dt_A"], "activation"),
+        "B_proj":    (1, ["silu_x"], "matmul"),
+        "C_proj":    (1, ["silu_x"], "matmul"),
+        "Bbar":      (1, ["softplus", "B_proj"], "scan"),   # Delta (.) B
+        "Bx":        (1, ["Bbar", "silu_x"], "scan"),       # (.) x_t
+        "scan":      (scan, ["Abar_exp", "Bx"], "scan"),    # Kogge-Stone
+        "y_C":       (1, ["scan", "C_proj"], "scan"),
+        "gate":      (1, ["y_C", "silu_z"], "activation"),
+        "out_proj":  (1, ["gate"], "matmul")})
+
+# ----------------------------------------------------- rotations (Chapter 38)
+def rot_bsgs(d):
     n1 = isqrt(d)
     while d % n1:
         n1 -= 1
     return n1 + d // n1 - 2
 
-# ---------------------------------------------------- attention sub-block
-def attn_ledger(kx, r_ln, r_sm):
-    """(label, levels) chain; the attention path is a single serial chain."""
-    return [("norm variance (ct-ct square)",             1),
-            ("norm rsqrt, %d Goldschmidt iters" % r_ln,  RSQ_D * r_ln),
-            ("norm apply (ct-ct)",                       1),
-            ("Q,K,V projections (pt-ct)",                1),
-            ("scale by 1/sqrt(d_k) (pt)",                1),
-            ("Q K^T (ct-ct matmul)",                     1),
-            ("softmax exp poly deg %d" % kx,             poly_depth(kx)),
-            ("softmax reciprocal, %d iters" % r_sm,      REC_D * r_sm),
-            ("softmax normalize (ct-ct)",                1),
-            ("attention @ V (ct-ct matmul)",             1),
-            ("output projection W_O (pt-ct)",            1)]
+def rotations(cfg, T, kind):
+    d, H, s = cfg["d"], cfg["heads"], cfg["slots"]
+    n_x = ceil(T * d / s)
+    if kind == "attention":                       # 12 dxd matmul equivalents
+        w, cc = 12 * n_x * rot_bsgs(d), 2 * H * T * (ceil(log2(T)) +
+                                                     ceil(log2(d // H)))
+    else:                                         # in_proj x2 + out_proj
+        w, cc = 3 * n_x * rot_bsgs(d), 2 * n_x * ceil(log2(T))
+    return w + cc, w, cc
 
-def attn_depth(kx, r_ln, r_sm):
-    return sum(v for _, v in attn_ledger(kx, r_ln, r_sm))
+# ------------------------------------- simulate the scan, and its depth, in NumPy
+def kogge_stone_scan(A, b):
+    """Inclusive scan of the affine monoid (A1,b1)o(A2,b2) = (A2 A1, A2 b1 + b2),
+    np.roll standing in for slot rotation.  Slots [T,2T) hold the monoid identity
+    (1,0), so the cyclic wrap brings in identities and no masking multiply is
+    needed (cost: 2x the slot footprint).  Returns (h, rotations, depth)."""
+    T = len(A)
+    Ap = np.concatenate([A, np.ones(T)])
+    bp = np.concatenate([b, np.zeros(T)])
+    dep, rots = np.zeros(2 * T), 0
+    for j in range(ceil(log2(T))):
+        sh = 1 << j
+        Ash, bsh = np.roll(Ap, sh), np.roll(bp, sh)
+        rots += 2                                        # one rotation per lane
+        dep = np.maximum(dep, np.roll(dep, sh)) + 1      # one ct-ct mult / step
+        Ap, bp = Ap * Ash, Ap * bsh + bp
+    return bp[:T], rots, int(dep[:T].max())
 
-def softmax_levels(ledger):
-    return sum(v for name, v in ledger if name.startswith("softmax"))
+def sequential_scan(A, b):
+    h, out = 0.0, []
+    for t in range(len(A)):
+        h = A[t] * h + b[t]
+        out.append(h)
+    return np.array(out)
 
-# ---------------------------------------------------- selective-SSM block
-def ssm_ledger(T, kg, r_ln):
-    """Two parallel branches after the shared trunk; depth = critical path.
-    State path:  norm -> in_proj -> conv -> gating poly (decay a_t and
-                 input gate, deg kg) -> scan (ceil(log2 T)) -> C (.) h.
-    Gate path:   norm -> in_proj -> SiLU poly (deg kg) on z.
-    Then y (.) gate (1 ct-ct) and out_proj (1 pt-ct).  NO softmax lines
-    exist by construction: no exp over scores, no reciprocal, no normalize."""
-    trunk = [("norm variance (ct-ct square)",            1),
-             ("norm rsqrt, %d Goldschmidt iters" % r_ln, RSQ_D * r_ln),
-             ("norm apply (ct-ct)",                      1),
-             ("in_proj to (x, z) (pt-ct)",               1)]
-    state = [("depthwise conv1d (pt-ct)",                1),
-             ("gating poly (decay+input), deg %d" % kg,  poly_depth(kg)),
-             ("parallel scan, ceil(log2 T) stages",      ceil(log2(T))),
-             ("readout C (.) h (ct-ct)",                 1)]
-    gate = [("SiLU poly on z, deg %d" % kg,              poly_depth(kg))]
-    tail = [("gated product y (.) SiLU(z) (ct-ct)",      1),
-            ("out_proj (pt-ct)",                         1)]
-    return trunk, state, gate, tail
+# --------------------------------------------------------------------- pricing
+BASE = dict(d=768, heads=12, slots=2 ** 15, norm_iters=4, recip_iters=4,
+            exp_deg=15, gelu_deg=15, ssm_gate_deg=15, softplus_deg=15,
+            ssm_exp_deg=15, scan_mask_levels=0)
 
-def ssm_depth(T, kg, r_ln):
-    trunk, state, gate, tail = ssm_ledger(T, kg, r_ln)
-    s = lambda part: sum(v for _, v in part)
-    return s(trunk) + max(s(state), s(gate)) + s(tail)
+def attn_depth(cfg):
+    return dag_depth(attention_block(cfg)) + dag_depth(mlp_block(cfg))
 
-# ----------------------------------- operation counts (rotations & mults)
-def attn_ops(T, d, H, kx, r_ln, r_sm, slots):
-    dk = d // H
-    n_x = ceil(T * d / slots)               # activation ciphertexts
-    n_s = ceil(H * T * T / slots)           # T x T score ciphertexts (!)
-    n_kv = ceil(T * dk / slots)             # one head's K (or V)
-    rot = 4 * n_x * rot_bsgs(d) + 2 * H * T * (ceil(log2(T)) + ceil(log2(dk)))
-    mults = (2 * n_x + RSQ_M * r_ln                     # one norm
-             + 2 * H * T * n_kv                         # QK^T and attn@V
-             + poly_mults(kx) * n_s                     # exp on every score ct
-             + REC_M * r_sm + n_s)                      # reciprocal + normalize
-    return rot, mults, n_s
+def ssm_depth(cfg, T):
+    return dag_depth(ssm_block(cfg, T))
 
-def ssm_ops(T, d, kg, r_ln, slots, d_state=16, conv_k=4):
-    d_in = 2 * d                            # Mamba-style expansion factor 2
-    n_x = ceil(T * d / slots)
-    n_g = ceil(T * d_in / slots)            # gate/channel sequences
-    n_h = ceil(T * d_in * d_state / slots)  # the scanned state sequence
-    S = ceil(log2(T))
-    rot = (5 * n_x * rot_bsgs(d)            # in/out/x-dependent projections
-           + (conv_k - 1) * n_g             # depthwise conv shifts
-           + S * n_h)                       # one rotation per ct per stage
-    mults = (2 * n_x + RSQ_M * r_ln                     # norm
-             + poly_mults(kg) * (2 * n_g)               # gating + SiLU polys
-             + n_h                                      # b_t = Bbar (.) x write
-             + 2 * S * n_h                              # scan: 2 mults / stage
-             + n_h + n_g)                               # readout + gated product
-    return rot, mults, n_h
+def crossover(cfg):
+    """Largest power-of-two T at which the SSM block is still no deeper."""
+    k = 1 + cfg["scan_mask_levels"]
+    const = ssm_depth(cfg, 2) - k                   # depth = const + k*ceil(log2 T)
+    return 2 ** ((attn_depth(cfg) - const) // k), const
 
-# --------------------------------------------- scan verification (NumPy)
-def scan_check(T, lanes=4, rng=None):
-    """Hillis-Steele scan of f_t(h) = a_t h + b_t with per-element depth tags.
-    Returns (max residual vs sequential loop, number of stages, max depth)."""
-    a = 0.5 + 0.5 * rng.random((T, lanes))              # decays in (0.5, 1)
-    b = rng.standard_normal((T, lanes)) * 0.1
-    A, B, depth, s, stages = a.copy(), b.copy(), np.zeros(T, int), 1, 0
-    while s < T:
-        A2, B2, d2 = A.copy(), B.copy(), depth.copy()
-        A2[s:] = A[s:] * A[:-s]                         # compose F_t o F_{t-s}
-        B2[s:] = A[s:] * B[:-s] + B[s:]                 # (2 mults, in parallel
-        d2[s:] = np.maximum(depth[s:], depth[:-s]) + 1  #  => +1 level)
-        A, B, depth, s, stages = A2, B2, d2, 2 * s, stages + 1
-    h_seq, h = np.zeros(lanes), np.zeros((T, lanes))    # sequential reference
-    for t in range(T):
-        h_seq = a[t] * h_seq + b[t]
-        h[t] = h_seq
-    return np.abs(B - h).max(), stages, depth.max()     # h0 = 0 => h_t = B_t
-
-# ------------------------------------------------------------------- main
 if __name__ == "__main__":
-    d, H, slots, r_ln, kg = 768, 12, 2 ** 15, 4, 15
-    grid = (128, 512, 2048, 8192)
-    scenarios = [("modest softmax  (exp deg 15, 4 recip iters)", 15, 4),
-                 ("faithful softmax (exp deg 63, 6 recip iters)", 63, 6)]
+    cfg, Ts = dict(BASE), (128, 512, 2048, 8192)
+    print("=== Assumptions (all of them; nothing below is measured) ===")
+    print("  " + " | ".join("%s=%s" % (k, cfg[k]) for k in sorted(cfg)))
+    print("  pt-ct mult = ct-ct mult = 1 level; rotation and addition = 0 levels")
+    print("  degree-k polynomial = ceil(log2(k+1)) levels (Paterson-Stockmeyer)")
+    print("  Goldschmidt reciprocal and rsqrt = 2 levels per iteration")
+    print("  scan = Kogge-Stone, ceil(log2 T) ct-ct steps, identity-padded (no mask)")
 
-    print("ASSUMPTIONS (every number below follows from these):")
-    for line in [
-        "counting model only -- no FHE library, nothing is encrypted",
-        "pt-ct mult / ct-ct mult = 1 level; rotations and adds = 0 levels",
-        "degree-k poly = ceil(log2(k+1)) levels (Paterson-Stockmeyer)",
-        "Goldschmidt: rsqrt & reciprocal = 2 levels/iter; LayerNorm/RMSNorm "
-        "use %d iters" % r_ln,
-        "depth = critical path; parallel branches meet at max(.)+1",
-        "matched width d=%d, H=%d heads, slots=%d; SSM: expand 2x, "
-        "d_state=16, conv 4, gate polys deg %d" % (d, H, slots, kg),
-        "attention softmax degree held FIXED across T (Ch. 39: the honest "
-        "degree grows with T; that shifts the crossover toward the SSM)"]:
-        print("  - " + line)
+    a_n, m_n, s_n = attention_block(cfg), mlp_block(cfg), ssm_block(cfg, 2048)
+    print("\n=== Check 1: longest path, memoised vs. brute-force enumeration ===")
+    for nm, nd in (("attention", a_n), ("mlp", m_n), ("ssm(T=2048)", s_n)):
+        f, g = dag_depth(nd), dag_depth_bruteforce(nd)
+        print("  %-12s memoised %3d   brute force %3d   agree %s" % (nm, f, g, f == g))
+        assert f == g
 
-    print("\n=== Scan self-check: parallel == sequential, depth == log2 T ===")
+    a_d, m_d = dag_depth(a_n), dag_depth(m_n)
+    print("\n=== Check 2: reproduces Chapter 38's hand ledger ===")
+    print("  attention %d (Ch.38: 28) | MLP %d (16) | block %d (44)"
+          % (a_d, m_d, a_d + m_d))
+    assert (a_d, m_d) == (28, 16)
+
+    print("\n=== Check 3: simulated Kogge-Stone scan (np.roll for rotations) ===")
     rng = np.random.default_rng(0)
-    for T in grid:
-        res, stages, dmax = scan_check(T, rng=rng)
-        print("T=%5d  stages=%2d  max depth tag=%2d  residual=%.2e"
-              % (T, stages, dmax, res))
-        assert stages == dmax == ceil(log2(T)) and res < 1e-9
+    for T in (128, 512, 2048):
+        A, b = 0.5 + 0.4 * rng.random(T), rng.standard_normal(T)
+        h, rots, dep = kogge_stone_scan(A, b)
+        res = float(np.max(np.abs(h - sequential_scan(A, b))))
+        print("  T=%5d  residual vs. sequential %.3e | rotations %2d | depth %2d "
+              "(ceil(log2 T)=%d)" % (T, res, rots, dep, ceil(log2(T))))
+        assert res < 1e-9 and dep == ceil(log2(T)) and rots == 2 * ceil(log2(T))
 
-    a28 = attn_depth(15, r_ln, 4)
-    assert a28 == 28, a28                     # reproduces Artifact 38.1 ledger
-    ssm_const = ssm_depth(128, kg, r_ln) - ceil(log2(128))
-    for T in grid:                            # HARD ASSERTION 1: shape of both
-        assert ssm_depth(T, kg, r_ln) == ssm_const + ceil(log2(T))
-        assert attn_depth(15, r_ln, 4) == a28 # T-independent
-    print("\nattention sub-block depth (modest): %d levels, T-independent"
-          % a28)
-    print("selective-SSM block depth: %d + ceil(log2 T) levels" % ssm_const)
+    print("\n=== Depth and rotations, matched width d=768, 12 heads ===")
+    print("  (a Mamba-style block replaces attention AND the MLP, so the "
+          "attention column is attn+MLP)")
+    print("  %6s %10s %8s %9s %12s %11s %8s"
+          % ("T", "attn+MLP", "SSM", "SSM-attn", "attn rot", "SSM rot", "rot cut"))
+    for T in Ts:
+        ad, sd = attn_depth(cfg), ssm_depth(cfg, T)
+        at, st = rotations(cfg, T, "attention")[0], rotations(cfg, T, "ssm")[0]
+        print("  %6d %10d %8d %+9d %12d %11d %7.0fx"
+              % (T, ad, sd, sd - ad, at, st, at / st))
 
-    # HARD ASSERTION 2: zero softmax levels in the SSM, by construction.
-    trunk, state, gate, tail = ssm_ledger(2048, kg, r_ln)
-    ssm_sm = softmax_levels(trunk + state + gate + tail)
-    at_sm = softmax_levels(attn_ledger(15, r_ln, 4))
-    print("softmax-related levels: attention %d, SSM %d" % (at_sm, ssm_sm))
-    assert ssm_sm == 0 and at_sm == poly_depth(15) + REC_D * 4 + 1 == 13
+    print("\n=== Assertion 1: SSM depth = const + ceil(log2 T); attention is T-free ===")
+    dp = [ssm_depth(cfg, 2 ** i) for i in range(1, 9)]
+    print("  SSM depth, T=2..256: %s -> first differences %s"
+          % (dp, [dp[i + 1] - dp[i] for i in range(7)]))
+    assert all(dp[i + 1] - dp[i] == 1 for i in range(7))
+    const = dp[0] - 1
+    assert all(ssm_depth(cfg, T) == const + ceil(log2(T)) for T in Ts)
+    assert len({attn_depth(dict(cfg, **{})) for _ in Ts}) == 1
+    print("  closed form: SSM = %d + ceil(log2 T); attention = %d for every T  [OK]"
+          % (const, attn_depth(cfg)))
 
-    print("\n=== Comparison table (depth | rotations | ct-ct mults) ===")
-    hdr = ("%6s %9s %9s | %11s %11s | %11s %11s | %8s %8s"
-           % ("T", "attnDep", "ssmDep", "attnRot", "ssmRot",
-              "attnMult", "ssmMult", "scoreCt", "stateCt"))
-    for label, kx, r_sm in scenarios:
-        print("\n-- scenario: %s --\n%s" % (label, hdr))
-        ad = attn_depth(kx, r_ln, r_sm)
-        for T in grid:
-            sd = ssm_depth(T, kg, r_ln)
-            ar, am, ns = attn_ops(T, d, H, kx, r_ln, r_sm, slots)
-            sr, sm, nh = ssm_ops(T, d, kg, r_ln, slots)
-            print("%6d %9d %9d | %11d %11d | %11d %11d | %8d %8d"
-                  % (T, ad, sd, ar, sr, am, sm, ns, nh))
+    print("\n=== Assertion 2: the crossover interval ===")
+    Tstar, c2 = crossover(cfg)
+    print("  SSM no deeper than attention for T <= %d; attention wins for T > %d"
+          % (Tstar, Tstar))
+    assert c2 == const
+    assert ssm_depth(cfg, Tstar) <= attn_depth(cfg) < ssm_depth(cfg, 2 * Tstar)
+    assert all(ssm_depth(cfg, T) < attn_depth(cfg) for T in Ts)
+    cm = dict(cfg, scan_mask_levels=1)               # if masking is unavoidable
+    Tm = crossover(cm)[0]
+    print("  if each scan step also needs a masking multiply, crossover falls to "
+          "T = %d (SSM depth at T=2048: %d)" % (Tm, ssm_depth(cm, 2048)))
+    assert 128 <= Tm < Tstar
 
-    # HARD ASSERTION 3: the crossover interval, per scenario, computed.
-    def crossover(kx, r_sm):
-        ad = attn_depth(kx, r_ln, r_sm)
-        c = ad - ssm_const                    # SSM wins iff ceil(log2 T) < c
-        return 2 ** (c - 1), 2 ** c           # strict-win bound, tie bound
-    w1, t1 = crossover(15, 4)
-    w2, t2 = crossover(63, 6)
-    print("\ncrossover (modest): SSM wins depth for T <= %d, tie through "
-          "T = %d, attention wins for T >= %d" % (w1, t1, t1 + 1))
-    print("crossover (faithful): SSM wins depth for T <= %d, tie through "
-          "T = %d, attention wins for T >= %d" % (w2, t2, t2 + 1))
-    assert (w1, t1) == (256, 512) and (w2, t2) == (16384, 32768)
-    assert ssm_depth(512, kg, r_ln) == attn_depth(15, r_ln, 4) == 28
-    assert ssm_depth(128, kg, r_ln) < 28 < ssm_depth(2048, kg, r_ln)
-    for T in grid:                            # faithful softmax: SSM sweeps
-        assert ssm_depth(T, kg, r_ln) <= attn_depth(63, r_ln, 6)
-    # Op counts: the SSM advantage grows with T (no T x T score object).
-    ratios = [attn_ops(T, d, H, 15, r_ln, 4, slots)[1]
-              / ssm_ops(T, d, kg, r_ln, slots)[1] for T in grid]
-    print("ct-ct mult ratio attention/SSM across T: "
-          + ", ".join("%.1f" % r for r in ratios))
-    # ceil() packing effects make small-T ratios lumpy; from T=512 on the
-    # ratio grows monotonically and exceeds 10x at T=8192.
-    assert all(x < y for x, y in zip(ratios[1:], ratios[2:])) and ratios[-1] > 10
+    print("\n=== Assertion 3: the SSM block spends zero softmax levels ===")
+    sm = cat_levels(a_n, "softmax")
+    print("  attention: exp %d + reciprocal %d + normalise 1 = %d of %d critical-path "
+          "levels" % (poly_depth(cfg["exp_deg"]), GOLD * cfg["recip_iters"], sm, a_d))
+    print("  SSM: %d  (no node of category 'softmax' exists in the circuit)"
+          % cat_levels(s_n, "softmax"))
+    assert cat_levels(s_n, "softmax") == 0 and sm == 13 and sm / a_d > 0.45
 
-    print("\n=== Three concrete candidate problems (and the chapters that "
-          "equip you) ===")
-    for c in ["1. Build the encrypted selective-SSM block: a Mamba-style "
-              "block under RNS-CKKS,\n   benchmarked against a polynomial "
-              "attention block at matched width.\n   [Chapters 17, 21, 38, 39]",
-              "2. Calibrate the crossover: turn this counting model into a "
-              "measured cost atlas\n   over (T, d, degrees) with FHE-library "
-              "microbenchmarks. [Chapters 24, 30, 38, 40, 41]",
-              "3. Encrypted PEFT on an HE-friendly backbone: LoRA updates on "
-              "the SSM block,\n   gradients under encryption. [Chapters 11, "
-              "26, 34, 38, 41]"]:
-        print(c)
-    print("\nHonest conclusion: which block wins on DEPTH depends on T and "
-          "on the softmax\ndegree you believe (Ch. 39); the SSM wins on "
-          "operations and memory at long T\nby construction. The point is "
-          "that the comparison is computable -- and the\nencrypted-SSM "
-          "column of it has not been published at transformer scale.")
-    print("All assertions passed.")
+    print("\n=== The crossover depends on the softmax budget, not on ideology ===")
+    print("  %8s %9s %11s %10s %12s"
+          % ("exp deg", "recip it", "attn+MLP", "SSM const", "crossover T"))
+    for kx, ri in ((3, 2), (7, 2), (15, 4), (31, 4), (63, 6)):
+        c = dict(cfg, exp_deg=kx, recip_iters=ri)
+        ts, cc = crossover(c)
+        print("  %8d %9d %11d %10d %12d" % (kx, ri, attn_depth(c), cc, ts))
+        assert ts >= 512
+
+    print("\n=== Three candidate problems, and the chapters that equip you ===")
+    for i, (t, ch, why) in enumerate([
+        ("Non-interactive CKKS selective-SSM block, benchmarked", "21, 38, 39, 41",
+         "published encrypted SSMs use PUBLIC (input-independent) decay; the "
+         "selective gate is the open half"),
+        ("Routing-oblivious MoE under pure FHE, no MPC fallback", "22, 39, 40",
+         "published private-MoE work is an HE+MPC hybrid; non-interactive top-k "
+         "is unsolved"),
+        ("Depth-aware scheme-switch placement as an optimisation problem",
+         "34, 39, 40",
+         "CKKS<->FHEW switching ships in OpenFHE; WHERE to switch is chosen by "
+         "hand everywhere")]):
+        print("  %d. %s\n     chapters %s -- %s" % (i + 1, t, ch, why))
+
+    print("\nAll assertions passed. Every number above is a longest-path count in a\n"
+          "labelled circuit; nothing was encrypted and nothing was timed.")

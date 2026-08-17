@@ -9,8 +9,10 @@ currency of Chapter 38 and checks itself three ways:
   (3) scaling laws (linear in L, T-independent depth) hold exactly.
 Conventions (stated in Section 38.4): pt-ct mult = 1 level, ct-ct mult
 = 1 level, rotation/addition = 0 levels; degree-k poly via
-Paterson-Stockmeyer = ceil(log2(k+1)) levels; Goldschmidt reciprocal and
-inverse-sqrt = 2 levels per iteration (2 resp. 3 ct-ct mults per iter).
+Paterson-Stockmeyer = ceil(log2(k+1)) levels; Newton-Raphson reciprocal
+y <- y(2-ay) and coupled Goldschmidt inverse-sqrt = 2 levels per iteration
+(2 resp. 3 ct-ct mults per iter).  Goldschmidt's product form for 1/a costs
+only ~1 level per iteration; charging 2 here is deliberately conservative.
 """
 import numpy as np
 from math import ceil, log2, isqrt
@@ -22,7 +24,7 @@ def poly_depth(k):        # Paterson-Stockmeyer depth for a degree-k poly
 def poly_mults(k):        # PS non-scalar mult count, ~ sqrt(2k) + log2 k
     return ceil((2 * k) ** 0.5) + max(0, ceil(log2(k + 1)) - 1)
 
-REC_D, REC_M = 2, 2       # Goldschmidt reciprocal: depth 2, 2 muls / iter
+REC_D, REC_M = 2, 2       # Newton-Raphson reciprocal: depth 2, 2 muls / iter
 RSQ_D, RSQ_M = 2, 3       # coupled Goldschmidt rsqrt: depth 2, 3 muls / iter
 
 # ------------------------------------------------------------------ the ledger
@@ -37,7 +39,7 @@ def block_ledger(cfg):
         ("  scale by 1/sqrt(d_k) (pt mult, foldable)", 1),
         ("  Q K^T (ct-ct matmul)", 1),
         ("  softmax: exp poly, degree %d" % kx, poly_depth(kx)),
-        ("  softmax: reciprocal, %d Goldschmidt iters" % r, REC_D * r),
+        ("  softmax: reciprocal, %d Newton iters" % r, REC_D * r),
         ("  softmax: normalize (ct-ct)", 1),
         ("  attention @ V (ct-ct matmul)", 1),
         ("  output projection W_O (pt-ct matmul)", 1)]

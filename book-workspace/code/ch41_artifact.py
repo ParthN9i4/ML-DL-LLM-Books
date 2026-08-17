@@ -125,15 +125,15 @@ if __name__ == "__main__":
           f"{100*boot_cost/(per_tok[-1]+boot_cost):.1f}%")
 
     # ---- (4) encrypted KV-cache memory at t=1024 (both packings) --------------
-    ct_mb = 2 * N * ELL_CACHE * LIMB_BYTES / 2**20
+    ct_mib = 2 * N * ELL_CACHE * LIMB_BYTES / 2**20   # binary units throughout
     m = math.ceil(T / G)
     compact_cts, naive_cts = 2 * L * m, 2 * L * T
-    plain_mb = 2 * L * T * d * 2 / 2**20       # fp16 plaintext KV cache
-    print(f"\n[4] KV cache at t={T} ({ELL_CACHE} limbs, {ct_mb:.1f} MB/ct):")
-    print(f"    compact packing : {compact_cts:6d} cts = {compact_cts*ct_mb/1024:8.2f} GB "
-          f"({compact_cts*ct_mb/plain_mb:7.0f}x fp16)")
-    print(f"    one-ct-per-step : {naive_cts:6d} cts = {naive_cts*ct_mb/1024:8.2f} GB "
-          f"({naive_cts*ct_mb/plain_mb:7.0f}x fp16)   [fp16 plaintext: {plain_mb:.1f} MB]")
+    plain_mib = 2 * L * T * d * 2 / 2**20      # fp16 plaintext KV cache
+    print(f"\n[4] KV cache at t={T} ({ELL_CACHE} limbs, {ct_mib:.1f} MiB/ct):")
+    print(f"    compact packing : {compact_cts:6d} cts = {compact_cts*ct_mib/1024:8.2f} GiB "
+          f"({compact_cts*ct_mib/plain_mib:7.0f}x fp16)")
+    print(f"    one-ct-per-step : {naive_cts:6d} cts = {naive_cts*ct_mib/1024:8.2f} GiB "
+          f"({naive_cts*ct_mib/plain_mib:7.0f}x fp16)  [fp16 plaintext: {plain_mib:.1f} MiB]")
 
     # ---- (5) CKKS effective precision vs fp16 (parameterized model, NOT measured)
     P_FRESH, LOSS, P_BOOT, FP16 = 30.0, 0.5, 20.0, 11  # bits; P_BOOT is [Verify]
