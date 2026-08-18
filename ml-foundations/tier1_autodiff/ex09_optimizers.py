@@ -1,5 +1,5 @@
 """
-ex08 — Optimizers from SGD to Muon.  (Book: Chapter 13)
+ex09 — Optimizers from SGD to Muon.  (Book: Chapter 13)
 
 Four ideas, each of which corrects a real misconception:
 

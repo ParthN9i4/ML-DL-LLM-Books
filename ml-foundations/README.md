@@ -30,18 +30,30 @@ python3 check.py tier0_math   # just one tier
 
 ## Tier progression
 
-| Tier | Directory | Dependencies | What you build |
-|------|-----------|--------------|----------------|
-| 0 | `tier0_math/` | numpy, scipy | Matrix calculus, SVD, gradient descent, MLE, entropy, floating point — by hand |
-| 1 | `tier1_autodiff/` | numpy | A reverse-mode autodiff engine, an MLP, and a training loop from scratch |
-| 2 | `tier2_architectures/` | numpy, torch | Attention, multi-head, a Transformer block, convolution, a ViT patch embedder |
-| 3 | `tier3_sequence/` | numpy, torch | Linear attention, the S4 kernel, selective scan ≡ parallel scan, RoPE, MoE routing |
-| 4 | `tier4_llm/` | torch | Tokenizer training, a small LM pretrain, LoRA, DPO, a GRPO loop |
-| 5 | `tier5_systems/` | numpy, torch | Tiled attention, quantization, speculative decoding, ring all-reduce |
-| 6 | `tier6_encrypted/` | numpy, (tenseal, OpenFHE) | Polynomial softmax and inverse-sqrt, an encrypted linear layer, depth budgeting |
+Thirty exercises, numbered globally. Every one is listed here, so a gap in the numbering
+would be visible rather than silent.
 
-Tiers 0–3 run on CPU in well under a minute each. Tier 4 targets a single small GPU and
-degrades to a tiny model on CPU. Tier 6 is the join point with encrypted computation.
+| Tier | Directory | Dependencies | Exercises |
+|------|-----------|--------------|-----------|
+| 0 | `tier0_math/` | numpy, scipy | `ex01` blocked matmul + Jacobi SVD · `ex02` entropy, KL, arithmetic coding · `ex03` GD and heavy-ball convergence rates · `ex04` IEEE-754, bf16, Kahan summation · `ex05` OLS/ridge/logistic, IRLS |
+| 1 | `tier1_autodiff/` | numpy | `ex06` scalar autodiff (micrograd) · `ex07` tensor reverse-mode engine · `ex08` initialization and normalization · `ex09` SGD → Adam → Muon · `ex10` an MLP and a training loop |
+| 2 | `tier2_architectures/` | numpy, torch | `ex11` convolution as im2col · `ex12` the conv backward pass · `ex13` the ViT stem · `ex14` scaled dot-product and multi-head attention · `ex15` a full pre-norm block · `ex16` RoPE, two ways |
+| 3 | `tier3_sequence/` | numpy, torch | `ex17` linear attention and the associativity trick · `ex18` selective scan ≡ parallel scan · `ex19` the S4 kernel: recurrence, convolution, FFT · `ex20` MoE routing and load balancing |
+| 4 | `tier4_llm/` | numpy, torch | `ex21` training byte-level BPE · `ex22` pretraining a tiny LM · `ex23` LoRA and the rank question · `ex24` DPO and GRPO on a bandit |
+| 5 | `tier5_systems/` | numpy, torch | `ex25` quantization and the outlier problem · `ex26` speculative decoding · `ex27` tiled attention and the online softmax · `ex28` ring all-reduce |
+| 6 | `tier6_encrypted/` | numpy | `ex29` Chebyshev approximation and a depth ledger · `ex30` an encrypted linear layer: packing, rotations, depth |
+
+The whole ladder runs in about three and a half minutes on one CPU core; no single exercise
+takes more than about forty seconds.
+
+**Tiers 0–3 are fully usable with numpy alone.** This is verified, not assumed: those files
+are re-run with `torch`, `scipy` and `scikit-learn` blocked at the import hook, and they
+pass — the cross-checks skip and every from-scratch assertion still runs. Tiers 4–6 use
+torch where a reference implementation genuinely helps, still never as the implementation.
+
+Tier 6 needs no homomorphic-encryption library. It models the slot algebra and the depth
+ledger in numpy, which is the part that decides whether a circuit is feasible; the
+cryptography itself is the companion FHE book's subject.
 
 ## Installation
 

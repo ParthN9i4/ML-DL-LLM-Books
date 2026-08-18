@@ -11,7 +11,7 @@ chapter's central claim is backed by a runnable artifact that verifies itself.
 | Path | What it is |
 |---|---|
 | [`ml-book.html`](ml-book.html) | **The book.** One self-contained HTML file — open it in a browser. 42 chapters across 8 parts plus appendices. MathJax renders the math (needs network access to cdn.jsdelivr.net, or a local MathJax install; see Appendix B). |
-| [`ml-foundations/`](ml-foundations/) | **The exercise ladder.** Standalone runnable Python files, tiers 0–6, from pure-numpy matrix arithmetic up to encrypted inference. `python3 check.py` runs everything; the assertions in each file *are* the specification. |
+| [`ml-foundations/`](ml-foundations/) | **The exercise ladder.** 30 standalone runnable Python files, tiers 0–6, from pure-numpy matrix arithmetic up to an encrypted linear layer. `python3 check.py` runs everything; the assertions in each file *are* the specification. |
 | [`study-plan.html`](study-plan.html) | **A 42-week study schedule** pacing the book at 10–15 h/week, with a parallel weekly paper-analysis track on homomorphic encryption for LLMs — a fixed nine-point extraction template and a seeded 20-paper queue. |
 | `book-workspace/` | Build scaffolding: the frozen chapter contract, the assembler/verifier, and every executed artifact. Not part of the book; kept so the build is reproducible. Deletable once the book is final. |
 
@@ -49,7 +49,8 @@ Verified end to end:
 | Structural (`book-workspace/assemble.py verify`) | all passed — every TOC anchor resolves, five objectives and five tagged takeaways per chapter, one artifact each, per-type box counters sequential, tags balanced |
 | Artifacts re-executed | **42/42 run clean** |
 | Embedded code vs executed files (`drift_check.py`) | **42/42 byte-identical, zero drift** |
-| Exercise ladder (`ml-foundations/check.py`) | **17/17 pass** |
+| Exercise ladder (`ml-foundations/check.py`) | **30/30 pass**, 3m31s from a clean tree |
+| Ladder with torch, scipy and scikit-learn blocked | tiers 0–3 **still pass on numpy alone**, cross-checks skipping cleanly |
 | Confidence tags | 339 Certain · 236 Likely · 259 Verify · 69 Contested |
 
 Two things the automated checks cannot cover, both worth knowing before you cite anything:
