@@ -652,18 +652,37 @@ sup a {
 // proxy that blocks jsdelivr — the status banner would otherwise sit there
 // claiming to be working forever while every formula shows as raw LaTeX. Say so
 // instead, and tell the reader how to fix it. See Appendix B for a local install.
-setTimeout(function () {
-  var el = document.getElementById('mathjax-status');
-  if (!el || el.style.display === 'none') return;
-  if (window.MathJax && window.MathJax.startup && window.MathJax.startup.document) return;
-  el.innerHTML = 'MathJax could not be loaded, so formulas below appear as LaTeX source. '
-    + 'This page needs network access to cdn.jsdelivr.net, or a local MathJax copy '
-    + '(Appendix B). Everything else on the page is unaffected.';
-  el.style.color = '#d29922';
-  el.style.cursor = 'pointer';
-  el.title = 'Click to dismiss';
-  el.onclick = function () { el.style.display = 'none'; };
-}, 12000);
+//
+// The signal for "it failed" is the script element's own error event, not a
+// stopwatch. An earlier version of this page used a 12-second timer, which was
+// wrong in a way worth recording: this file is large, the MathJax bundle is
+// ~1.2 MB, and on any connection slower than that the timer fired while the
+// script was still arriving — telling a reader whose page was about to work
+// perfectly that it had failed. The error event fires exactly when the request
+// actually fails and never when it merely takes a while.
+(function () {
+  var reported = false;
+  function report() {
+    if (reported) return;
+    var el = document.getElementById('mathjax-status');
+    if (!el || el.style.display === 'none') return;
+    if (window.MathJax && window.MathJax.startup && window.MathJax.startup.document) return;
+    reported = true;
+    el.innerHTML = 'MathJax could not be loaded, so formulas below appear as LaTeX source. '
+      + 'This page needs network access to cdn.jsdelivr.net, or a local MathJax copy '
+      + '(Appendix B). Everything else on the page is unaffected.';
+    el.style.color = '#d29922';
+    el.style.cursor = 'pointer';
+    el.title = 'Click to dismiss';
+    el.onclick = function () { el.style.display = 'none'; };
+  }
+  var s = document.getElementById('MathJax-script');
+  if (s) s.addEventListener('error', report);
+  // Backstop for the case the error event cannot cover: a request that stalls
+  // open rather than failing. Deliberately generous — a slow success must never
+  // be reported as a failure, so this only fires long after any real load.
+  setTimeout(report, 120000);
+})();
 </script>
 
 <div class="book-container">
@@ -16288,7 +16307,7 @@ cmake .. &amp;&amp; make -j$(nproc) &amp;&amp; sudo make install</code></pre>
 <pre><code>&lt;script id="MathJax-script" async
         src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"&gt;&lt;/script&gt;</code></pre>
 
-<p>If you are offline, behind a proxy that blocks <code>cdn.jsdelivr.net</code>, or reading from a USB stick on an air-gapped machine, that request fails and <strong>every formula in the book renders as raw LaTeX source</strong> &mdash; literal dollar signs and backslashes in the middle of otherwise normal prose. Nothing else on the page is affected: text, tables, code, and boxes are unaffected because they need no script. The page detects this. A status banner reads &ldquo;Typesetting mathematics&hellip;&rdquo; on load and hides itself when MathJax finishes; if MathJax has not initialized after 12 seconds, the banner rewrites itself to say so and points at this appendix rather than sitting there claiming to be working forever.</p>
+<p>If you are offline, behind a proxy that blocks <code>cdn.jsdelivr.net</code>, or reading from a USB stick on an air-gapped machine, that request fails and <strong>every formula in the book renders as raw LaTeX source</strong> &mdash; literal dollar signs and backslashes in the middle of otherwise normal prose. Nothing else on the page is affected: text, tables, code, and boxes are unaffected because they need no script. The page detects this. A status banner reads &ldquo;Typesetting mathematics&hellip;&rdquo; on load and hides itself when MathJax finishes; if the script genuinely fails to load, the banner rewrites itself to say so and points at this appendix rather than sitting there claiming to be working forever.</p>
 
 <p>The fix is a local copy. Get the MathJax 3 package and put it beside the HTML file:</p>
 

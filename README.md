@@ -51,14 +51,18 @@ Verified end to end:
 | Embedded code vs executed files (`drift_check.py`) | **42/42 byte-identical, zero drift** |
 | Exercise ladder (`ml-foundations/check.py`) | **30/30 pass**, 3m31s from a clean tree |
 | Ladder with torch, scipy and scikit-learn blocked | tiers 0–3 **still pass on numpy alone**, cross-checks skipping cleanly |
+| Rendered in Chromium against a local MathJax | **11,162 expressions typeset, 0 math errors, 0 leftover LaTeX, no horizontal scroll** |
 | Confidence tags | 339 Certain · 236 Likely · 259 Verify · 69 Contested |
 
 Two things the automated checks cannot cover, both worth knowing before you cite anything:
 
-- **MathJax could not be rendered during the build.** The build sandbox's proxy blocks
-  `cdn.jsdelivr.net`, so the page was never seen with its math typeset. Layout, theme and
-  callout boxes were confirmed visually; the formulas were not. Open it once with network
-  access before trusting the presentation.
+- ~~MathJax could not be rendered during the build.~~ **Resolved.** The proxy blocks
+  `cdn.jsdelivr.net`, but not the npm registry, so MathJax 3 was installed locally and the
+  book rendered in Chromium against it. Result: **11,162 typeset expressions, zero MathJax
+  errors, zero leftover raw LaTeX, no horizontal scroll**, all 42 chapters and 42 artifact
+  boxes present. Typesetting the full 2 MB file takes 20–30 s on one core — slow, but it
+  completes. Screenshots of the title page, Chapter 1, Chapter 11 and Chapter 38 were
+  inspected.
 - **Part VIII's citations are partly abstract-level.** The same proxy blocked arXiv,
   IACR ePrint, ACM, NDSS and OpenReview. The OpenFHE security tables and the Lattigo
   bootstrapping depth were verified against primary source text; other reported figures in
