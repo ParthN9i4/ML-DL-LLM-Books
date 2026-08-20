@@ -64,11 +64,15 @@ Two things the automated checks cannot cover, both worth knowing before you cite
   boxes present. Typesetting the full 2 MB file takes 20–30 s on one core — slow, but it
   completes. Screenshots of the title page, Chapter 1, Chapter 11 and Chapter 38 were
   inspected.
-- **Part VIII's citations are partly abstract-level.** The same proxy blocked arXiv,
-  IACR ePrint, ACM, NDSS and OpenReview. The OpenFHE security tables and the Lattigo
-  bootstrapping depth were verified against primary source text; other reported figures in
-  Chapters 38–42 were verified only through search-engine extraction of abstracts. Spot-check
-  them against the PDFs before using them in a paper.
+- ~~Part VIII's citations are partly abstract-level.~~ **Audited** (2026-08-20, see
+  `book-workspace/part8-citation-audit.md`): every externally-sourced claim in Chapters
+  38–42 and every identifier in Appendix D.7 was re-verified by search triangulation
+  against paper landing pages and venue pages — and, for NEXUS and BOLT, against their
+  cloned source code. All 22 bibliographic identifiers resolve exactly; six wording-level
+  errors were found and fixed (the worst: Chapter 41 had inverted NEXUS's 37.3 s GPU
+  figure into a CPU one). **Five minor details still need a human with PDF access** —
+  they are itemized at the end of the audit file, each with the exact paper, section, and
+  sentence to compare.
 
 The commit history records every factual error the verification passes caught and fixed —
 a fabricated benchmark, an inverted estimator bias, superseded FlashAttention-3 numbers,

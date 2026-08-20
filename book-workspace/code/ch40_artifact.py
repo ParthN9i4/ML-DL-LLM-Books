@@ -73,7 +73,7 @@ DB = [
         "semi-honest client+server 2PC",
         "RLWE HE, outer-product/row-wise encoding for linear layers + SS for non-linear",
         "low-degree poly approx fitted to observed input distribution",
-        "no special optimization (paper defers LayerNorm to future work)",
+        "no special optimization (paper: LayerNorm already relatively fast)",
         "low-degree polynomial GELU from input distribution; model left frozen",
         "BERT-base", NR, "CPU; LAN and WAN settings per paper evaluation",
         "paper reports 2.7x-4.7x end-to-end BERT-base speedup vs prior SOTA 2PC "
