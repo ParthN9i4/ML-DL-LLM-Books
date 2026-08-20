@@ -13,8 +13,8 @@ the weights are spread over many bins the error looks uniform on [-s/2, s/2],
 so its RMS is s/sqrt(12) = 0.2887 s. The sqrt(12) is the standard deviation of
 a uniform distribution; almost every treatment asserts it and moves on. Here it
 comes out within 3% on every grid whose bins are actually populated, and is
-wrong by a factor of 9 on one that is not — which turns out to be the more
-instructive half.
+wrong on the two per-tensor grids whose bins are not — by 1.4x at int8 and by
+9.5x at int4 — which turns out to be the more instructive half.
 
 That failure is the one insight the rest of the file is built around: the error
 of every weight in a group is set by the LARGEST weight in that group, because
@@ -216,11 +216,17 @@ def gptq_like(W, H, bits, percdamp=0.01):
     The objective is the layer reconstruction error ||X W - X W_hat||_F^2, whose
     Hessian in each output column is H = X^T X. Quantizing row i of W leaves a
     residual (w_i - q_i); the optimal correction to the NOT-YET-QUANTIZED rows
-    that minimizes the objective given that residual is
+    uses the inverse of the Hessian restricted to the REMAINING rows F = {i..d-1},
 
-        W[i+1:, :] -= Hinv[i+1:, i] / Hinv[i, i] * (w_i - q_i)
+        W[i+1:, :] -= HFinv[1:, 0] / HFinv[0, 0] * (w_i - q_i),  HFinv = inv(H[F, F])
 
-    which, with Hinv = L L^T from a Cholesky factorization, is the update below.
+    and NOT the matching entries of the full inverse H^{-1} -- the two agree
+    only at i = 0, and the break-it section measures what the full-inverse
+    shortcut costs. Recomputing HFinv at every step is O(d^4). GPTQ's
+    observation is that one Cholesky factorization H^{-1} = L L^T (L
+    lower-triangular) already holds every step's ratio at once:
+    HFinv[1:, 0] / HFinv[0, 0] = L[i+1:, i] / L[i, i], exactly. That is the
+    update below, and it is checked against the O(d^4) brute force verbatim.
     The step sizes come from the ORIGINAL weights, so the comparison against
     plain RTN at the same bit width is like-for-like: identical grid, identical
     storage, only the rounding decisions differ.
@@ -361,20 +367,28 @@ if __name__ == "__main__":
         zp = int(round(-lo / sc))
         ref = torch.quantize_per_tensor(torch.from_numpy(A), sc, zp,
                                         torch.quint8).dequantize().numpy()
-        ours = ((np.clip(np.rint(A / sc) + zp, 0, 255) - zp) * sc).astype(np.float32)
-        print(f"      torch asymmetric uint8 cross-check: max|diff| = {np.abs(ours-ref).max():.1e}")
-        check("our asymmetric uint8 quantizer is bit-identical to torch",
-              float(np.abs(ours - ref).max()), 0.0, tol=0.0)
+        # Route the SAME data through this file's own quantizer -- a cross-check
+        # only earns its keep if it fails when quantize_rtn is broken. torch
+        # does its arithmetic in float32 and we do ours in float64, so the
+        # agreement is fp32 roundoff (measured 1.2e-07), not bitwise zero.
+        ours, _, _, _ = quantize_rtn(A.astype(np.float64), 8, None, None,
+                                     "asymmetric")
+        d_asym = float(np.abs(ours.astype(np.float32) - ref).max())
+        print(f"      torch asymmetric uint8 cross-check: max|diff| = {d_asym:.1e}")
+        check("quantize_rtn's asymmetric uint8 path matches torch to fp32 roundoff",
+              d_asym, 0.0, tol=1e-6)
 
         colmax = np.abs(A).max(axis=0) / 127.0
         ref2 = torch.quantize_per_channel(torch.from_numpy(A),
                                           torch.from_numpy(colmax.astype(np.float64)),
                                           torch.zeros(64, dtype=torch.long), 1,
                                           torch.qint8).dequantize().numpy()
-        ours2 = (np.clip(np.rint(A / colmax), -127, 127) * colmax).astype(np.float32)
-        print(f"      torch symmetric  int8 per-channel:  max|diff| = {np.abs(ours2-ref2).max():.1e}")
-        check("our symmetric int8 per-channel quantizer is bit-identical to torch",
-              float(np.abs(ours2 - ref2).max()), 0.0, tol=0.0)
+        ours2, _, _, _ = quantize_rtn(A.astype(np.float64), 8, None, 0,
+                                      "symmetric")
+        d_sym = float(np.abs(ours2.astype(np.float32) - ref2).max())
+        print(f"      torch symmetric  int8 per-channel:  max|diff| = {d_sym:.1e}")
+        check("quantize_rtn's symmetric int8 per-channel path matches torch to fp32 roundoff",
+              d_sym, 0.0, tol=1e-6)
 
     print("\n--- the outlier problem, made arithmetic ---")
     bulk_max = float(np.abs(W[:, bulk]).max())
@@ -439,6 +453,31 @@ if __name__ == "__main__":
               all(ey[i] > ey[i + 1] for i in range(3)))
         print(f"      int{bits}: per-tensor -> group-64 cuts the matmul error "
               f"{ey[0]/ey[-1]:.1f}x using {by_name[chain[-1]][2]} scales instead of 1")
+
+    # None of the checks above constrain the asymmetric path's OUTPUT: the
+    # monotonicity chains are all-symmetric, and the storage checks below count
+    # scales without reading a single reconstructed weight. Pin it directly.
+    # Codes must be unsigned integers on 0..2^b-1 and zero points must be
+    # integers (hardware stores both as ints -- a float zero point defeats the
+    # integer accumulator), and the extra affine freedom must actually beat the
+    # symmetric grid it competes with.
+    _, codes_a4, _, zeros_a4 = quantize_rtn(W, 4, 64, 0, "asymmetric")
+    check("asym codes are integers", bool(np.all(codes_a4 == np.rint(codes_a4))))
+    check("asym codes fit in 4 unsigned bits (0..15)",
+          float(codes_a4.min()) >= 0.0 and float(codes_a4.max()) <= 15.0)
+    check("asym zero points are integers",
+          bool(np.all(zeros_a4 == np.rint(zeros_a4))))
+    check("asym group-64 beats symmetric group-64 on weight error",
+          by_name["int4 group-64 asym"][3] < by_name["int4 group-64"][3])
+    # Independent round trip: weights placed exactly on a KNOWN 4-bit affine
+    # grid (scale 0.037, zero point 6) must reconstruct exactly. Any slip in
+    # the (code - zero) * scale convention misses by whole steps here.
+    codes_true = np.random.default_rng(7).integers(0, 16, size=(8, 64)).astype(float)
+    codes_true[:, 0], codes_true[:, -1] = 0.0, 15.0     # pin each row's range
+    V_grid = (codes_true - 6.0) * 0.037
+    W_rt, _, _, _ = quantize_rtn(V_grid, 4, None, 1, "asymmetric")
+    check("asym round trip is exact on grid-aligned weights",
+          float(np.abs(W_rt - V_grid).max()), 0.0, tol=1e-12)
 
     print("\n--- the scale must factor out of the contraction ---")
     # With axis=0 grouping the step is constant along the summation index, so
@@ -531,14 +570,43 @@ if __name__ == "__main__":
     rho0, rho_hi = gains[0], gains[-1]
     check("with white-ish inputs there is essentially nothing to gain",
           rho0[2] / rho0[3], 1.0, tol=0.05)
+    # Floor measured, not guessed: the correct update measures 3.40x on this
+    # seed, while a half-strength update measures 2.05x and a next-row-only
+    # update 2.78x -- 3.0 separates the real algorithm from both impostors.
     check("with correlated inputs error feedback beats RTN at the same bit width",
-          rho_hi[2] / rho_hi[3] > 2.0)
+          rho_hi[2] / rho_hi[3] > 3.0)
     # And the reason it is not free lunch: it trades weight-space accuracy for
     # output accuracy, deliberately. Same trade the clipping trap below gets
     # backwards.
     print(f"      at rho=0.95 GPTQ is {rho_hi[2]/rho_hi[3]:.1f}x better on the OUTPUT "
           f"while being {rho_hi[5]/rho_hi[4]:.2f}x WORSE on the weights")
     check("compensation deliberately worsens the weight error", rho_hi[5] > rho_hi[4])
+
+    # Cross-check the Cholesky-form update against an O(d^4) brute force that
+    # recomputes inv(H[i:, i:]) at every step. The two must produce the SAME
+    # quantized matrix, not merely similar errors: a half-strength or
+    # next-row-only update misses this by ~1.3 (a whole quantization step)
+    # while the correct update matches to exactly 0.
+    def obq_bruteforce(Wm, H, bits, percdamp=0.01):
+        dd = Wm.shape[0]
+        qmax = 2 ** (bits - 1) - 1
+        sc_ = np.abs(Wm).max(axis=0, keepdims=True) / qmax
+        Hd = H.copy()
+        Hd[np.arange(dd), np.arange(dd)] += percdamp * np.mean(np.diag(H))
+        Wc_, W_hat_ = Wm.copy(), np.zeros_like(Wm)
+        for i in range(dd):
+            q = np.clip(np.rint(Wc_[i] / sc_[0]), -qmax, qmax) * sc_[0]
+            W_hat_[i] = q
+            if i + 1 < dd:
+                HFinv = np.linalg.inv(Hd[i:, i:])
+                Wc_[i + 1:, :] -= np.outer(HFinv[1:, 0] / HFinv[0, 0], Wc_[i] - q)
+        return W_hat_
+
+    # Xg / Hg still hold the rho = 0.95 layer from the last loop iteration.
+    d_bf = float(np.abs(gptq_like(Wg, Hg, 4) - obq_bruteforce(Wg, Hg, 4)).max())
+    print(f"      Cholesky update vs O(d^4) per-step inverse: max|diff| = {d_bf:.1e}")
+    check("the Cholesky update equals the per-step inv(H[i:, i:]) brute force",
+          d_bf, 0.0, tol=1e-12)
 
     # -----------------------------------------------------------------------
     # BREAK IT
@@ -596,7 +664,10 @@ if __name__ == "__main__":
     ew_a, ey_a = np.array(ew_a), np.array(ey_a)
     best = int(np.argmin(ew_a))
     print(f"      {'clip':>6} {'||dW||/||W||':>13} {'||dY||/||Y||':>13}")
-    for k in range(0, len(alphas), 2):
+    # Print every other alpha, but always force the argmin row in so the
+    # "<- min weight error" marker is actually reachable (best lands on 0.65,
+    # an odd index).
+    for k in sorted(set(range(0, len(alphas), 2)) | {best}):
         mark = "  <- min weight error" if k == best else ""
         print(f"      {alphas[k]:6.2f} {ew_a[k]:13.5f} {ey_a[k]:13.5f}{mark}")
     print(f"      clipping at {alphas[best]:.2f}x improves the weight error "
@@ -609,5 +680,42 @@ if __name__ == "__main__":
     # over this range: the output error is monotonically increasing in clipping.
     check("output error only ever gets worse as you clip harder",
           all(ey_a[i] > ey_a[i + 1] for i in range(len(ey_a) - 1)))
+
+    # (c) THE WRONG INVERSE. The tempting shortcut for the OBQ update is to
+    #     read the correction for every step straight out of the FULL inverse,
+    #     Hinv[i+1:, i] / Hinv[i, i]. That is the optimal correction only at
+    #     i = 0; from then on the optimum comes from inv(H[i:, i:]), the
+    #     inverse over the rows still free -- which is exactly what the
+    #     Cholesky column delivers. The shortcut is not a disaster (it still
+    #     feeds errors forward), it is quietly sub-optimal: it passes every
+    #     weight-space sanity check and gives up a third of the gain.
+    def gptq_full_inverse(Wm, H, bits, percdamp=0.01):
+        dd = Wm.shape[0]
+        qmax = 2 ** (bits - 1) - 1
+        sc_ = np.abs(Wm).max(axis=0, keepdims=True) / qmax
+        Hd = H.copy()
+        Hd[np.arange(dd), np.arange(dd)] += percdamp * np.mean(np.diag(H))
+        Hinv = np.linalg.inv(Hd)
+        Wc_, W_hat_ = Wm.copy(), np.zeros_like(Wm)
+        for i in range(dd):
+            q = np.clip(np.rint(Wc_[i] / sc_[0]), -qmax, qmax) * sc_[0]
+            W_hat_[i] = q
+            if i + 1 < dd:
+                Wc_[i + 1:, :] -= np.outer(Hinv[i + 1:, i] / Hinv[i, i],
+                                           Wc_[i] - q)
+        return W_hat_
+
+    # Xg / Hg / Yg still hold the rho = 0.95 layer.
+    e_rtn95 = rel_err(Yg, Xg @ rtn_per_column(Wg, 4))
+    e_right = rel_err(Yg, Xg @ gptq_like(Wg, Hg, 4))
+    e_wrong = rel_err(Yg, Xg @ gptq_full_inverse(Wg, Hg, 4))
+    print(f"      rho=0.95 dY: RTN {e_rtn95:.5f} | full-inverse shortcut "
+          f"{e_wrong:.5f} ({e_rtn95/e_wrong:.2f}x) | correct update "
+          f"{e_right:.5f} ({e_rtn95/e_right:.2f}x)")
+    check("the shortcut still beats RTN (it is exactly right at i = 0)",
+          e_wrong < e_rtn95)
+    # Measured: 0.10805 vs 0.06619, a 1.63x gap; 1.4 leaves honest headroom.
+    check("but the correct restricted-inverse update beats the shortcut",
+          e_wrong / e_right > 1.4)
 
     summary()

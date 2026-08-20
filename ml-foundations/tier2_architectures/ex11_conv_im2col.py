@@ -17,10 +17,13 @@ C_in*k*k floating-point operations happen either way. What changes is that they
 now happen inside a BLAS call that has been optimized to within a few percent
 of the machine's peak, instead of inside an interpreted loop. The price is
 memory: the im2col buffer holds k*k*C_in*H_out*W_out numbers where the input
-held C_in*H*W, and for a stride-1 3x3 layer that is a nine-fold blow-up of the
-activation. This exercise measures that expansion factor and the wall-clock
-payoff rather than asserting them from memory, because the trade is the whole
-point and the numbers are the argument.
+held C_in*H*W, and for a stride-1, SAME-PADDED 3x3 layer that is a nine-fold
+blow-up of the activation. The nine is not a property of 3x3 alone, it is a
+property of 3x3 with H_out == H: drop the padding and each border pixel lands
+in fewer windows, so an unpadded 3x3 on 64x64 expands by 9*62*62/64^2 = 8.45x,
+not 9x. This exercise measures the expansion factor and prints the wall-clock
+payoff rather than asserting either from memory, because the trade is the
+whole point and the numbers are the argument.
 
 Two things hide in the details. The first is the output-size formula,
 floor((H + 2p - d*(k-1) - 1)/s) + 1, which is just "how many starting
@@ -239,6 +242,52 @@ if __name__ == "__main__":
     else:
         print("  ....  [skipped: scipy not installed] scipy.signal cross-check")
 
+    print("\n--- the buffer im2col builds, against a per-window construction ---")
+
+    def im2col_bruteforce(z, kh_, kw_, s_, p_, d_):
+        """The obvious O(H_out*W_out) build: one explicit slice per window.
+
+        Deliberately written the slow way and with no call to
+        conv_output_size, so it is an independent reference for both the
+        contents and the shape of what `im2col` produces with kh*kw copies.
+        """
+        Nz, Cz, Hz, Wz = z.shape
+        zp = np.pad(z, ((0, 0), (0, 0), (p_, p_), (p_, p_)))
+        rows = list(range(0, Hz + 2 * p_ - d_ * (kh_ - 1), s_))
+        colsx = list(range(0, Wz + 2 * p_ - d_ * (kw_ - 1), s_))
+        out_ = np.empty((Nz, Cz * kh_ * kw_, len(rows) * len(colsx)))
+        c_ = 0
+        for i0 in rows:                       # column order: j fastest
+            for j0 in colsx:
+                win = zp[:, :, i0: i0 + d_ * (kh_ - 1) + 1: d_,
+                         j0: j0 + d_ * (kw_ - 1) + 1: d_]
+                out_[:, :, c_] = win.reshape(Nz, -1)   # row order: (c, ki, kj)
+                c_ += 1
+        return out_
+
+    rng_ref = np.random.default_rng(20250819)   # own stream: leaves rng untouched
+    x_ref = rng_ref.standard_normal((2, 3, 9, 11))
+    n_win_total = 0
+    for (kh_r, kw_r, s_r, p_r, d_r) in [(3, 3, 1, 0, 1), (3, 3, 2, 1, 1),
+                                        (3, 3, 1, 2, 2), (2, 4, 3, 1, 1)]:
+        got_cols = im2col(x_ref, kh_r, kw_r, s_r, p_r, d_r)
+        ref_cols = im2col_bruteforce(x_ref, kh_r, kw_r, s_r, p_r, d_r)
+        n_win_total += ref_cols.shape[-1]
+        tag = f"k={kh_r}x{kw_r} s={s_r} p={p_r} d={d_r}"
+        print(f"      {tag:<22} buffer {str(got_cols.shape):<18} "
+              f"vs per-window {str(ref_cols.shape)}")
+        check(f"im2col's {kh_r*kw_r} strided copies == per-window build  [{tag}]",
+              got_cols, ref_cols, tol=0.0)
+    # That reference materialized every window one at a time; im2col produced
+    # the identical buffer with kh*kw slice assignments, and kh*kw does not
+    # grow with the image while the window count does.
+    print(f"      per-window build issued {n_win_total} slice copies; im2col "
+          f"issued kh*kw = {3*3 + 3*3 + 3*3 + 2*4} for the same four buffers")
+    # Hand-counted window totals for the four configs above, from the same
+    # start-index enumeration: 7*9 + 5*6 + 9*11 + 4*4 = 208.
+    check("the per-window reference issued the hand-counted number of copies",
+          n_win_total, 208)
+
     print("\n--- the output-size formula ---")
     print(f"      {'H':>4} {'k':>3} {'s':>3} {'p':>3} {'d':>3} {'formula':>8} {'torch':>7}")
     shape_cases = [
@@ -257,10 +306,20 @@ if __name__ == "__main__":
             all_match &= (want == got_t)
         print(f"      {Hs:4d} {k:3d} {s:3d} {p:3d} {d:3d} {want:8d} "
               f"{got_t if got_t is not None else '   n/a':>7}")
-        # The formula must also agree with what our own im2col actually built.
+        # Both of the next two checks compare against `n_starts`, which is
+        # derived WITHOUT calling conv_output_size: the kernel's footprint is
+        # d*(k-1)+1 samples, so a start index i is legal exactly when
+        # i + d*(k-1) <= Hs + 2p - 1, and the legal starts are
+        # range(0, Hs + 2p - d*(k-1), s). Enumerating them is an independent
+        # derivation of H_out, so a wrong formula cannot hide behind it.
+        # (Comparing im2col's column count to conv_output_size**2 would be a
+        # tautology: im2col computes its own shape by calling that formula.)
+        n_starts = len(range(0, Hs + 2 * p - d * (k - 1), s))
         L = im2col(np.zeros((1, 1, Hs, Hs)), k, k, s, p, d).shape[-1]
-        check(f"im2col column count == formula^2  [H={Hs} k={k} s={s} p={p} d={d}]",
-              L == want * want)
+        check(f"formula == enumerated window count  [H={Hs} k={k} s={s} p={p} d={d}]",
+              want == n_starts)
+        check(f"im2col built one column per window  [H={Hs} k={k} s={s} p={p} d={d}]",
+              L == n_starts * n_starts)
     if HAVE_TORCH:
         check("formula matches torch's shape on all 12 (H,k,s,p,d) combos", all_match)
 
@@ -282,6 +341,14 @@ if __name__ == "__main__":
     # The headline case: stride-1 "same" 3x3 replicates every pixel exactly 9 times.
     check("stride-1 same-padded 3x3 costs exactly 9x the activation memory",
           im2col_expansion(64, 64, 64, 3, 3, 1, 1, 1), 9.0, tol=1e-12)
+    # ...and the 9 belongs to the SAME padding, not to 3x3. Without padding the
+    # valid output on 64x64 is 62x62, so the factor is 9*62*62/64^2 = 8.4463.
+    # (62 is hand-counted: starts 0..61 inclusive fit a 3-wide footprint in 64.)
+    unpadded = im2col_expansion(64, 64, 64, 3, 3, 1, 0, 1)
+    print(f"      the same 3x3 with NO padding expands by only {unpadded:.4f}x, "
+          f"not 9x — border pixels land in fewer windows")
+    check("an unpadded stride-1 3x3 expands by 9*62*62/64^2, not 9",
+          unpadded, 9 * 62 * 62 / (64 * 64), tol=1e-12)
     # A 1x1 conv is already a matmul, so im2col is free — the degenerate case
     # that shows the expansion is entirely about window overlap.
     check("a 1x1 conv has expansion exactly 1 (im2col is a no-op)",
@@ -304,23 +371,60 @@ if __name__ == "__main__":
           f"({flops/t_loop/1e9:.3f} GFLOP/s)")
     print(f"      im2col + one matmul: {t_gemm*1e3:8.1f} ms   "
           f"({flops/t_gemm/1e9:.3f} GFLOP/s)")
-    print(f"      speedup: {t_loop/t_gemm:.1f}x")
-    # Assert the MECHANISM, not the wall clock: the two forms do exactly the
-    # same number of flops, and the loop form pays one Python iteration per
-    # output pixel while the matmul form pays kh*kw slice copies total.
+    print(f"      speedup: {t_loop/t_gemm:.1f}x   <- PRINTED, NOT ASSERTED")
+    # The wall clock is deliberately NOT asserted. Over thirteen runs on this
+    # box the loop side held steady at 0.018-0.024 GFLOP/s while the matmul
+    # side swung between 0.22 and 7.64 GFLOP/s depending on how busy the CPU
+    # was, so the printed ratio ranged from 12.0x to 396.8x (and a longer
+    # sweep on the same machine dipped to 9.4x). Any threshold tight enough to
+    # be interesting is therefore loose enough to fail at random, which would
+    # mean a learner who got everything right still sees red. The timing is
+    # reported, and the MECHANISM is what gets asserted below.
     py_iters_loop = Nt * Cot * H_out * H_out
     py_iters_gemm = 3 * 3
     print(f"      Python-level iterations: {py_iters_loop} (loops) vs "
           f"{py_iters_gemm} (im2col) = {py_iters_loop // py_iters_gemm}x fewer")
-    check("both forms perform identical arithmetic",
-          conv_flops(Nt, Cit, Cot, H_out, H_out, 3, 3), flops)
-    check("the loop form pays one interpreted step per output element",
-          py_iters_loop == y_loop.size)
-    check("im2col pays kh*kw interpreted steps regardless of output size",
-          py_iters_gemm == 9)
-    # Measured on this machine at 205-299x across runs (0.037 vs 7.5-11.3
-    # GFLOP/s); the assertion keeps a 20x margin for a slower or busier box.
-    check("and that turns into a real wall-clock win", t_loop / t_gemm > 10.0)
+
+    # conv_flops, against a hand-worked count instead of against itself:
+    # 2 * N * C_out * H_out * W_out * C_in * kh * kw
+    #   = 2 * 4 * 16 * 32 * 32 * 8 * 3 * 3 = 9_437_184 FLOP.
+    check("conv_flops matches the hand-worked count for this layer",
+          conv_flops(Nt, Cit, Cot, H_out, H_out, 3, 3), 9437184)
+
+    def count_macs(N_, Ci_, Co_, Ho_, Wo_, kh_, kw_):
+        """Brute force: literally enumerate the multiply-accumulates."""
+        macs = 0
+        for _n in range(N_):
+            for _co in range(Co_):
+                for _i in range(Ho_):
+                    for _j in range(Wo_):
+                        for _ci in range(Ci_):
+                            for _a in range(kh_):
+                                macs += kw_
+        return macs
+
+    check("conv_flops == 2 x an enumerated multiply-accumulate count",
+          conv_flops(2, 3, 4, 5, 6, 2, 3), 2 * count_macs(2, 3, 4, 5, 6, 2, 3))
+
+    # "Identical arithmetic" is a claim about the GEMM the im2col path actually
+    # issues, so read its cost off the shapes im2col and the reshape produced.
+    # A single (M,K) @ (K,L) product is 2*M*K*L flops, and there are N of them.
+    cols_t = im2col(xt_np, 3, 3, 1, 1, 1)
+    w_flat_t = wt_np.reshape(Cot, -1)
+    M_g, K_g = w_flat_t.shape
+    L_g = cols_t.shape[-1]
+    gemm_flops = 2 * Nt * M_g * K_g * L_g
+    print(f"      the GEMM is {Nt} x ({M_g}x{K_g}) @ ({K_g}x{L_g}) = "
+          f"{gemm_flops/1e6:.1f} MFLOP")
+    check("the GEMM does exactly the arithmetic the loop nest does",
+          gemm_flops, flops)
+
+    # 4 * 16 * 32 * 32 = 65536 output elements: a 32x32 map with k=3, p=1, s=1
+    # keeps its spatial size, so H_out = W_out = 32. Written as a literal so a
+    # wrong conv_output_size cannot make this agree with itself.
+    check("the loop form runs one interpreted iteration per output element",
+          py_iters_loop, 65536)
+    check("...and that is exactly how many numbers it produced", y_loop.size, 65536)
 
     # -----------------------------------------------------------------------
     # BREAK IT
@@ -371,7 +475,13 @@ if __name__ == "__main__":
           f"(float64 re-association floor {rounding_floor(y_corr_s):.2e})")
     check("a centro-symmetric kernel leaves nothing above float64 rounding",
           disc_sym <= rounding_floor(y_corr_s))
-    check("...which is ~15 orders of magnitude below the asymmetric case",
+    orders = np.log10(disc / max(disc_sym, np.finfo(float).tiny))
+    print(f"      separation between the two cases: {orders:.2f} orders of magnitude")
+    # Printed above at 16.07 orders; the assertion is set at 12 so that the
+    # exact size of the rounding residue (which depends on summation order)
+    # cannot flip it, while still being far beyond anything a real difference
+    # in the kernel could produce.
+    check("...which is ~16 orders of magnitude below the asymmetric case",
           disc / max(disc_sym, np.finfo(float).tiny) > 1e12)
     # Box blur, the 3x3 Laplacian, and any Gaussian are all centro-symmetric —
     # which is precisely the set of kernels people reach for when testing.

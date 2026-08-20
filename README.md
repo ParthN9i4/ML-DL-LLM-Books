@@ -49,7 +49,8 @@ Verified end to end:
 | Structural (`book-workspace/assemble.py verify`) | all passed — every TOC anchor resolves, five objectives and five tagged takeaways per chapter, one artifact each, per-type box counters sequential, tags balanced |
 | Artifacts re-executed | **42/42 run clean** |
 | Embedded code vs executed files (`drift_check.py`) | **42/42 byte-identical, zero drift** |
-| Exercise ladder (`ml-foundations/check.py`) | **30/30 pass**, 3m31s from a clean tree |
+| Exercise ladder (`ml-foundations/check.py`) | **30/30 pass**, and the 13 newest files were each run **10 times consecutively** after an adversarial review — a single lucky run is not evidence, which that review proved |
+| Ladder adversarially reviewed | 13 new files, **69 confirmed defects found and fixed**: flaky timing assertions, tautological checks that no bug could fail, two false factual claims, a `nan` swallowed by Python's `max()` |
 | Ladder with torch, scipy and scikit-learn blocked | tiers 0–3 **still pass on numpy alone**, cross-checks skipping cleanly |
 | Rendered in Chromium against a local MathJax | **11,162 expressions typeset, 0 math errors, 0 leftover LaTeX, no horizontal scroll** |
 | Confidence tags | 339 Certain · 236 Likely · 259 Verify · 69 Contested |

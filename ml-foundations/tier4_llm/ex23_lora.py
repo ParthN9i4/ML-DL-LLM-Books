@@ -29,8 +29,8 @@ the error floor is the Frobenius tail of the singular values, sqrt(sum_{i>r}
 sigma_i^2). Fit LoRA against a target whose spectrum you control and the fit
 tracks that floor. Two unit-norm targets, the same rank 8: the genuinely
 rank-4 one is reproduced to 7.8e-15, the one with sigma_i ~ 1/i is stuck at
-0.250 — and doubling to rank 32 only takes it to 0.097. Rank is not a knob you
-tune blind; it is a claim about a spectrum.
+0.250 — doubling to rank 16 only reaches 0.166, and even rank 32 only reaches
+0.097. Rank is not a knob you tune blind; it is a claim about a spectrum.
 
 To learn: replace each function body with `pass` and reimplement.
 """
@@ -99,9 +99,13 @@ def merge_lora(W, A, B, alpha):
 # ---------------------------------------------------------------------------
 
 def matrix_with_spectrum(sigmas, rng):
-    """A square matrix with exactly the prescribed singular values, unit ||.||_F.
+    """A square matrix with singular values PROPORTIONAL to `sigmas`, unit ||.||_F.
 
-    Random orthogonal U, V from QR; the spectrum is the experimental variable.
+    Random orthogonal U, V from QR; the spectrum SHAPE is the experimental
+    variable. The final rescale divides every singular value by ||sigmas||_2,
+    so the realised spectrum is sigmas / ||sigmas||_2 — "exactly sigmas" and
+    "unit Frobenius norm" would contradict each other unless sum(sigmas^2) = 1,
+    and it is the unit norm that the experiments below rely on.
     """
     n = len(sigmas)
     U, _ = np.linalg.qr(rng.standard_normal((n, n)))
@@ -270,7 +274,17 @@ if __name__ == "__main__":
           y_merged, y_adapt, tol=1e-12)
     check("and the disagreement is below the dot-product round-off bound",
           err_merge < round_off_bound)
-    check("ΔW itself is rank <= r", int(np.linalg.matrix_rank(lora_delta(A_t, B_t, alpha))) <= 8)
+    # rank(B @ A) <= 8 holds for EVERY possible A and B by the shapes alone
+    # (the inner dimension is r), so "rank <= r" would be a tautology, not a
+    # test. What a bug CAN violate: the fit lands on exactly the target's rank
+    # 4 — the bottleneck admits 8 directions but a converged ALS uses only 4 —
+    # while the merged weight stays full rank. Low rank is a property of the
+    # UPDATE, never of the adapted model. (Measured: 4th singular value of ΔW
+    # is 0.18, the 5th is 1e-16 — the numerical rank is unambiguous.)
+    check("fitted ΔW has exactly the target's rank 4, not the bottleneck's 8",
+          int(np.linalg.matrix_rank(lora_delta(A_t, B_t, alpha))), 4)
+    check("while the merged weight W + ΔW stays full rank",
+          int(np.linalg.matrix_rank(W_merged)), d_in)
 
     print("\n--- parameter and optimizer-state accounting (d=4096, r=16) ---")
     d_real, r_real = 4096, 16
@@ -307,6 +321,16 @@ if __name__ == "__main__":
     sig_slow = np.arange(1, d_in + 1) ** -1.0
     targets = {"exactly rank 4": matrix_with_spectrum(sig_low, rng),
                "sigma_i ~ 1/i": matrix_with_spectrum(sig_slow, rng)}
+    # Everything printed below compares errors ACROSS the two targets, which is
+    # only meaningful because both sit at ||D||_F = 1 — so pin that down, and
+    # pin down what the rescale did to the prescribed spectrum: the realised
+    # singular values are sigmas / ||sigmas||_2 (here [4,3,2,1]/sqrt(30) =
+    # [0.730, 0.548, 0.365, 0.183]), NOT the raw [4,3,2,1] passed in.
+    check("both targets are unit-Frobenius (the rescale is load-bearing)",
+          [float(np.linalg.norm(D)) for D in targets.values()], [1.0, 1.0], tol=1e-12)
+    check("realised spectrum is sigmas / ||sigmas||_2, not the raw sigmas",
+          np.linalg.svd(targets["exactly rank 4"], compute_uv=False)[:4],
+          sig_low[:4] / np.linalg.norm(sig_low), tol=1e-12)
     ranks = (1, 2, 4, 8, 16, 32)
     fits, bounds = {}, {}
     print(f"      {'target':16}{'':7}" + " ".join(f"{('r=%d' % r):>11}" for r in ranks))
@@ -348,12 +372,29 @@ if __name__ == "__main__":
         print("\n--- torch cross-check ---")
         D = targets["sigma_i ~ 1/i"]
         A_c, B_c = fit_lora_als(D, 8, alpha, np.random.default_rng(2), iters=3)
+        # An ALS iterate is the WRONG place to cross-check grad_A: the sweep
+        # ends on the A half-step, which solves A's normal equations exactly,
+        # so grad_A there is zero to round-off (measured 3e-17) and ANY formula
+        # linear in B — sign-flipped, mis-scaled, even all-zeros — would match
+        # autograd within tol. Assert that stationarity by name (it is the
+        # property that makes ALS converge), then jitter A off the optimum so
+        # the gradient comparison can actually fail.
+        gA_it, _ = lora_fit_grads(D, A_c, B_c, alpha)
+        print(f"      at the ALS iterate max|grad_A| = {np.abs(gA_it).max():.1e} "
+              f"(the A half-step solved its normal equations)")
+        check("the ALS A half-step is stationary for A: grad_A ~ 0 at the iterate",
+              float(np.abs(gA_it).max()) < 1e-12)
+        A_c = A_c + 0.1 * np.random.default_rng(5).standard_normal(A_c.shape)
         At = torch.tensor(A_c, requires_grad=True)
         Bt = torch.tensor(B_c, requires_grad=True)
         loss = 0.5 * ((alpha / 8) * (Bt @ At) - torch.tensor(D)).pow(2).sum()
         loss.backward()
         gA, gB = lora_fit_grads(D, A_c, B_c, alpha)
-        check("hand-derived grad_A matches torch autograd", gA, At.grad.numpy(), tol=1e-12)
+        print(f"      off the iterate max|grad_A| = {np.abs(gA).max():.1e}, "
+              f"max|grad_B| = {np.abs(gB).max():.1e} — so the tol=1e-12 "
+              f"comparison below has ~10 orders of headroom")
+        check("hand-derived grad_A matches torch autograd (off the stationary point)",
+              gA, At.grad.numpy(), tol=1e-12)
         check("hand-derived grad_B matches torch autograd", gB, Bt.grad.numpy(), tol=1e-12)
         # And the merged-equals-adapted property in torch's own linear layer.
         lin = torch.nn.Linear(d_in, d_out, bias=False).double()
@@ -381,10 +422,28 @@ if __name__ == "__main__":
     # Entries of B A sum r products of independent N(0,1/r) and N(0,1/d_in)
     # terms, so std(ΔW) = (alpha/r) * sqrt(r * (1/r) * (1/d_in)) = (alpha/r)/sqrt(d_in).
     predicted_std = (alpha / r_b) / np.sqrt(d_in)
-    print(f"      std(ΔW) measured {dW_bad.std():.4f} vs predicted {predicted_std:.4f}; "
+    # One 64x64 draw of B A has only r=8 independent rank-1 terms, so its std
+    # is NOT tightly concentrated: across 500 seeds it deviates from the
+    # prediction by up to +-13%, which no honest single-draw tolerance can
+    # distinguish from a real variance bug. Pool the mean square over 20
+    # independent draws instead: measured over 300 disjoint 20-seed blocks the
+    # pooled RMS stays within +-3.3% of the prediction, so a 5% band is a
+    # measured floor with headroom — while any variance-formula error (a
+    # missing 1/sqrt(r) in B's init is a factor sqrt(8) = 2.8, alpha for
+    # alpha/r a factor 8) lands far outside it.
+    ms_pool = []
+    for k in range(20):
+        rng_k = np.random.default_rng(100 + k)
+        A_k = rng_k.standard_normal((r_b, d_in)) / np.sqrt(d_in)
+        B_k = rng_k.standard_normal((d_out, r_b)) / np.sqrt(r_b)
+        ms_pool.append(np.mean(lora_delta(A_k, B_k, alpha) ** 2))
+    rms_pooled = float(np.sqrt(np.mean(ms_pool)))
+    print(f"      std(ΔW): this draw {dW_bad.std():.4f}, pooled RMS over 20 draws "
+          f"{rms_pooled:.4f}, predicted (alpha/r)/sqrt(d_in) = {predicted_std:.4f}; "
           f"std(W) = {W.std():.4f}")
-    check("the spurious ΔW has exactly the magnitude the init variance predicts",
-          float(dW_bad.std()), predicted_std, tol=0.1 * predicted_std)
+    check("pooled over 20 draws, the spurious ΔW has the RMS the init variance "
+          "predicts, to within a measured 5%",
+          rms_pooled, predicted_std, tol=0.05 * predicted_std)
     y_bad = lora_forward(X, W, A_bad, B_bad, alpha)
     rel = float(np.linalg.norm(y_bad - y_base) / np.linalg.norm(y_base))
     rel_good = float(np.linalg.norm(lora_forward(X, W, *lora_init(d_in, d_out, r_b, rng), alpha)

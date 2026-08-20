@@ -9,11 +9,14 @@ So this exercise starts by checking the objective rather than the model. At
 initialization a transformer's logits are near zero, so its predicted
 distribution is near uniform, so its cross-entropy must be ln(V) nats. That one
 line — measure the loss before the first optimizer step and compare it to
-ln(vocab_size) — catches a mislabelled target, a broken softmax axis, a wrong
-vocabulary size, and a shuffled batch, all before wasting an hour of compute.
-Hardly anybody runs it. Measured here: 3.3017 against ln(27) = 3.2958, a gap of
-0.0058 nats, which is 0.18% and entirely accounted for by the initialization
-scale of the output weights.
+ln(vocab_size) — catches a wrong vocabulary size, a broken softmax axis and an
+output layer initialized too large, all before wasting an hour of compute.
+What it can NOT catch is any bug in the targets: a uniform predictor pays
+ln(V) on every labelling (asserted below), so a mislabelled or shuffled batch
+sails straight through — which is exactly what the entropy floor and the
+break-it section are for. Measured here: 3.3017 against ln(27) = 3.2958, a
+gap of 0.0058 nats, entirely accounted for by the initialization scale of
+the output weights.
 
 The corpus is 130 sentences generated from a fixed 8x8x8x8 slot grammar and
 embedded literally below, which buys something a real corpus cannot: the true
@@ -23,9 +26,10 @@ verb, an adjective, a noun and one of two templates, so it carries exactly
 down. Divide by the character count and you get an entropy floor of 0.385
 bits/byte that no model can beat on held-out text. That floor turns vague
 claims into arithmetic: the ladder uniform (4.755 bpb) > unigram (4.164 bpb) >
-model (0.738 bpb at its best) > source (0.385 bpb) is measured end to end, and
-a loss BELOW the floor is proof of a bug rather than a breakthrough. Training
-deliberately runs past the point of usefulness, so the val curve turns around
+model (0.934 bpb final, 0.738 bpb at its step-800 best) > source (0.375 bpb
+over the scored held-out span) is measured end to end, and a loss BELOW the
+floor is proof of a bug rather than a breakthrough. Training deliberately
+runs past the point of usefulness, so the val curve turns around
 at step 800 and the train/val gap opens to 0.39 nats — fifty times the gap of
 a unigram model, which has no capacity to memorize anything.
 
@@ -40,6 +44,7 @@ outside it (last position 133x the rest). Nothing else here distinguishes them.
 To learn: replace each function body with `pass` and reimplement.
 """
 
+import copy
 import math
 import os
 import sys
@@ -265,9 +270,12 @@ def bits_per_byte(nats_per_token, bytes_per_token=1.0):
 def unigram_log_probs(train_ids, vocab_size):
     """Laplace-smoothed unigram model fitted on the training split.
 
-    Smoothing is not cosmetic: an unsmoothed unigram assigns probability 0 to
-    any character it never saw, and a single such character in the validation
-    split makes the whole cross-entropy +inf.
+    What smoothing guards against: an unsmoothed unigram assigns probability 0
+    to any character it never saw, and a single such character in the
+    validation split makes the whole cross-entropy +inf. On THIS corpus every
+    character happens to occur in both splits, so here the smoothing shifts
+    the val loss by only 3.8e-05 nats — the main block therefore manufactures
+    the failure instead, by scoring a symbol the training data never contains.
     """
     # === YOUR CODE HERE ===
     counts = np.bincount(train_ids, minlength=vocab_size).astype(np.float64) + 1.0
@@ -496,8 +504,11 @@ if __name__ == "__main__":
     print(f"      uniform-logit cross-entropy = {ce_uniform:.12f} nats")
     print(f"      ln(V) = ln({V})              = {math.log(V):.12f} nats")
     check("uniform logits give exactly ln(V)", ce_uniform, math.log(V), tol=1e-12)
-    # It does not matter what the targets are: that is what makes it a floor
-    # for an uninformed model and a check on the LABELS rather than the model.
+    # The value is INVARIANT to the targets — asserted next — and that cuts both
+    # ways. It makes ln(V) a floor for any uninformed predictor, and it means
+    # the init check can never catch a label bug: it is a check on the MODEL
+    # and the loss plumbing (vocab size, softmax axis, init scale), not on the
+    # labels. Break-it case (a) below is a label bug, and it sails through.
     rng0 = np.random.default_rng(0)
     junk = rng0.integers(0, V, size=len(val_ids))
     check("and ln(V) whatever the targets are",
@@ -531,6 +542,42 @@ if __name__ == "__main__":
     check("bits/byte = nats / ln(2) when 1 token = 1 byte",
           bits_per_byte(unigram_nats), unigram_nats / LN2, tol=1e-15)
     check("uniform bits/byte = log2(V)", bits_per_byte(uniform_nats), math.log2(V), tol=1e-12)
+    # The bytes/token normalization, exercised on the docstring's own example
+    # rather than left at its default of 1: a BPE model at 1.9 nats/token and
+    # 3.6 bytes/token must come out BELOW a character model at 0.9 nats/token,
+    # and inverting the division (times instead of over) gives 9.87 bpb, not
+    # 0.76 — both checks catch that.
+    bpe_bpb = bits_per_byte(1.9, 3.6)
+    print(f"      BPE example: 1.9 nats at 3.6 bytes/token = {bpe_bpb:.4f} bpb, "
+          f"char model at 0.9 nats = {bits_per_byte(0.9):.4f} bpb")
+    check("bits/byte divides by bytes/token: 1.9 nats at 3.6 B/tok = 0.7614 bpb",
+          bpe_bpb, 1.9 / LN2 / 3.6, tol=1e-12)
+    check("once normalized, the BPE model beats the char model",
+          bpe_bpb < bits_per_byte(0.9, 1.0))
+
+    # On this corpus the smoothing is defensive only: every character occurs
+    # in both splits, so removing it barely moves the number. Measure that.
+    raw_cnt = np.bincount(train_ids, minlength=V).astype(np.float64)
+    unsm_val_nats = float(-np.log(raw_cnt / raw_cnt.sum())[val_ids].mean())
+    print(f"      smoothing shifts the unigram val loss by "
+          f"{abs(unigram_nats - unsm_val_nats):.1e} nats on this corpus")
+
+    # And the failure the Laplace smoothing exists for, manufactured: extend
+    # the vocabulary by one symbol the training data never contains. The
+    # unsmoothed model prices it at +inf nats; the smoothed model at exactly
+    # ln(N + V + 1) — a closed form the implementation does not get to see.
+    raw_ext = np.bincount(train_ids, minlength=V + 1).astype(np.float64)
+    check("the extension symbol never occurs in train", raw_ext[V] == 0.0)
+    with np.errstate(divide="ignore"):
+        unsmoothed_ext = np.log(raw_ext / raw_ext.sum())
+    smoothed_ext = unigram_log_probs(train_ids, V + 1)
+    print(f"      unseen symbol: unsmoothed {-unsmoothed_ext[V]:.4f} nats, "
+          f"smoothed {float(-smoothed_ext[V]):.4f} nats (= ln(N+V+1) = "
+          f"{math.log(len(train_ids) + V + 1):.4f})")
+    check("unsmoothed: one unseen character costs +inf nats",
+          math.isinf(float(-unsmoothed_ext[V])))
+    check("smoothed: the same character costs exactly ln(N+V+1) nats",
+          float(-smoothed_ext[V]), math.log(len(train_ids) + V + 1), tol=1e-12)
 
     # -----------------------------------------------------------------------
     print("\n--- temperature and top-k, on synthetic logits (no model needed) ---")
@@ -603,18 +650,51 @@ if __name__ == "__main__":
     print(f"      ln(V)        = {math.log(V):.6f} nats")
     print(f"      difference   = {init_nats - math.log(V):+.6f} nats "
           f"({abs(init_nats - math.log(V)) / math.log(V) * 100:.2f}%)")
-    # The rigorous version of "to within sampling error". Writing d_i for the
-    # logit deviations from their own mean, log-sum-exp(z) - mean(z) - ln(V)
-    # lies in [0, max d] by convexity, so |CE - ln(V)| <= 2*max|d|. Measure
-    # the spread of the logits and the deviation must fit inside it.
+    # Where the 0.0058-nat gap lives, exactly. Writing d_i for a position's
+    # logit deviations from their own mean, convexity sandwiches
+    # log-sum-exp(z) - mean(z) - ln(V) into [0, max_i d_i], hence
+    # |CE - ln(V)| <= 2*max|d|. Both sides are computed over ALL the windows
+    # the eval loss averages (max|d| = 0.4140 here), and the log-sum-exp is
+    # recovered from the hand-written loss (lse = CE + z_target), so a broken
+    # normalization axis in cross_entropy_nats breaks the sandwich.
+    starts_w = range(0, len(val_ids) - BLOCK - 1, BLOCK)
+    xw = np.stack([val_ids[i:i + BLOCK] for i in starts_w])
+    yw = np.stack([val_ids[i + 1:i + 1 + BLOCK] for i in starts_w])
     with torch.no_grad():
-        z_init = model(torch.from_numpy(val_ids[:BLOCK][None, :])).numpy()
-    max_dev = float(np.abs(z_init - z_init.mean(axis=-1, keepdims=True)).max())
-    print(f"      logit spread at init: max|z - mean(z)| = {max_dev:.4f}")
-    check("|loss - ln(V)| fits inside the bound 2*max|z - mean z|",
-          abs(init_nats - math.log(V)) < 2 * max_dev)
-    # And the practical version: with std-0.02 output weights the deviation
-    # measured here is 0.0058 nats, i.e. 0.18% of ln(V).
+        z_init = model(torch.from_numpy(xw)).numpy().astype(np.float64)
+    dev = z_init - z_init.mean(axis=-1, keepdims=True)
+    max_dev = float(np.abs(dev).max())
+    z_tgt = np.take_along_axis(z_init, yw[..., None], axis=-1)[..., 0]
+    lse_gap = cross_entropy_nats(z_init, yw) + z_tgt \
+        - z_init.mean(axis=-1) - math.log(V)
+    print(f"      logit spread at init: max|z - mean(z)| = {max_dev:.4f} "
+          f"over all {xw.shape[0]} eval windows")
+    check("convexity sandwich: lse(z) - mean(z) - ln(V) >= 0 at every position",
+          float(lse_gap.min()) >= -1e-9)
+    check("...and <= max_i d_i at every position",
+          float((dev.max(axis=-1) - lse_gap).min()) >= -1e-9)
+    check("hence |loss - ln(V)| <= 2*max|d|  (0.0058 vs 0.8280 here)",
+          abs(init_nats - math.log(V)) <= 2 * max_dev)
+    # That sandwich is SCALE-COVARIANT: max|d| grows with the logits, so it
+    # holds at ANY init scale and can never catch an over-scaled output layer.
+    # Demonstrate: multiply the head by 25 (std 0.02 -> 0.5). The bound still
+    # holds while the loss lands miles from ln(V) — measured 6.37 nats, a
+    # 3.07-nat miss — and only the absolute tolerance below catches it.
+    over = copy.deepcopy(model)
+    with torch.no_grad():
+        over.head.weight.mul_(25.0)
+    over_nats, _, _ = eval_split(over, val_ids, BLOCK)
+    with torch.no_grad():
+        z_over = over(torch.from_numpy(xw)).numpy().astype(np.float64)
+    over_dev = float(np.abs(z_over - z_over.mean(axis=-1, keepdims=True)).max())
+    print(f"      head x25: loss {over_nats:.4f} vs ln(V) {math.log(V):.4f}, "
+          f"yet 2*max|d| = {2 * over_dev:.4f} still covers the miss")
+    check("the covariant bound also holds for the over-scaled init — useless as a guard",
+          abs(over_nats - math.log(V)) <= 2 * over_dev)
+    check("the over-scaled init misses ln(V) by more than 1 nat (measured 3.07)",
+          abs(over_nats - math.log(V)) > 1.0)
+    # The scale-SENSITIVE check is the absolute one: with std-0.02 output
+    # weights the deviation measured here is 0.0058 nats, 0.18% of ln(V).
     check("loss at init equals ln(V) to within 0.01 nats",
           init_nats, math.log(V), tol=0.01)
 
@@ -655,7 +735,8 @@ if __name__ == "__main__":
     tr_curve = [c[1] for c in curve]
     va_curve = [c[2] for c in curve]
     best_i = int(np.argmin(va_curve))
-    print(f"      best val {va_curve[best_i]:.4f} at step {steps_arr[best_i]}, "
+    print(f"      best val {va_curve[best_i]:.4f} at step {steps_arr[best_i]} "
+          f"(= {bits_per_byte(va_curve[best_i]):.4f} bits/byte), "
           f"final val {va_curve[-1]:.4f}")
 
     # "The loss went down" is worth nothing unless it went below a model that

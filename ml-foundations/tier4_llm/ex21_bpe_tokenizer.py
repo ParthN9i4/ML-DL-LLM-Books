@@ -292,7 +292,9 @@ def merge(ids, pair, new_id):
     """Replace every non-overlapping occurrence of `pair` with `new_id`.
 
     Left to right and non-overlapping: on [a, a, a] with pair (a, a) exactly
-    one merge fires, which is what makes the token-count bookkeeping exact.
+    one merge fires even though get_stats counted two occurrences — which is
+    why the token-count bookkeeping is exact only for pairs whose two halves
+    DIFFER, and an over-estimate for self-pairs (the main block measures both).
     """
     out = []
     i = 0
@@ -337,8 +339,8 @@ def train_bpe(data, vocab_size):
 
 def build_vocab(merges):
     """Replay the merge list to get id -> bytes. The vocabulary is derived."""
-    vocab = {i: bytes([i]) for i in range(256)}
     # === YOUR CODE HERE ===
+    vocab = {i: bytes([i]) for i in range(256)}
     for (a, b), new_id in merges:
         vocab[new_id] = vocab[a] + vocab[b]
     return vocab
@@ -483,6 +485,21 @@ if __name__ == "__main__":
           len(over) > 0)
     check("training ended with the length the log predicts",
           len(train_ids), log[-1]["n_after"])
+    # None of the other checks pin down the SELECTION rule: a trainer that
+    # merges the SECOND-most-frequent pair at every step still has exact
+    # bookkeeping, non-increasing counts, monotone compression and perfect
+    # round trips (verified by mutation — it passes every other check in this
+    # file). So replay training with an independent argmax: at every step the
+    # pair actually merged must carry the largest count in a freshly
+    # recomputed stats table.
+    ids_k = list(data)
+    greedy_ok = True
+    for (pair_k, nid_k), r in zip(merges, log):
+        st = get_stats(ids_k)
+        greedy_ok &= (st.get(pair_k, 0) == max(st.values()) == r["count"])
+        ids_k = merge(ids_k, pair_k, nid_k)
+    check("every merge really did consume the most frequent pair available",
+          greedy_ok)
 
     print("\n--- encode reproduces training exactly (the order check) ---")
     t0 = time.perf_counter()
@@ -530,6 +547,13 @@ if __name__ == "__main__":
     # 256 ids cover every possible byte, so no input can be unrepresentable.
     check("all 256 byte values are in the vocabulary",
           all(bytes([i]) in set(vocab.values()) for i in range(256)))
+    # ...and the totality claim exercised end to end: each of the 256 possible
+    # byte values, pushed through encode and decode as a character (latin-1 is
+    # a bijection between bytes and U+0000..U+00FF), comes back exactly. A
+    # string compare, so a broken decode FAILs here instead of raising.
+    check("every possible byte value round-trips through encode/decode",
+          all(decode(encode(bytes([i]).decode("latin-1"), merges), vocab)
+              == bytes([i]).decode("latin-1") for i in range(256)))
 
     print("\n--- compression: bytes per token as the vocabulary grows ---")
     # log[k]["n_after"] IS the corpus length at vocab size 257 + k, so the whole
@@ -595,21 +619,25 @@ if __name__ == "__main__":
                 break
         if witness:
             break
-    print(f"      same digit count, different token count: {witness} -> "
-          f"{tok_counts[witness[0]]} vs {tok_counts[witness[1]]} tokens")
+    # The check runs BEFORE anything dereferences `witness`, so a trainer
+    # rewrite that kills the property produces a FAIL, not an IndexError.
     check("two equally long numbers cost different numbers of tokens",
-          witness is not None and tok_counts[witness[0]] != tok_counts[witness[1]])
+          witness is not None)
+    if witness:
+        print(f"      same digit count, different token count: {witness} -> "
+              f"{tok_counts[witness[0]]} vs {tok_counts[witness[1]]} tokens")
     # Sharper: token cost is not even MONOTONE in digit count. Find a longer
     # number that costs strictly fewer tokens than a shorter one.
     short = ["56", "78", "99", "42"]
     short_counts = {p: len(encode(p, merges)) for p in short}
     inversion = [(a, b) for a in probes for b in short
                  if len(a) > len(b) and tok_counts[a] < short_counts[b]]
-    a, b = inversion[0]
-    print(f"      inversion: {a} ({len(a)} digits) costs {tok_counts[a]} tokens, "
-          f"{b} ({len(b)} digits) costs {short_counts[b]}")
     check("a longer number can cost strictly fewer tokens than a shorter one",
           len(inversion) > 0)
+    if inversion:
+        a, b = inversion[0]
+        print(f"      inversion: {a} ({len(a)} digits) costs {tok_counts[a]} tokens, "
+              f"{b} ({len(b)} digits) costs {short_counts[b]}")
     # And why arithmetic suffers: column alignment is destroyed. The byte
     # offsets where tokens start differ between two 4-digit numbers, so the
     # model cannot line up units with units.
@@ -659,14 +687,26 @@ if __name__ == "__main__":
           f"with their own bare spelling: {disjoint[:8]}")
     check("a word and the same word after a space can share zero embedding rows",
           len(disjoint) > 0)
-    # And the same word at a line start (no space) goes back to the bare form:
-    # the tokenization of a word is a function of its left context.
-    w0 = disjoint[0]
-    print(f"      {w0!r}: after a space {encode(' ' + w0, merges)}, "
-          f"after a newline {encode(chr(10) + w0, merges)[1:]}, "
-          f"bare {encode(w0, merges)}")
-    check("after a newline the word falls back to its bare tokenization",
-          encode("\n" + w0, merges)[1:], encode(w0, merges))
+    # A newline is left context too, and it does NOT reset the word to its
+    # bare form: with no pre-tokenization the newline fuses into the following
+    # word exactly like the space did, because the vocabulary learns tokens
+    # that START with a newline. ANY left-context byte can change a word's
+    # tokenization — which is the pathology pre-tokenization exists to stop.
+    nl_tokens = sorted(v for v in vocab_bytes if v.startswith(b"\n") and len(v) > 1)
+    print(f"      {len(nl_tokens)} learned tokens start with a newline, e.g. "
+          + ", ".join(repr(v.decode('utf-8', 'replace')) for v in nl_tokens[-3:]))
+    nl_fused = [w for w in disjoint
+                if encode("\n" + w, merges)[1:] != encode(w, merges)]
+    check("a newline fuses into the following word just like a space does",
+          len(nl_fused) > 0)
+    if nl_fused:
+        w0 = nl_fused[0]
+        ids_nl = encode("\n" + w0, merges)
+        print(f"      {w0!r}: bare {encode(w0, merges)}, after a space "
+              f"{encode(' ' + w0, merges)}, after a newline {ids_nl} "
+              f"{[decode([i], vocab) for i in ids_nl]}")
+        print(f"      {len(nl_fused)}/{len(disjoint)} of the disjoint words "
+              f"tokenize differently after a newline than bare")
 
     print("\n--- pathology (c): near-duplicate tokens ---")
     case_dups = sorted(
@@ -676,18 +716,30 @@ if __name__ == "__main__":
     print(f"      {len(case_dups)} vocab pairs differ only by case, e.g. "
           + ", ".join(f"{v!r}/{w!r}" for v, w in case_dups[:4]))
     check("the vocabulary spends slots on case duplicates", len(case_dups) > 0)
-    near_dup_slots = len(space_dups) + len(case_dups)
-    print(f"      {near_dup_slots} of {len(merges)} learned tokens "
-          f"({100 * near_dup_slots / len(merges):.1f}%) are near-duplicates of another token")
+    # Count distinct TOKENS: each case pair contributes TWO learned tokens,
+    # and a union guards against a token appearing in both lists.
+    near_dup_tokens = set(space_dups) | {t for pr in case_dups for t in pr}
+    print(f"      {len(near_dup_tokens)} of {len(merges)} learned tokens "
+          f"({100 * len(near_dup_tokens) / len(merges):.1f}%) are near-duplicates of another token")
     # Also the pre-tokenization story: with no regex split, merges cross word
-    # boundaries and produce tokens with an interior space. GPT-2's regex exists
-    # precisely to forbid these.
-    interior_space = [v for v in vocab_bytes if len(v) > 1 and b" " in v[1:]]
-    print(f"      {len(interior_space)} tokens contain an INTERIOR space "
-          f"(pre-tokenization would forbid these), e.g. "
+    # boundaries and produce tokens with an interior space. GPT-2's regex
+    # forbids exactly these — but it deliberately PERMITS whole runs of
+    # whitespace as single chunks (its real vocabulary holds multi-space
+    # indentation tokens), so whitespace-only entries are counted separately.
+    interior_space = sorted(v for v in vocab_bytes
+                            if len(v) > 1 and b" " in v[1:] and v.strip() != b"")
+    ws_runs = sorted(v for v in vocab_bytes
+                     if len(v) > 1 and b" " in v[1:] and v.strip() == b"")
+    print(f"      {len(interior_space)} tokens hold an interior space inside "
+          f"non-space text (pre-tokenization would forbid these), e.g. "
           + ", ".join(repr(v.decode('utf-8', 'replace')) for v in interior_space[:4]))
+    print(f"      plus {len(ws_runs)} whitespace-run tokens, which GPT-2's "
+          f"regex would keep, e.g. "
+          + ", ".join(repr(v.decode('utf-8', 'replace')) for v in ws_runs[:3]))
     check("without pre-tokenization, merges cross word boundaries",
           len(interior_space) > 0)
+    check("whitespace runs merge into tokens of their own (these GPT-2 keeps)",
+          len(ws_runs) > 0)
 
     # -----------------------------------------------------------------------
     # BREAK IT

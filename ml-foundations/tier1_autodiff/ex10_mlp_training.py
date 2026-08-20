@@ -25,16 +25,27 @@ every 0 < a < 4 they are a complex pair of modulus EXACTLY 1 — measured over 1
 steps as 1.000000, to within 3e-5. The bug does not merely slow training: the error
 rotates forever and never decays, at ANY learning rate, however small.
 
-The step size is admissible. On a smooth loss, GD converges iff eta < 2/L with L
-the top Hessian eigenvalue, and there is no grey zone. The file builds the full
-Hessian of a 17-parameter net at a genuine minimum (L = 0.5262, so 2/L = 3.8008)
-and watches eta*L = 1.9999 contract while 2.0001 grows, each at the predicted
-rate |1 - eta*L| to four digits.
+The step size is admissible. For a QUADRATIC — equivalently, inside the local
+quadratic model at a fixed minimum, which is exactly what the last section
+measures — GD converges iff eta < 2/L with L the top Hessian eigenvalue, and
+there is no grey zone. The file builds the full Hessian of a 17-parameter net at
+a genuine minimum (L = 0.5262, so 2/L = 3.8008) and watches eta*L = 1.9999
+contract while 2.0001 grows, each at the predicted rate |1 - eta*L| to four
+digits. That "iff" stops being a theorem the moment the loss stops being
+quadratic: on a real net L is a function of where you are, so eta*L moves as you
+train. The MLP here trains at lr = 1.0 to 99.75% while its own eta*L wanders
+from 1.75 at step 50 up past 3.86 at step 110 and back to 2.10 at step 150 —
+above its own stated threshold for most of that stretch, still converging. That
+is the edge of stability, and it is exactly the grey zone the quadratic
+statement forbids.
 
-The third claim is why the first is not enough. The big net trains at lr = 1.0
-with a measured eta*L of 2.100, just past the edge, so our trajectory and
-torch's — identical to 6.7e-17 for fifty steps — sit 5.7e-3 apart by step 150.
-Correct gradients do not buy a reproducible trajectory.
+The third claim is why the first is not enough. Along that same lr = 1.0 run our
+trajectory and torch's — identical to 3.7e-16 after fifty steps, and 6.7e-17
+after one — sit ~5.7e-3 apart by step 150: eta*L crosses 2 near step 60, and
+from step 80 to 120 the accumulated rounding grows about 2.09x per step, inside
+the |1 - eta*L| band of [1.05, 2.87] measured over exactly those steps. (The
+step-150 figure depends on BLAS rounding; the mechanism does not.) Correct
+gradients do not buy a reproducible trajectory.
 
 To learn: replace each function body with `pass` and reimplement.
 """
@@ -551,7 +562,12 @@ if __name__ == "__main__":
                            float(np.abs(b.data.ravel() - m.bias.detach().numpy()).max()))
                        for m, W, b in zip(layers, ref.W, ref.b))
 
-        gap = {}
+        # eta*L is NOT a constant of the run, so measure it ALONG the way rather
+        # than once at the end. GROW is the window over which the gap actually
+        # grows geometrically; the endpoints are read off the gap table below.
+        MARKS = (1, 50, 60, 80, 90, 100, 110, 120, 150)
+        GROW = (80, 120)
+        gap, curv = {}, {}
         for k in range(1, 151):
             tnet.zero_grad()
             lossfn(tnet(Xt_), yt_).backward()
@@ -560,25 +576,60 @@ if __name__ == "__main__":
                     m.weight -= LR * m.weight.grad
                     m.bias -= LR * m.bias.grad
             train(ref, X, y, lr=LR, steps=1)
-            if k in (1, 50, 150):
+            if k in MARKS:
                 gap[k] = param_gap()
-        for k in (1, 50, 150):
-            print(f"      after {k:3d} identical steps, worst parameter gap: {gap[k]:.3e}")
+                curv[k] = top_curvature(ref, X, y)          # restores the params
+        for k in MARKS:
+            print(f"      after {k:3d} identical steps: gap {gap[k]:.3e}   "
+                  f"eta*L {LR * curv[k]:.4f}")
         check("one SGD step reproduces torch to machine precision", gap[1] < 1e-15)
         check("and 50 steps still do", gap[50] < 1e-14)
-        # After 50 steps the gap explodes by ~13 orders. That is NOT a wrong
-        # gradient — a wrong gradient shows up as drift from step 1. It is the
-        # loop amplifying its own rounding, and the reason is measurable: the
-        # top curvature times the learning rate has crossed 2, so the top mode
-        # of the loss is expanding. Same threshold as the break-it section below.
-        lam_top = top_curvature(ref, X, y)
-        print(f"      top Hessian eigenvalue here: {lam_top:.3f}, so eta*L = {LR*lam_top:.3f}")
-        print(f"      -> |1 - eta*L| = {abs(1 - LR*lam_top):.3f} per step: the gap grows "
-              f"by {gap[150]/gap[50]:.1e}x between step 50 and 150")
+
+        # The gap explodes by ~13 orders between step 50 and step 150. That is
+        # NOT a wrong gradient — a wrong gradient shows up as drift from step 1.
+        # It is the loop amplifying its own rounding, and the mechanism is
+        # measurable: the top curvature times the learning rate crosses 2, so
+        # the top mode expands by |1 - eta*L| per step. But eta*L is not fixed:
+        # it is 1.75 at step 50, crosses 2 near step 60, peaks near 3.87 at step
+        # 110, then drops back near 2.05. So there is no single rate to quote —
+        # the honest claim is that the OBSERVED per-step growth over the window
+        # where the gap is actually growing lies inside the |1 - eta*L| range
+        # measured over that same window. That band is a derived bound, not a
+        # guessed threshold: both ends come from top_curvature above.
+        lo, hi = GROW
+        rate = (gap[hi] / gap[lo]) ** (1.0 / (hi - lo))
+        band = [abs(1 - LR * curv[k]) for k in MARKS if lo <= k <= hi]
+        print(f"      eta*L crosses 2 between step 50 ({LR*curv[50]:.3f}) and step 60 "
+              f"({LR*curv[60]:.3f}), and is still {LR*curv[150]:.3f} at step 150")
+        print(f"      the gap is still at rounding level at step {lo} ({gap[lo]:.3e}) "
+              f"even though eta*L passed 2 twenty steps earlier: 1e-16 takes a while "
+              f"to become visible")
+        print(f"      -> from step {lo} to {hi} the gap grows {rate:.3f}x per step, "
+              f"inside the measured |1 - eta*L| band [{min(band):.3f}, {max(band):.3f}]")
+        print(f"      -> total growth between step 50 and 150: {gap[150]/gap[50]:.1e}x")
         check("no drift for 50 steps (so the gradients agree exactly)", gap[50] / gap[1] < 100)
+        check("the gap is still pure rounding at step 80", gap[80] < 1e-14)
         check("then rounding is amplified geometrically", gap[150] / gap[50] > 1e9)
         check("because this run sits past the eta*L = 2 stability edge",
-              LR * lam_top > 2.0)
+              LR * curv[150] > 2.0)
+        # ... but it was NOT past the edge at step 50: eta*L moves along the run,
+        # which is the whole difference between a real loss and a quadratic.
+        check("and eta*L crossed that edge mid-run, not at the start",
+              LR * curv[50] < 2.0 < LR * curv[60])
+        check("the observed amplification matches the measured |1 - eta*L| band",
+              min(band) <= rate <= max(band))
+
+        # And the sting in the tail. This is the SAME net, the SAME lr = 1.0 that
+        # reached 99.75% earlier: eta*L sits above 2 for most of steps 60-150 and
+        # the run trains anyway. "GD converges iff eta < 2/L" is a theorem about a
+        # FIXED quadratic; on a loss whose curvature moves it is the edge of
+        # stability instead, and there very much is a grey zone.
+        print(f"      note: eta*L > 2 from step 60 on, yet this same net at this same "
+              f"lr reached {mlp_acc*100:.2f}% above — 'converges iff eta < 2/L' is a")
+        print(f"      statement about a FIXED quadratic, not about a loss whose "
+              f"curvature moves. Section (b) below measures it where it IS exact.")
+        check("edge of stability: eta*L is past 2 and the same run trains anyway",
+              LR * curv[110] > 2.0 and mlp_acc > 0.99)
     else:                                                # pragma: no cover
         print("  ....  [skipped: torch not installed] torch cross-check")
 
@@ -608,11 +659,19 @@ if __name__ == "__main__":
     w_star = get_flat(small)
     P = w_star.size
     DELTA = 1e-4                                         # the perturbation we study
-    newton_residual = float(np.linalg.norm(np.linalg.solve(H, g_star)))
+    newton_step = np.linalg.solve(H, g_star)
+    newton_residual = float(np.linalg.norm(newton_step))
+    # How far our w* sits from the TRUE minimizer, measured along v_top. Every
+    # error trajectory below decays to this value rather than to zero, so it is
+    # the floor any "it contracted" claim has to stay clear of. It is computed,
+    # not assumed.
+    FLOOR = abs(float(newton_step @ v_top))
     print(f"      minimized a {P}-parameter net: loss {loss_star:.6f}, "
           f"||grad|| {np.linalg.norm(g_star):.1e}")
     print(f"      remaining Newton step {newton_residual:.1e}, i.e. w* is pinned "
-          f"{DELTA/newton_residual:.0f}x tighter than the {DELTA:.0e} perturbation below")
+          f"{DELTA/newton_residual:.1e}x tighter than the {DELTA:.0e} perturbation below")
+    print(f"      that residual is {FLOOR:.2e} along v_top — the floor every "
+          f"contracting run below decays to")
     print(f"      Hessian eigenvalues in [{evals[0]:.6f}, {evals[-1]:.6f}], "
           f"condition number {evals[-1]/evals[0]:.0f}")
     print(f"      -> L = {L:.4f} and the stability threshold 2/L = {2/L:.4f}")
@@ -678,23 +737,70 @@ if __name__ == "__main__":
         """Larger root modulus of r^2 - (2-a) r + 1 = 0."""
         return float(np.abs(np.roots([1.0, -(2.0 - a), 1.0])).max())
 
-    print(f"      {'eta*L':>7} {'GD |e_200|/|e_0|':>18} {'accum |e| ratio':>17} "
-          f"{'pred |r|':>9} {'meas rate':>10}")
+    # Correct GD along v_top has the closed form e_K = (1 - a)^K e_0 in the
+    # quadratic model, so that is what we compare against — not a threshold.
+    # The horizon K is DERIVED rather than fixed, because the closed form is
+    # only honest inside a window:
+    #
+    #   * upper end: |e| must stay inside the bowl. CAP = 1e-3 is 1600x smaller
+    #     than ||w*|| = 1.61, so the Hessian is still the one we measured. Run
+    #     an expanding case deeper and it saturates the tanh, the quadratic model
+    #     stops applying, AND the number becomes chaotic: at a = 3.9 a 200-step
+    #     run multiplies any last-bit difference in w* by 2.9^200 ~ 1e92, which
+    #     is how this table used to produce a different answer on every run.
+    #   * lower end: |e| must stay a factor 1e3 above FLOOR (4.7e-12, computed
+    #     above), or we are just measuring how well we located w*.
+    #
+    # The accumulating column can safely use all 200 steps precisely because its
+    # modulus is 1 — it neither grows out of the bowl nor decays into the floor.
+    CAP = 1e-3
+
+    def horizon(a, delta):
+        """Largest K with the predicted |e_K| = delta*|1-a|^K inside [1e3*FLOOR, CAP]."""
+        r = abs(1.0 - a)
+        if r == 0.0:
+            return 1                # 1 - a = 0: one step is exact, nothing to grow
+        if r == 1.0:
+            return 200              # neutral mode, no window to derive
+        end = CAP if r > 1.0 else 1e3 * FLOOR
+        return int(np.clip(np.floor(np.log(end / delta) / np.log(r)), 1, 200))
+
+    print(f"      {'eta*L':>7} {'K':>4} {'GD |e_K|/|e_0|':>16} {'pred (1-a)^K':>14} "
+          f"{'accum |e| ratio':>16} {'pred |r|':>9} {'meas rate':>10}")
     for a in (0.25, 1.0, 1.9, 3.0, 3.9):
+        # An expanding run has to start small enough to survive K steps inside
+        # the bowl; a contracting one starts at the perturbation we advertised.
+        delta = DELTA if a < 2 else 1e-9
+        K = horizon(a, delta)
         with np.errstate(over="ignore", invalid="ignore"):
-            e_gd = gd_along_top(a / L, 200, zero=True)
+            e_gd = gd_along_top(a / L, K, delta=delta, zero=True)
             e_ac = gd_along_top(a / L, 200, zero=False)
-        gd_ratio = abs(e_gd[-1]) / DELTA
+        gd_ratio = e_gd[-1] / delta
+        pred = (1.0 - a) ** K
         env_early = float(np.abs(e_ac[10:30]).max())
         env_late = float(np.abs(e_ac[170:190]).max())
         rate = (env_late / env_early) ** (1 / 160)
-        print(f"      {a:7.2f} {gd_ratio:18.3e} {env_late/env_early:17.4f} "
-              f"{accum_root(a):9.4f} {rate:10.6f}")
-        # Correct GD obeys its own threshold: contracts below eta*L = 2, not above.
-        if a < 2:
-            check(f"eta*L={a}: correct GD contracts the error", gd_ratio < 1e-6)
+        print(f"      {a:7.2f} {K:4d} {gd_ratio:16.3e} {pred:14.3e} "
+              f"{env_late/env_early:16.4f} {accum_root(a):9.4f} {rate:10.6f}")
+        if a == 1.0:
+            # 1 - a = 0: the quadratic model says GD lands ON the minimum in a
+            # single step along this mode. What is left is the cubic term of the
+            # loss, so the residual must be O(delta^2), not O(delta) -- and
+            # delta^2 = 1e-8 is the bound, derived, no threshold invented.
+            check("eta*L=1.0: correct GD lands on the minimum in ONE step",
+                  abs(e_gd[0]) < delta ** 2)
+            r_big = abs(gd_along_top(a / L, 1, delta=3 * delta)[0])
+            check("eta*L=1.0: and the leftover residual is O(delta^2), not O(delta)",
+                  r_big / abs(e_gd[0]), 9.0, tol=1.0)
         else:
-            check(f"eta*L={a}: correct GD diverges (past 2/L)", gd_ratio > 1e3)
+            check(f"eta*L={a}: correct GD follows e_K = (1 - eta*L)^K e_0",
+                  gd_ratio, pred, tol=0.02 * abs(pred))
+        # Correct GD obeys its own threshold: contracts below eta*L = 2, not
+        # above. Both bounds below are the closed form, not invented magnitudes.
+        if a < 2:
+            check(f"eta*L={a}: correct GD contracts the error", abs(gd_ratio) < 1e-3)
+        else:
+            check(f"eta*L={a}: correct GD diverges (past 2/L)", abs(gd_ratio) > 1e3)
         # Accumulating: modulus exactly 1 at every one of these step sizes.
         check(f"eta*L={a}: accumulating rotates instead of contracting (|r| = 1)",
               rate, accum_root(a), tol=1e-3)

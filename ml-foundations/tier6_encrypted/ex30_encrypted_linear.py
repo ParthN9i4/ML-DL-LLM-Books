@@ -430,7 +430,8 @@ if __name__ == "__main__":
     # The group law is what makes baby-step/giant-step legal at all.
     check("rot(rot(x,a),b) == rot(x,a+b)",
           decrypt(ct_rot(ct_rot(ct, 5), 6)), decrypt(ct_rot(ct, 11)), tol=1e-15)
-    print(f"      after 4 ops on one 16-slot ciphertext: "
+    print(f"      after {METER.rotations + METER.ct_mults + METER.pt_mults} metered ops "
+          f"on one 16-slot ciphertext: "
           f"{METER.rotations} rotations, {METER.ct_mults} ct-mults, {METER.pt_mults} pt-mults")
 
     print("\n--- rotate-and-sum: a total you are not allowed to index ---")
@@ -528,7 +529,10 @@ if __name__ == "__main__":
         METER.reset()
         out = encrypted_layer(encrypt(x0, 10), W, bvec, coeffs, folded=folded)
         consumed = 10 - out.level
-        n_paid = sum(1 for _, cost, _ in METER.ledger if cost == 1)
+        # Count OPERATIONS that dropped a level, from the meter -- not ledger
+        # lines. The ledger's "W @ x" line collapses all d plaintext-diagonal
+        # multiplies (each on its own parallel branch) into one labelled stage.
+        n_paid = METER.ct_mults + METER.pt_mults
         ledgers[sched] = (consumed, n_paid, decrypt(out)[:d])
         print(f"\n      [{sched}]")
         print(f"      {'stage':<52} {'lvl':>4} {'left':>5}")
@@ -536,8 +540,9 @@ if __name__ == "__main__":
             print(f"      {lab:<52} {cost:4d} {left:5d}")
         print(f"      {'':<52} {'---':>4}")
         print(f"      {'critical-path depth of the layer':<52} {consumed:4d}")
-        print(f"      ({n_paid} operations each charge a level, but they sit on")
-        print(f"       parallel branches -- depth is the LONGEST path, not the count)")
+        print(f"      ({n_paid} multiplies each charge a level -- the W @ x line alone")
+        print(f"       is {d} of them -- but they sit on parallel branches:")
+        print(f"       depth is the LONGEST path, not the count)")
 
     ref_layer = plain_layer(x0, W, bvec, coeffs)
     check("encrypted layer (naive schedule) matches numpy",
@@ -549,12 +554,33 @@ if __name__ == "__main__":
     check("naive schedule costs 4 levels", ledgers["naive schedule"][0], 4)
     check("folding the plaintext coefficient saves exactly one level",
           ledgers["folded schedule"][0], ledgers["naive schedule"][0] - 1)
+    # Closed form: the matvec pays d plaintext multiplies, the cubic pays
+    # 3 plaintext + 2 ct x ct = 5 more, under EITHER schedule -- folding
+    # re-orders the multiplies, it does not remove any.
+    check("both schedules pay exactly d+5 level-charging multiplies",
+          ledgers["naive schedule"][1] == d + 5
+          and ledgers["folded schedule"][1] == d + 5)
     check("depth is the critical path, not the number of paid operations",
           ledgers["folded schedule"][1] > ledgers["folded schedule"][0])
 
     print("\n--- the packing decision, in slots actually used ---")
     dp, npack = 8, 64                      # 8 features, 64 slots per ciphertext
     Mp = rng.standard_normal((dp, dp)) / np.sqrt(dp)
+
+    def slot_census(cts_list):
+        """MEASURE a layout's footprint from the ciphertext objects themselves:
+        how many ciphertexts, how many slots they occupy in total, and how many
+        DISTINCT payload values they hold across the whole layout. A slot
+        counts as useful iff its value is nonzero (the payload is continuous
+        random data, never exactly 0.0 -- zeros are padding) and not a repeat
+        of any other slot anywhere in the layout (replication is redundancy,
+        not information). Nothing here is a hardcoded claim about what the
+        layout SHOULD cost."""
+        ncts = len(cts_list)
+        total = sum(c.n for c in cts_list)
+        payload = np.concatenate([c.slots[c.slots != 0.0] for c in cts_list])
+        useful = int(np.unique(payload).size)
+        return ncts, total, useful
 
     def pack_report(B):
         """Cost and utilisation of three layouts for B records of dp features."""
@@ -564,33 +590,40 @@ if __name__ == "__main__":
 
         # (1) row packing: one record per ciphertext, replicated to fill so the
         #     cyclic rotation stays inside the record.
+        cts_row = [encrypt(np.tile(X[r], npack // dp), 10) for r in range(B)]
         METER.reset()
         worst = 0.0
         for r in range(B):
-            o = matvec_diagonal(encrypt(np.tile(X[r], npack // dp), 10), Mp)
+            o = matvec_diagonal(cts_row[r], Mp)
             worst = max(worst, float(np.max(np.abs(decrypt(o)[:dp] - ref[r]))))
-        rows.append(("row: one record per ciphertext", B, B * dp, METER.rotations,
-                     METER.pt_mults, worst))
+        ncts, total, useful = slot_census(cts_row)
+        rows.append(("row: one record per ciphertext", ncts, useful, total,
+                     METER.rotations, METER.pt_mults, worst))
 
         # (2) diagonal/block packing: npack//dp records per ciphertext.
         per = npack // dp
+        cts_blk = [encrypt(X[c0:c0 + per].ravel(), 10, n=npack)
+                   for c0 in range(0, B, per)]
         METER.reset()
         worst = 0.0
-        for c0 in range(0, B, per):
+        for i, c0 in enumerate(range(0, B, per)):
             blk = X[c0:c0 + per]
-            o = matvec_blockpacked(encrypt(blk.ravel(), 10, n=npack), Mp, dp)
+            o = matvec_blockpacked(cts_blk[i], Mp, dp)
             worst = max(worst, float(np.max(np.abs(
                 decrypt(o).reshape(per, dp)[:len(blk)] - ref[c0:c0 + per]))))
+        ncts, total, useful = slot_census(cts_blk)
         rows.append(("diagonal: %d records per ciphertext" % per,
-                     B // per, B * dp, METER.rotations, METER.pt_mults, worst))
+                     ncts, useful, total, METER.rotations, METER.pt_mults, worst))
 
         # (3) column packing: one ciphertext per feature, records across slots.
+        cts_col = [encrypt(X[:, f], 10, n=npack) for f in range(dp)]
         METER.reset()
-        cts = [encrypt(X[:, f], 10, n=npack) for f in range(dp)]
-        outs = matvec_columnpacked(cts, Mp)
+        outs = matvec_columnpacked(cts_col, Mp)
         got = np.stack([decrypt(o)[:B] for o in outs], axis=1)
-        rows.append(("column: one ciphertext per feature", dp, B * dp,
-                     METER.rotations, METER.pt_mults, float(np.max(np.abs(got - ref)))))
+        ncts, total, useful = slot_census(cts_col)
+        rows.append(("column: one ciphertext per feature", ncts, useful, total,
+                     METER.rotations, METER.pt_mults,
+                     float(np.max(np.abs(got - ref)))))
         return rows
 
     all_rows = {}
@@ -600,19 +633,22 @@ if __name__ == "__main__":
               f"{'pt-mul':>7} {'rot/rec':>8} {'max err':>9}")
         rows = pack_report(B)
         all_rows[B] = rows
-        for name, ncts, useful, rots, ptm, err in rows:
-            util = 100.0 * useful / (ncts * npack)
+        for name, ncts, useful, total, rots, ptm, err in rows:
+            util = 100.0 * useful / total
             print(f"      {name:<36} {ncts:4d} {util:6.1f}% {rots:6d} {ptm:7d} "
                   f"{rots / B:8.2f} {err:9.1e}")
 
     check("all three layouts compute the same matmul",
-          max(r[5] for B in (8, 64) for r in all_rows[B]) < 1e-12)
+          max(r[6] for B in (8, 64) for r in all_rows[B]) < 1e-12)
     # Utilisation is the mechanism: a layout wastes slots exactly in proportion
-    # to how much of the ciphertext holds distinct useful values.
-    util_row_8 = 100.0 * all_rows[8][0][2] / (all_rows[8][0][1] * npack)
-    util_diag_8 = 100.0 * all_rows[8][1][2] / (all_rows[8][1][1] * npack)
-    util_col_8 = 100.0 * all_rows[8][2][2] / (all_rows[8][2][1] * npack)
-    util_col_64 = 100.0 * all_rows[64][2][2] / (all_rows[64][2][1] * npack)
+    # to how much of the ciphertext holds distinct useful values. These four
+    # numbers are MEASURED by slot_census from the encrypted slots, then
+    # compared to each layout's closed form -- a layout that pads, replicates,
+    # or allocates ciphertexts differently moves the measured side.
+    util_row_8 = 100.0 * all_rows[8][0][2] / all_rows[8][0][3]
+    util_diag_8 = 100.0 * all_rows[8][1][2] / all_rows[8][1][3]
+    util_col_8 = 100.0 * all_rows[8][2][2] / all_rows[8][2][3]
+    util_col_64 = 100.0 * all_rows[64][2][2] / all_rows[64][2][3]
     print(f"\n      row packing holds {dp} distinct values in {npack} slots: "
           f"{util_row_8:.1f}% used, {100 - util_row_8:.1f}% wasted")
     check("row packing wastes n-d of every n slots",
@@ -624,11 +660,11 @@ if __name__ == "__main__":
           util_col_8, 100.0 * 8 / npack, tol=1e-9)
     check("column-packing utilisation reaches 100% exactly at B=n",
           util_col_64, 100.0, tol=1e-9)
-    check("column packing needs ZERO rotations", all_rows[64][2][3], 0)
+    check("column packing needs ZERO rotations", all_rows[64][2][4], 0)
     # And the honest caveat: packing 8 records per ciphertext does NOT make it
     # 8x cheaper, because the masked block rotation costs 2 rotations per
     # diagonal instead of 1. Measure the real factor.
-    speedup = all_rows[64][0][3] / all_rows[64][1][3]
+    speedup = all_rows[64][0][4] / all_rows[64][1][4]
     print(f"      packing {npack // dp} records per ciphertext cuts rotations "
           f"{speedup:.1f}x, not {npack // dp}x --")
     print(f"      the masked block rotation costs 2 rotations per diagonal, not 1.")
@@ -701,12 +737,22 @@ if __name__ == "__main__":
         print(f"        -> ran out at: {op}")
         check(f"{sched}: layers completed == budget // depth-per-layer",
               layers, budget // cost)
+        # WHICH op runs out is forced by the leftover budget, so pin it exactly.
+        # Naive leaves 10 - 2*4 = 2 levels: the matvec takes one, x^2 the other,
+        # and x^3 finds none. Folded leaves 10 - 3*3 = 1: the matvec takes it,
+        # and x^2 finds none. An off-by-one in either depth guard shifts the
+        # failing op by one step and this comparison catches it.
+        want = (f"L{layers + 1} act: x^2  (ct x ct)" if folded
+                else f"L{layers + 1} act: x^3 = x^2 * x  (ct x ct)")
         check(f"{sched}: the failure names the exact operation that ran out",
-              op.startswith(f"L{layers + 1} "))
+              op, want)
     lf, _, _ = run_until_exhausted(x0, W, bvec, coeffs, budget, True)
     ln, _, _ = run_until_exhausted(x0, W, bvec, coeffs, budget, False)
     print(f"      one level of scheduling buys a whole extra layer: {lf} vs {ln}")
     check("the folded schedule fits one more layer from the same budget", lf, ln + 1)
+    # The boundary itself: level 1 is still alive -- exactly one multiply left.
+    check("a level-1 ciphertext can still multiply exactly once",
+          ct_mul(encrypt(x0, 1), encrypt(x0, 1)).level, 0)
     # Once levels are gone, no multiplication is possible at all -- that is the
     # hard wall a leveled scheme has, and the reason bootstrapping exists.
     dead = encrypt(x0, 0)

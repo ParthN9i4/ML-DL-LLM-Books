@@ -21,15 +21,28 @@ zero-padded to at least 2T so the wraparound of the circular convolution falls
 off the end — drop the padding and 65% of the output's peak amplitude is garbage.
 
 The second half is about where A comes from. A random stable A gives you a state
-that forgets in some arbitrary way. HiPPO-LegS gives you the matrix for which the
-state IS the coefficient vector of the input history projected onto Legendre
-polynomials under an exponentially decaying measure — the optimal N-number
-summary of everything you have seen. That is not a slogan here: the file builds
-the Legendre memory functionals in closed form and measures how much of them the
-state can linearly reconstruct, for HiPPO versus random stable matrices of the
-same size and the same slowest decay rate. HiPPO recovers them to 1.0% relative
-error; the best of five random draws manages 40%. The residual 1.0% is not a
-modelling gap either — refine dt and it shrinks like the quadrature error it is.
+that forgets in some arbitrary way. HiPPO-LegS gives you the matrix whose own
+impulse response IS the Legendre memory basis:
+
+    [exp(A t) B]_n  =  sqrt(2n+1) P_n(2 e^-t - 1) e^-t      exactly, for all t
+
+so the continuous state is literally the coefficient vector of the input history
+projected onto Legendre polynomials under an exponentially decaying measure. That
+is an identity, not a slogan, and the file checks it against a matrix exponential
+(agreement 9.0e-15). It is the one statement here that pins down every entry of A
+and every entry of B: perturb either and it breaks by ~0.2 in absolute terms.
+
+Discretizing turns the identity into an approximation, so the file also measures
+how much of the Legendre functionals the discrete state can linearly reconstruct
+— 1.0% relative error for HiPPO-LegS against 40% for the best of five random
+stable matrices with the same slowest decay rate, and the 1.0% shrinks like the
+quadrature error it is when dt is refined. But be careful what that second number
+proves. It is a minimum over ALL readout matrices, so it can only see the span of
+the state's memory, and that span is fixed by A's spectrum alone. The file makes
+the limitation explicit rather than hiding it: plain diag(-1,...,-N), with none of
+HiPPO's off-diagonal structure and a different B entirely, scores 0.9958% where
+HiPPO scores 0.9958% — the same to six figures. The exp(A t) B identity is what
+distinguishes HiPPO-LegS; the reconstruction gap only distinguishes its spectrum.
 
 Discretization is the joint between the two halves. The bilinear (Tustin) map
 sends each continuous eigenvalue lambda to (1 + dt*lambda/2)/(1 - dt*lambda/2),
@@ -50,6 +63,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from check import check, summary  # noqa: E402
 
 try:
+    import scipy.linalg as scipy_linalg
     import scipy.signal as scipy_signal
     HAVE_SCIPY = True
 except ImportError:                                    # pragma: no cover
@@ -85,7 +99,13 @@ def hippo_legs(N):
 
 
 def hippo_legs_B(N):
-    """The matching input vector B[n] = sqrt(2n+1), as a column."""
+    """The matching input vector B[n] = sqrt(2n+1), as a column.
+
+    Not a free choice: B is exactly the value of the Legendre memory basis at
+    lag zero, since P_n(1) = 1 makes sqrt(2n+1) P_n(2 e^-0 - 1) e^-0 = sqrt(2n+1).
+    Get it wrong and exp(A t) B stops being the Legendre basis, which the check
+    "exp(A t) B is the Legendre memory basis" below detects directly.
+    """
     n = np.arange(N, dtype=np.float64)
     # === YOUR CODE HERE ===
     return np.sqrt(2 * n + 1.0).reshape(N, 1)
@@ -181,16 +201,24 @@ def next_pow2(n):
     return p
 
 
-def conv_fft(K, u, pad=True):
+def conv_fft(K, u, pad=True, n=None):
     """View 3: the same convolution through the FFT, in O(T log T).
 
     THE detail: the FFT computes a CIRCULAR convolution of length n. The linear
     convolution of two length-T signals has 2T-1 samples, so unless n >= 2T-1
     the tail wraps around and lands on top of the beginning of the output. With
     `pad=False` you get exactly that bug, which the break-it section measures.
+
+    `n` overrides the transform length outright. That is not decoration: it is
+    how the checks below establish that the padding is real, by sweeping n and
+    finding the exact length at which the wraparound disappears (2T-1, not 2T
+    and not T). Without an n knob the only honest statement about the default
+    padding would be one about next_pow2, which is a fact about arithmetic
+    rather than a fact about this function.
     """
     T = len(u)
-    n = next_pow2(2 * T) if pad else T
+    if n is None:
+        n = next_pow2(2 * T) if pad else T
     # === YOUR CODE HERE ===
     return np.fft.irfft(np.fft.rfft(K, n) * np.fft.rfft(u, n), n)[:T]
 
@@ -202,10 +230,17 @@ def conv_fft(K, u, pad=True):
 def state_kernel_matrix(A_bar, B_bar, T):
     """M[:, s] = A_bar^s B_bar — the map from history to state.
 
-    Since x_t = sum_s A_bar^s B_bar u_{t-s}, the rows of M are exactly the T
-    linear functionals of the past that the N-dimensional state retains. Any
-    question of the form "can the state answer X about the history?" is the
-    question "does X lie in the row space of M?".
+    Since x_t = sum_s A_bar^s B_bar u_{t-s}, M is N x T and its N rows are
+    exactly the N linear functionals of the last T inputs that the
+    N-dimensional state retains. Any question of the form "can the state answer
+    X about the history?" is the question "does X lie in the row space of M?" —
+    a space of dimension at most N, however long T is.
+
+    Note the indexing: column s must be A_bar^s B_bar, so column 0 is B_bar
+    itself, not A_bar B_bar. An off-by-one here shifts every column by one power
+    of A_bar, which leaves the row space untouched and is therefore invisible to
+    any row-space metric; the checks below compare columns 0 and 1 against
+    B_bar and A_bar B_bar directly for that reason.
     """
     N = A_bar.shape[0]
     M = np.empty((N, T))
@@ -220,18 +255,33 @@ def state_kernel_matrix(A_bar, B_bar, T):
 def legendre_memory_basis(N, T, dt):
     """The functionals HiPPO-LegS is designed to compute, in closed form.
 
-    LegS integrates dx/dt = -(1/t)(A x + B u) so that x(t) holds the Legendre
-    coefficients of u over [0, t]. Substituting t = exp(tau) removes the 1/t and
-    leaves the LTI system dx/dtau = A x + B u, i.e. the fixed-A system S4
-    actually runs — with real time warped exponentially. Written back in terms of
-    the discrete lag s (so real-time position is exp(-s*dt) of the window), the
-    coefficient functionals are
+    LegS integrates dx/dt = (1/t)(A x + B u) so that x(t) holds the Legendre
+    coefficients of u over [0, t]. Mind the sign: the HiPPO paper writes
+    dx/dt = -(1/t)(A_paper x + B_paper u) with a POSITIVE-diagonal A_paper, and
+    hippo_legs above returns -A_paper (diagonal -(n+1)) so that the eigenvalues
+    are already the stable -1..-N. The minus sign has been absorbed once;
+    writing it again would give a system with eigenvalues +1..+N that explodes.
+    Substituting t = exp(tau) removes the 1/t and leaves the LTI system
+    dx/dtau = A x + B u, i.e. the fixed-A system S4 actually runs — with real
+    time warped exponentially. Written back in terms of the discrete lag s (so
+    real-time position is exp(-s*dt) of the window), the coefficient functionals
+    are
 
         L[n, s] = sqrt(2n+1) * P_n(2 exp(-s*dt) - 1) * exp(-s*dt) * dt
 
     which is precisely "project the history onto Legendre polynomials under an
     exponentially decaying memory measure". P_n is the Legendre polynomial;
     the exp(-s*dt) factor is the decaying measure and also the time warp.
+
+    That the sign is right is not a matter of opinion: with this A and this B,
+
+        L[:, s] == dt * exp(A * s*dt) @ B                    exactly,
+
+    which is the impulse response of the very LTI system the rest of the file
+    discretizes and runs. The checks below verify it against a matrix
+    exponential, which is what makes this function gradeable at all — every
+    other use of L is a min-over-readouts that a rescaled or mis-argued L would
+    sail straight through.
     """
     s = np.arange(T)
     # === YOUR CODE HERE ===
@@ -254,6 +304,14 @@ def memory_reconstruction_error(M, L):
     whether the row space of M contains the row space of L, i.e. whether the
     state retains the information at all. For white-noise inputs it is exactly
     the relative RMS error of estimating the Legendre coefficients from x.
+
+    Know what it CANNOT see, because it is easy to over-read. The row space of
+    M = [A_bar^s B_bar] is spanned by the modes of A_bar that B_bar excites, so
+    for any B with no zero components the metric depends on A_bar's SPECTRUM and
+    nothing else — not on A's off-diagonal structure, not on B, not on the
+    ordering of the eigenvalues, not on an off-by-one in the powers of A_bar,
+    and not on any rescaling of L. The checks below demonstrate that with a
+    diagonal matrix rather than asserting it away.
     """
     # === YOUR CODE HERE ===
     W, *_ = np.linalg.lstsq(M.T, L.T, rcond=None)
@@ -286,9 +344,26 @@ def _timed(fn):
 
 
 def ops_direct(T):
-    """Multiply-adds in the direct causal convolution: T(T+1)/2."""
+    """Multiply-adds in the direct causal convolution: T(T+1)/2.
+
+    Count it off conv_direct: lag s updates y[s:], which is T - s multiply-adds,
+    so the total is sum_{s=0}^{T-1} (T - s) = T(T+1)/2. The check below compares
+    this closed form against that sum, brute-forced.
+    """
     # === YOUR CODE HERE ===
     return 0.5 * T * (T + 1.0)
+
+
+def ops_np_convolve(T):
+    """Multiply-adds in np.convolve(K, u) for two length-T signals: T*T.
+
+    np.convolve returns the FULL linear convolution — all 2T-1 output lags,
+    including the acausal tail that conv_direct never computes — so it does
+    len(K)*len(u) = T^2 multiply-adds, about TWICE the causal T(T+1)/2 that
+    ops_direct counts. np.convolve is what the sweep below actually times, so
+    this, not ops_direct, is the count that belongs next to its wall clock.
+    """
+    return float(T) * float(T)
 
 
 def ops_fft(T):
@@ -322,6 +397,13 @@ if __name__ == "__main__":
     check("every eigenvalue is real and negative (triangular => the diagonal)",
           np.sort(eig_A.real), -(np.arange(N)[::-1] + 1.0), tol=1e-9)
     check("slowest mode decays at rate 1", float(np.max(eig_A.real)), -1.0, tol=1e-9)
+    # B is not a free parameter either: it is the lag-zero value of the Legendre
+    # memory basis, sqrt(2n+1) P_n(1) = sqrt(2n+1). Nothing downstream that
+    # minimizes over readouts can see B at all, so check the closed form here.
+    print(f"      B[:4] = {B[:4, 0]} = sqrt(2n+1)")
+    check("B[n] = sqrt(2n+1), as a column",
+          B, np.sqrt(2 * np.arange(N) + 1.0).reshape(N, 1), tol=1e-15)
+    check("B is a column, not a row", B.shape, (N, 1))
 
     print("\n--- discretization: the bilinear (Tustin) transform ---")
     A_bar, B_bar = discretize_bilinear(A, B, dt)
@@ -401,7 +483,27 @@ if __name__ == "__main__":
     check("direct convolution == FFT convolution", y_fft, y_dir, tol=1e-10)
     # The recurrence is O(N) memory and strictly sequential; the convolution
     # touches every timestep in parallel. Same numbers, opposite execution model.
-    check("the FFT was padded to at least 2T", next_pow2(2 * T) >= 2 * T)
+
+    # How much padding is ENOUGH? Not a matter of taste: sweep the transform
+    # length n and find the first one whose output matches the direct causal
+    # convolution. The linear convolution of two length-T signals occupies
+    # indices 0..2T-2, and circular wraparound of period n folds index t+n onto
+    # index t, so the contamination vanishes exactly when n >= 2T-1 and not one
+    # sample sooner. This is what the `n` argument of conv_fft is for — it tests
+    # conv_fft itself, where `next_pow2(2*T) >= 2*T` would only test next_pow2.
+    err_at_n = {n_: float(np.abs(conv_fft(K, u, n=n_) - y_dir).max())
+                for n_ in range(T, 2 * T + 2)}
+    n_min = min((n_ for n_, e in err_at_n.items() if e < 1e-10), default=-1)
+    print(f"      exactness vs FFT length n:  n=T {err_at_n[T]:.3e},  "
+          f"n=2T-2 {err_at_n[2 * T - 2]:.3e},  n=2T-1 {err_at_n[2 * T - 1]:.3e}")
+    check("the FFT is exact from n = 2T-1 onwards, and not before",
+          n_min, 2 * T - 1)
+    check("...so one sample short of that it is still wrong",
+          err_at_n[2 * T - 2] > 1e-8)
+    check("conv_fft's own default padding reaches at least 2T-1 (it is exact)",
+          float(np.abs(conv_fft(K, u) - y_dir).max()) < 1e-10)
+    check("...while pad=False (n = T) is not",
+          float(np.abs(conv_fft(K, u, pad=False) - y_dir).max()) > 0.1)
 
     if HAVE_SCIPY:
         y_scipy = scipy_signal.fftconvolve(K, u)[:T]
@@ -416,6 +518,61 @@ if __name__ == "__main__":
     print("\n--- what HiPPO is FOR: the state as a Legendre memory ---")
     L = legendre_memory_basis(N, T, dt)
     M = state_kernel_matrix(A_bar, B_bar, T)
+
+    # (i) The exact statement, before any discretization or any least squares.
+    #     The continuous impulse response of (A, B) IS the Legendre memory basis:
+    #         [exp(A t) B]_n = sqrt(2n+1) P_n(2 e^-t - 1) e^-t,
+    #     i.e. L[:, s] == dt * exp(A * s*dt) @ B for every lag s. Two completely
+    #     independent computations — a Legendre polynomial evaluation on one side,
+    #     a matrix exponential of A on the other — so it pins down every entry of
+    #     A, every entry of B, and every factor in L at once. Nothing downstream
+    #     does: the reconstruction metric below minimizes over readouts and so is
+    #     blind to B, to A's off-diagonal part, and to any rescaling of L.
+    L_from_expm = np.column_stack([dt * (expm_via_eig(A, s * dt) @ B)[:, 0]
+                                   for s in range(T)])
+    gap_expm = float(np.abs(L - L_from_expm).max())
+    print(f"      L[:, s] vs dt*exp(A s dt)B over all {T} lags: "
+          f"max|diff| = {gap_expm:.2e}   (|L|max = {np.abs(L).max():.4f})")
+    # Tolerance 1e-5, not 1e-14: expm_via_eig diagonalizes a strongly non-normal
+    # triangular matrix, and the eigenvector matrix has condition number ~8e10
+    # here, so the numpy-only reference is good to about 3e-7. That is still
+    # seven orders of magnitude below the ~2e-1 that any wrong A, wrong B, wrong
+    # Legendre argument, missing sqrt(2n+1) or missing dt produces.
+    check("exp(A t) B IS the Legendre memory basis (numpy eigendecomposition)",
+          gap_expm < 1e-5)
+    check("...and that identity fixes B: exp(A t) with B=ones is a different basis",
+          float(np.abs(L - np.column_stack(
+              [dt * (expm_via_eig(A, s * dt) @ np.ones((N, 1)))[:, 0]
+               for s in range(T)])).max()) > 0.1)
+    check("...and fixes A's off-diagonal part: diag(A) alone is a different basis",
+          float(np.abs(L - np.column_stack(
+              [dt * (expm_via_eig(np.diag(np.diag(A)), s * dt) @ B)[:, 0]
+               for s in range(T)])).max()) > 0.1)
+    if HAVE_SCIPY:
+        L_pade = np.column_stack([dt * (scipy_linalg.expm(A * (s * dt)) @ B)[:, 0]
+                                  for s in range(T)])
+        print(f"      same identity against scipy's Pade expm: "
+              f"max|diff| = {float(np.abs(L - L_pade).max()):.2e}")
+        check("scipy.linalg.expm confirms it to machine precision",
+              L, L_pade, tol=1e-12)
+
+    # (ii) The closed form of L, term by term, against hand-written P_0, P_1, P_2.
+    z = np.exp(-np.arange(T) * dt)
+    check("L[0] = 1 * P_0(2z-1) * z * dt", L[0], z * dt, tol=1e-15)
+    check("L[1] = sqrt(3) * P_1(2z-1) * z * dt",
+          L[1], np.sqrt(3.0) * (2 * z - 1.0) * z * dt, tol=1e-15)
+    check("L[2] = sqrt(5) * P_2(2z-1) * z * dt",
+          L[2], np.sqrt(5.0) * (1.5 * (2 * z - 1.0) ** 2 - 0.5) * z * dt, tol=1e-15)
+    check("L is N x T", L.shape, (N, T))
+
+    # (iii) M's indexing, which the row-space metric below cannot see: shifting
+    #       every column by one power of A_bar leaves the row space identical.
+    check("M[:, 0] == B_bar (not A_bar B_bar)", M[:, 0], B_bar[:, 0], tol=0.0)
+    check("M[:, 1] == A_bar B_bar", M[:, 1], (A_bar @ B_bar)[:, 0], tol=1e-15)
+    check("M[:, 7] == A_bar^7 B_bar",
+          M[:, 7], (np.linalg.matrix_power(A_bar, 7) @ B_bar)[:, 0], tol=1e-14)
+    check("M is N x T", M.shape, (N, T))
+
     err_hippo = memory_reconstruction_error(M, L)
     errs_rand = []
     worst_shift = 0.0
@@ -438,6 +595,38 @@ if __name__ == "__main__":
     check("no random stable A of the same size and decay rate comes close",
           best_rand > 10 * err_hippo)
 
+    # (iv) Now say honestly what that 1.0%-vs-40% gap does and does not show. It
+    #      is a min over all readouts, so it sees the SPAN of {A_bar^s B_bar} and
+    #      nothing else — and that span is the span of A_bar's modes. Take
+    #      diag(-1, ..., -N): same eigenvalues, none of HiPPO's off-diagonal
+    #      structure, and pair it with B = ones so B is wrong too. Then scramble
+    #      the eigenvalue order for good measure. Both score the same as HiPPO to
+    #      six significant figures. So the random baseline is a comparison of
+    #      SPECTRA, not of structure. The exp(A t) B identity checked above is
+    #      the part that is about structure.
+    A_diag = np.diag(-(np.arange(N) + 1.0))
+    A_scram = np.diag(-(np.arange(N)[::-1] + 1.0))
+    ones_B = np.ones((N, 1))
+    errs_same_spectrum = []
+    for A_alt, B_alt, label in ((A_diag, ones_B, "diag(-1..-N), B=ones"),
+                                (A_scram, ones_B, "diag(-N..-1), B=ones"),
+                                (A_diag, B, "diag(-1..-N), B=sqrt(2n+1)")):
+        Aa, Ba = discretize_bilinear(A_alt, B_alt, dt)
+        e_alt = memory_reconstruction_error(state_kernel_matrix(Aa, Ba, T), L)
+        errs_same_spectrum.append(e_alt)
+        print(f"        {label:<28} {e_alt*100:7.3f}%   "
+              f"(HiPPO {err_hippo*100:.3f}%)")
+    check("a plain diagonal matrix with the SAME SPECTRUM scores identically — "
+          "so this metric measures the spectrum, not HiPPO's structure",
+          np.array(errs_same_spectrum) / err_hippo, np.ones(3), tol=1e-6)
+    # The contrast: that same diagonal matrix is NOT the Legendre memory system.
+    gap_diag = float(np.abs(L - np.column_stack(
+        [dt * (expm_via_eig(A_diag, s * dt) @ ones_B)[:, 0] for s in range(T)])).max())
+    print(f"      but exp(A t)B for diag(-1..-N), B=ones misses the Legendre basis "
+          f"by {gap_diag:.3f} (HiPPO: {gap_expm:.1e})")
+    check("...while the impulse-response identity separates them by 4 orders of magnitude",
+          gap_diag > 1e4 * gap_expm)
+
     # And the residual is discretization error, not a modelling gap: refine dt
     # (holding the time horizon T*dt fixed) and it shrinks toward zero.
     print(f"      {'dt':>9} {'T':>6}   reconstruction error")
@@ -452,20 +641,36 @@ if __name__ == "__main__":
           errs_dt[0] / errs_dt[1] > 3.0)
 
     print("\n--- the FFT crossover ---")
+    # First the flop counts, which are exact and do not depend on the machine.
+    check("ops_direct(T) == sum_s (T - s), brute-forced",
+          [ops_direct(t) for t in (1, 2, 5, 17, 256)],
+          [float(sum(t - s for s in range(t))) for t in (1, 2, 5, 17, 256)], tol=0.0)
+    check("ops_direct(5) == 15", ops_direct(5), 15.0, tol=0.0)
+    check("np.convolve does ~2x that, since it also emits the acausal tail",
+          ops_np_convolve(4096) / ops_direct(4096), 2.0, tol=1e-3)
+    check("np.convolve's output length is 2T-1, conv_direct's is T",
+          [len(np.convolve(K, u)), len(conv_direct(K, u))], [2 * T - 1, T], tol=0.0)
+
     print(f"      {'T':>7} {'direct ms':>11} {'FFT ms':>9} {'direct/FFT':>11}"
-          f" {'predicted':>10}")
+          f" {'flops d/f':>10}")
     sweep = (32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384)
     measured = []
     for T_b in sweep:
-        # Plain gaussian taps on purpose: a geometrically decaying kernel drops
-        # into SUBNORMAL floats past ~1e-308, and subnormal arithmetic is orders
-        # of magnitude slower on x86 — which showed up here as a 3.1 s direct
-        # convolution at T=16384 and would have been read as "O(T^2) bites".
+        # Plain gaussian taps on purpose. A geometrically decaying kernel (the
+        # real K decays like rho^s with rho = 0.95) sinks below ~2.2e-308 and
+        # spends its tail in SUBNORMAL floats, which x86 handles in microcode —
+        # and the recurrence never underflows the tail to zero, since rounding
+        # pins the smallest subnormals in place. Measured here: the real K
+        # extended to T = 16384 has 2226 subnormal taps, which turn a ~34 ms
+        # direct convolution into ~225 ms, a ~6.6x slowdown that has nothing to
+        # do with O(T^2) and would be misread as it.
         Kb = rng.standard_normal(T_b)
         ub = rng.standard_normal(T_b)
-        # np.convolve is the same O(T^2) algorithm as conv_direct, but with the
-        # inner loop in C — the fair baseline. (conv_direct's python-level loop
-        # over lags would lose on interpreter overhead, not on arithmetic.)
+        # np.convolve runs the same O(T^2) schoolbook algorithm as conv_direct
+        # with the inner loop in C — the fair baseline for wall clock.
+        # (conv_direct's python-level loop over lags would lose on interpreter
+        # overhead, not on arithmetic.) It is NOT the same amount of arithmetic:
+        # it produces all 2T-1 lags, so the count beside it is ops_np_convolve.
         reps = 100 if T_b <= 1024 else (20 if T_b <= 4096 else 8)
 
         def best_of(fn):
@@ -479,26 +684,35 @@ if __name__ == "__main__":
         t_ff = best_of(lambda: conv_fft(Kb, ub))
         measured.append((T_b, t_dir, t_ff))
         print(f"      {T_b:7d} {t_dir*1e3:11.4f} {t_ff*1e3:9.4f} {t_dir/t_ff:11.2f}"
-              f" {ops_direct(T_b)/ops_fft(T_b):10.2f}")
+              f" {ops_np_convolve(T_b)/ops_fft(T_b):10.2f}")
     check("conv_direct and np.convolve compute the same thing",
           conv_direct(K, u), np.convolve(K, u)[:T], tol=1e-12)
 
-    # Where the two op counts cross, versus where the two clocks cross.
-    predicted_cross = next(t for t in sweep if ops_fft(t) < ops_direct(t))
+    # Where the two op counts cross, versus where the two clocks cross. The
+    # first is arithmetic and is asserted; the second is a wall clock on a
+    # shared machine and is only printed. With a single exception — the
+    # slope-gap floor at the end of this section, a bound derived from the flop
+    # counts and passed with >2x headroom — nothing from time.perf_counter()
+    # is used as a pass/fail threshold: a loaded scheduler must not be able to
+    # fail this file.
+    predicted_cross = next(t for t in sweep if ops_fft(t) < ops_np_convolve(t))
     measured_cross = next(t for t, td, tf in measured if td > tf)
     ratio_small = measured[0][1] / measured[0][2]
     ratio_large = measured[-1][1] / measured[-1][2]
     print(f"      predicted crossover (flop counts): T = {predicted_cross}")
-    print(f"      measured  crossover (wall clock):  T = {measured_cross}")
+    print(f"      measured  crossover (wall clock):  T = {measured_cross} "
+          f"(later: the FFT's constant factor is the larger one)")
     print(f"      direct/FFT time ratio: {ratio_small:.2f} at T={sweep[0]}, "
-          f"{ratio_large:.1f} at T={sweep[-1]}")
-    check("at small T the direct convolution is genuinely faster", ratio_small < 1.0)
-    check("at large T the FFT wins by more than an order of magnitude", ratio_large > 10.0)
-    check("the measured crossover lands within a factor of 4 of the predicted one",
-          0.25 <= measured_cross / predicted_cross <= 4.0)
-    # Does the wall clock actually follow O(T^2) and O(T log T)? Fit log-log
-    # slopes over the large-T end of the sweep, where interpreter and FFT-plan
-    # overheads are negligible. d log t / d log T should be 2 for the direct
+          f"{ratio_large:.1f} at T={sweep[-1]}  [reported, not asserted]")
+    check("the flop counts cross at T = 128: T^2 beats the FFT below it, loses above",
+          [ops_fft(64) < ops_np_convolve(64), ops_fft(128) < ops_np_convolve(128)],
+          [False, True])
+    check("...and the FFT's advantage keeps growing: >10x fewer flops by T=16384",
+          ops_np_convolve(16384) / ops_fft(16384) > 10.0)
+
+    # Does the cost actually follow O(T^2) and O(T log T)? Fit log-log slopes
+    # over the large-T end of the sweep, where interpreter and FFT-plan
+    # overheads are negligible. d log C / d log T is exactly 2 for the direct
     # convolution and just over 1 for the FFT (the log T factor lifts it above 1).
     tail = measured[-4:]     # T = 2048 .. 16384
     lg = np.log2
@@ -509,13 +723,26 @@ if __name__ == "__main__":
     Ts = [r[0] for r in tail]
     slope_dir = loglog_slope(Ts, [r[1] for r in tail])
     slope_fft = loglog_slope(Ts, [r[2] for r in tail])
+    slope_pred_dir = loglog_slope(Ts, [ops_np_convolve(t) for t in Ts])
     slope_pred_fft = loglog_slope(Ts, [ops_fft(t) for t in Ts])
-    print(f"      log-log slope over T={Ts[0]}..{Ts[-1]}: "
-          f"direct {slope_dir:.2f} (theory 2.00), FFT {slope_fft:.2f} "
-          f"(theory {slope_pred_fft:.2f} from the flop count)")
-    check("direct convolution measures as O(T^2)", slope_dir, 2.0, tol=0.4)
-    check("FFT convolution measures as O(T log T), not O(T^2)",
-          slope_fft, slope_pred_fft, tol=0.4)
+    print(f"      log-log slope over T={Ts[0]}..{Ts[-1]}:")
+    print(f"        flop counts: direct {slope_pred_dir:.2f}, FFT {slope_pred_fft:.2f}"
+          f"   (gap {slope_pred_dir - slope_pred_fft:.2f})")
+    print(f"        wall clock:  direct {slope_dir:.2f}, FFT {slope_fft:.2f}"
+          f"   (gap {slope_dir - slope_fft:.2f})")
+    check("the direct flop count is exactly quadratic", slope_pred_dir, 2.0, tol=1e-12)
+    check("the FFT flop count grows as T log T, strictly slower than T^2",
+          1.0 < slope_pred_fft < 1.3)
+    # The one wall-clock assertion, and it is a DERIVED floor rather than a
+    # guessed one: the two flop counts differ in exponent by
+    # slope_pred_dir - slope_pred_fft = 0.90, so if the wall clock tracks the
+    # arithmetic at all, its exponent gap must be a substantial fraction of
+    # that. Half is the floor. Over ten consecutive runs on this machine the
+    # measured gap was 1.07 to 1.20 — never within 2x of the floor — and a
+    # heavily loaded machine pushed it UP, to 1.38, not down: load inflates the
+    # large-T direct times most, which steepens the direct slope.
+    check("the measured cost gap is at least half the flop-count exponent gap",
+          slope_dir - slope_fft > 0.5 * (slope_pred_dir - slope_pred_fft))
 
     # -----------------------------------------------------------------------
     # BREAK IT
@@ -554,12 +781,32 @@ if __name__ == "__main__":
           f"({err.max()/scale / (err_dec/scale_dec):.0f}x smaller, relatively)")
     check("a decaying signal hides the missing padding almost completely",
           err_dec / scale_dec < 1e-3 * (err.max() / scale))
-    # It is only ALMOST invisible: what remains is set by the kernel's own tail,
-    # since the surviving terms pair small u-indices with large lags of K.
-    tail_bound = float(np.abs(K[T // 2:]).max() * np.abs(u_decay).sum())
-    print(f"        residual {err_dec:.3e} is bounded by max|K[s>T/2]| * sum|u| "
-          f"= {tail_bound:.3e} — it is the KERNEL tail, not the signal")
-    check("the surviving error is explained by the kernel tail", err_dec < tail_bound)
+    # It is only ALMOST invisible, and what remains is the KERNEL's tail, not
+    # the signal. Do not dress that up as a bound: max|K[s>=T/2]| * sum|u| is a
+    # heuristic SCALE, not an upper bound at all — the contamination at output t
+    # is sum_{s>t} K[s] u[T+t-s], a sum over every lag s > t including the small
+    # lags where |K| is far larger than max|K[s>=T/2]|. Test the causal claim
+    # instead, by deleting the tail and seeing the residual go with it.
+    K_no_tail = K.copy()
+    K_no_tail[T // 2:] = 0.0
+    err_no_tail = float(np.abs(conv_fft(K_no_tail, u_decay, pad=False)
+                               - conv_direct(K_no_tail, u_decay)).max())
+    print(f"        residual {err_dec:.3e}; zero K's tail (s >= {T//2}) and it falls "
+          f"to {err_no_tail:.3e}, a factor of {err_dec/err_no_tail:.1f}")
+    print(f"        (for scale only, max|K[s>=T/2]| * sum|u| = "
+          f"{np.abs(K[T // 2:]).max() * np.abs(u_decay).sum():.3e} — a heuristic, "
+          f"not a bound)")
+    # Floor derived, not guessed: with the signal already down to ~5.6e-04 past
+    # the halfway point, the wrapped terms that survive are the ones pairing the
+    # LAST lags of K with the FIRST samples of u, so removing K[s >= T/2] must
+    # remove most of the residual. Measured factor 24.3; assert 10x, which no
+    # incidental change reaches (and note the naive "bound" above goes to ZERO
+    # under this same edit while the error does not, which is how you know it
+    # was never a bound).
+    check("the surviving error really is the kernel tail: zeroing it kills 10x of it",
+          err_dec / err_no_tail > 10.0)
+    check("...but not all of it — lags below T/2 still wrap a little",
+          err_no_tail > 0.0)
 
     # (b) An unstable A. Flip the sign of HiPPO-LegS: eigenvalues become +1..+N,
     #     the Mobius map sends them outside the unit disc, and the state norm

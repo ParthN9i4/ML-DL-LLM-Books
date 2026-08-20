@@ -38,6 +38,7 @@ low-pass operation whose 14->16->14 round trip loses 1.2% of a smooth table and
 To learn: replace each function body with `pass` and reimplement.
 """
 
+import math
 import os
 import sys
 
@@ -155,7 +156,14 @@ def self_attention(z, Wq, Wk, Wv):
 def _cubic_taps(t, A=-0.75):
     """Keys' cubic convolution kernel at the four tap distances t+1, t, 1-t, 2-t.
 
-    A = -0.75 is the constant OpenCV, PIL and torch all use for `bicubic`.
+    A = -0.75 is the constant OpenCV and torch use for `bicubic`, and it is the
+    one this file matches to 1e-12. Pillow is the notable exception: its
+    BICUBIC filter uses A = -0.5, so a PIL-resized position table does NOT
+    agree with a torch-resized one — measured offline against Pillow 12.3 on a
+    32->64 upsample of data in [0,1), interior max|PIL - ours| is 6.7e-08 with
+    A = -0.5 but 7.3e-02 with A = -0.75 (and max|PIL - torch| is the same
+    7.3e-02). If a ported ViT's interpolated position table is subtly off, this
+    constant is the first thing to check.
     """
     def wk(x):
         x = abs(x)
@@ -243,11 +251,13 @@ def attention_flops(T, D):
 # ---------------------------------------------------------------------------
 
 def patchify_wrong_axis_order(x, P):
-    """THE bug: reshape straight to (T, C*P*P) and skip the transpose.
+    """THE bug: flatten H and W together, then chop the pixel stream into T.
 
-    The shapes are identical to `patchify`'s, so nothing raises. What you get
-    is not a grid of PxP blocks but a stack of horizontal STRIPS: each token is
-    (P*P/W) whole image rows.
+    `patchify` splits H into (gh, P) and W into (gw, P) BEFORE grouping; this
+    collapses H and W into one flat axis of H*W pixels per channel and cuts it
+    into T contiguous chunks of P*P. The shapes come out identical to `patchify`'s, so
+    nothing raises. What you get is not a grid of PxP blocks but a stack of
+    horizontal STRIPS: each token is (P*P/W) whole image rows.
     """
     N, C, H, W = x.shape
     gh, gw = H // P, W // P
@@ -380,6 +390,55 @@ if __name__ == "__main__":
     Wk = rng.standard_normal((D, D)) / np.sqrt(D)
     Wv = rng.standard_normal((D, D)) / np.sqrt(D)
 
+    # Before measuring what self-attention does to a permutation, pin down that
+    # it IS attention. Permutation equivariance holds for essentially any
+    # token-symmetric map, so on its own it says nothing about the 1/sqrt(d)
+    # scale, which axis the softmax normalises, or which projection feeds Q, K
+    # and V. Hand-compute a 3-token, d=2 case in pure Python — no numpy, no
+    # reuse of this file's `softmax` — and demand agreement. The three weight
+    # matrices are deliberately all different (so swapping any two changes the
+    # answer), d = 2 makes 1/sqrt(d) differ from 1/d, and the scores are
+    # asymmetric so normalising over queries differs from normalising over keys.
+    z_h = [[1.0, 0.0], [0.0, 2.0], [1.0, 1.0]]
+    Wq_h = [[1.0, 0.5], [0.0, 1.0]]
+    Wk_h = [[0.0, 1.0], [1.0, -0.5]]
+    Wv_h = [[2.0, 0.0], [0.0, -1.0]]
+
+    def _mm(a, b):
+        return [[sum(a[i][t] * b[t][j] for t in range(len(b)))
+                 for j in range(len(b[0]))] for i in range(len(a))]
+
+    q_h, k_h, v_h = _mm(z_h, Wq_h), _mm(z_h, Wk_h), _mm(z_h, Wv_h)
+    hand = []
+    for i_h in range(3):
+        sc = [sum(q_h[i_h][c] * k_h[j][c] for c in range(2)) / math.sqrt(2.0)
+              for j in range(3)]
+        ex = [math.exp(t_) for t_ in sc]
+        tot = sum(ex)
+        hand.append([sum((ex[j] / tot) * v_h[j][m] for j in range(3))
+                     for m in range(2)])
+    got_h = self_attention(np.array(z_h), np.array(Wq_h), np.array(Wk_h),
+                           np.array(Wv_h))
+    print(f"      hand-computed 3-token attention row 0 = "
+          f"({hand[0][0]:.6f}, {hand[0][1]:.6f}); self_attention gives "
+          f"({got_h[0, 0]:.6f}, {got_h[0, 1]:.6f})")
+    check("self_attention == softmax(Q K^T / sqrt(d)) V, hand-computed",
+          got_h, np.array(hand), tol=1e-14)
+
+    # And a property that pins the softmax axis on the real-sized problem: the
+    # weights normalise over KEYS, so every output row is a CONVEX combination
+    # of the value rows and cannot leave their per-coordinate range.
+    z_dbg = add_cls_and_pos(tok_reshape, cls, pos)
+    v_dbg = z_dbg @ Wv
+    out_dbg = self_attention(z_dbg, Wq, Wk, Wv)
+    lo_v = v_dbg.min(axis=1, keepdims=True)
+    hi_v = v_dbg.max(axis=1, keepdims=True)
+    margin = float(np.minimum(out_dbg - lo_v, hi_v - out_dbg).min())
+    print(f"      every attention output sits inside the hull of the value rows, "
+          f"tightest margin {margin:.3e}")
+    check("attention output is a convex combination of the value rows",
+          margin >= -1e-12)
+
     perm = rng.permutation(T_p)
     seq_ids = np.concatenate([[0], 1 + perm])          # CLS stays put
 
@@ -426,15 +485,39 @@ if __name__ == "__main__":
     smooth /= np.sqrt((smooth ** 2).mean())
     noise = rng.standard_normal((g0, g0, Dp))
 
+    # `resample_grid` takes new_h and new_w separately, and every grid this file
+    # actually resizes is square (14->16, 14->7, 14->14), so a square-only
+    # cross-check applies the SAME matrix to both axes and cannot tell them
+    # apart — the one bug the two-argument signature exists to expose. Slice a
+    # rectangular sub-grid out of `smooth` (no fresh rng draws, so the stream
+    # below is untouched) and make the reference comparisons non-square.
+    rect = np.ascontiguousarray(smooth[:10, :6])                # (10, 6, Dp)
+    cases = ((smooth, g1, g1), (smooth, g1, 7), (rect, 13, 9), (rect, 5, 11))
     if HAVE_TORCH:
         for mode in ("bilinear", "bicubic"):
-            mine = resample_grid(smooth, g1, g1, mode)
-            t_in = torch.tensor(smooth.transpose(2, 0, 1)[None])
-            ref = F.interpolate(t_in, size=(g1, g1), mode=mode,
-                                align_corners=False).numpy()[0].transpose(1, 2, 0)
-            check(f"{mode} resample matches torch F.interpolate", mine, ref, tol=1e-12)
+            for (src, sh, sw) in cases:
+                mine = resample_grid(src, sh, sw, mode)
+                t_in = torch.tensor(src.transpose(2, 0, 1)[None])
+                ref = F.interpolate(t_in, size=(sh, sw), mode=mode,
+                                    align_corners=False).numpy()[0].transpose(1, 2, 0)
+                check(f"{mode} {src.shape[0]}x{src.shape[1]}->{sh}x{sw} matches "
+                      f"torch F.interpolate", mine, ref, tol=1e-12)
     else:
         print("  ....  [skipped: torch not installed] F.interpolate cross-check")
+
+    # Torch-free versions of the same discrimination, so the numpy-only run also
+    # separates the axes. Resampling is separable, so (1) transposing the two
+    # spatial axes of the input must transpose the output, and (2) since
+    # resample_matrix(n, n) is exactly the identity, doing the axes in two calls
+    # must equal doing both in one.
+    for mode in ("bilinear", "bicubic"):
+        check(f"{mode} resample commutes with transposing the spatial axes",
+              resample_grid(rect, 13, 9, mode).transpose(1, 0, 2),
+              resample_grid(np.ascontiguousarray(rect.transpose(1, 0, 2)), 9, 13, mode),
+              tol=1e-13)
+        check(f"{mode} resample is separable: one axis at a time == both at once",
+              resample_grid(rect, 13, 9, mode),
+              resample_grid(resample_grid(rect, 13, 6, mode), 13, 9, mode), tol=1e-13)
 
     # Partition of unity: both kernels sum to 1, so a constant table survives.
     for mode in ("bilinear", "bicubic"):
@@ -487,13 +570,56 @@ if __name__ == "__main__":
     check("interpolated table has 1 + new_gh*new_gw rows",
           pos_big.shape == (1 + g1 * g1, Dp))
     check("the CLS position row is carried through untouched", pos_big[0], pos_v[0], tol=0)
+    # The row count and row 0 say nothing about the grid, and the off-by-one the
+    # docstring warns about — `pos[:-1]` instead of `pos[1:]`, folding CLS into
+    # the grid and dropping the last patch — leaves both of them intact. Pin the
+    # grid itself, three ways.
+    # (i) The patch rows ARE `resample_grid` of the CLS-free table, exactly.
+    check("the patch rows are exactly resample_grid of the CLS-free table",
+          pos_big[1:],
+          resample_grid(pos_v[1:].reshape(g0, g0, Dp), g1, g1).reshape(g1 * g1, Dp),
+          tol=0)
+    # (ii) Linearity, with no reference implementation at all: the CLS row is
+    # not an input to any patch row, so rewriting it must leave every patch row
+    # bit-identical. Folding CLS into the grid fails this immediately.
+    pos_alt = pos_v.copy()
+    pos_alt[0] = -7.0
+    alt_big = interpolate_pos_embed(pos_alt, g0, g0, g1, g1)
+    check("rewriting ONLY the CLS row cannot move a single patch row",
+          alt_big[1:], pos_big[1:], tol=0)
+    check("...and the rewritten CLS row is the one that comes back",
+          alt_big[0], pos_alt[0], tol=0)
+    # (iii) Partition of unity end to end: a constant grid must resize to the
+    # same constant no matter what the CLS row holds. This is what catches a
+    # resampler that quietly returns zeros, and it needs no reference either.
+    const_pos = np.concatenate([np.full((1, Dp), 5.0),
+                                np.full((g0 * g0, Dp), 0.25)], axis=0)
+    check("a constant position grid resizes to the same constant",
+          interpolate_pos_embed(const_pos, g0, g0, g1, g1)[1:],
+          np.full((g1 * g1, Dp), 0.25), tol=1e-14)
+    # The CLS row was drawn 5x the grid's scale precisely so a leak would be
+    # loud. The ceiling is derived, not guessed: |out[p,q,d]| =
+    # |sum_h sum_w Ah[p,h] Aw[q,w] grid[h,w,d]| <= max|grid| * (max row L1 of
+    # Ah) * (max row L1 of Aw), and both axes use the same 14->16 matrix here.
+    gain = float(np.abs(resample_matrix(g0, g1)).sum(axis=1).max()) ** 2
+    grid_in_max = float(np.abs(pos_v[1:]).max())
+    leak_bound = grid_in_max * gain
+    grid_out_max = float(np.abs(pos_big[1:]).max())
+    print(f"      max|CLS row| {float(np.abs(pos_v[0]).max()):.3f}, "
+          f"max|grid in| {grid_in_max:.3f}, max|grid out| {grid_out_max:.3f}; "
+          f"bicubic gain {gain:.4f}x bounds the grid by {leak_bound:.3f}")
+    check("the 5x CLS row never leaks into the resampled grid",
+          grid_out_max < leak_bound)
 
     # -----------------------------------------------------------------------
     print("\n--- break it ---")
     # -----------------------------------------------------------------------
 
-    # (a) The transpose bug: reshape (H/P, P, W/P, P) straight to tokens.
-    print("\n  (a) patchify without the transpose")
+    # (a) The flat-chunking bug: collapse H and W into one axis of H*W pixels
+    # and cut it into T contiguous chunks of P*P, instead of splitting H into
+    # (gh, P) and W into (gw, P) first. Every shape matches `patchify`'s
+    # exactly, so nothing raises.
+    print("\n  (a) patchify that chops the flat pixel stream instead of tiling it")
     good = patchify(x, P)
     bad = patchify_wrong_axis_order(x, P)
     print(f"      correct shape {good.shape}, buggy shape {bad.shape}  "
@@ -615,8 +741,12 @@ if __name__ == "__main__":
     check("...and can never clear the full-rank scrambled basis", floor_bad > 0.0)
     check("Eckart-Young: the buggy run cannot beat its own spectral floor",
           obs_bad > floor_bad - 1e-9)
-    # The run is converged — 500, 1200 and 3000 steps all land on the same
-    # residual to six digits. What sits above the Frobenius floor is a
+    # The run is converged, though not to six digits by 500 steps. Measured on
+    # this exact stream, the buggy run's population residual is 0.0929203953 at
+    # 500 steps, 0.0929133790 at 1200, 0.0929133777 at 3000 and 0.0929133777 at
+    # 10000: 500 steps is already within 7.1e-6 of the limit, and from 1200 on
+    # the residual is settled to 1.3e-9 absolute (1.4e-8 relative), i.e. seven
+    # significant digits. What sits above the Frobenius floor is a
     # finite-sample effect, not an optimization failure: the empirical Gram of
     # n images in a 1024-dimensional patch space is not the identity, so the
     # empirically best rank-8 subspace is not quite the Frobenius one. Double

@@ -24,10 +24,15 @@ log 8 = 2.079, the effective number of experts in use (exp of that entropy)
 falls from 7.80 to 5.37, and four of the eight end below half their fair share.
 That is rich-get-richer: whichever expert is dispatched slightly more improves
 slightly faster and is dispatched more still. Add the standard auxiliary loss,
-E * sum_i f_i * P_i — hard dispatch fraction times mean router probability,
-whose floor is exactly 1.0 at uniform routing — and entropy returns to 2.078,
-every expert is un-starved, and the task loss is four orders of magnitude BETTER
-(3.8e-9 vs 1.2e-4), because the collapsed run had been wasting its parameters.
+E * sum_i f_i * P_i — hard dispatch fraction times mean router probability —
+and entropy returns to 2.078, every expert is un-starved, and the task loss is
+four orders of magnitude BETTER (3.8e-9 vs 1.2e-4), because the collapsed run
+had been wasting its parameters. That loss is often described as having a floor
+of 1.0. It does not. Because f is detached and both vectors sum to 1, it equals
+exactly 1 whenever f is uniform — for ANY P at all, so uniform f is a flat
+plateau rather than a minimum — and it drops strictly below 1 when a non-uniform
+f is anti-aligned with P, which the balanced run here does on its way in,
+bottoming out at 0.998897. Both halves of that are asserted below.
 
 Capacity is where the imbalance becomes a wrong answer rather than an
 inefficiency. Give each expert a buffer of capacity_factor * N * k / E slots and
@@ -42,9 +47,12 @@ over all E experts and then slicing the top k leaves the weights summing to 0.51
 on average instead of 1, which rescales every token's output by exactly that
 missing mass. And computing the auxiliary loss on the one-hot dispatch rather
 than the probabilities gives a loss that logs a plausible, drifting number and
-has EXACTLY zero gradient — finite differences return 0.000e+00 in all 64 router
-entries, torch drops it out of the graph entirely, and training with it is
-bit-identical to not having it at all.
+has EXACTLY zero gradient — central finite differences return 0.000e+00 in all
+64 router entries at every checkpoint probed. (Only an eps that straddles a
+top-k flip reports anything else: at eps=1e-4 the same probe returns cliff
+heights up to 32.5, which is how this bug passes a careless gradient check.)
+torch drops the term out of the graph entirely, and a run that applies that
+measured gradient comes out bit-identical to one that never had the loss at all.
 
 To learn: replace each function body with `pass` and reimplement.
 """
@@ -143,10 +151,12 @@ def load_balance_loss(logits, idx, E):
 
     f_i is the HARD dispatch fraction (no gradient — it is a counting operation
     on argmax output) and P_i is the MEAN ROUTER PROBABILITY (differentiable).
-    The product is minimized when both are uniform, where it equals exactly
-    E * E * (1/E) * (1/E) = 1, and it grows as the two co-concentrate. All of
-    the gradient comes through P_i; f_i only says which experts to push away
-    from. Returns (loss, f, P).
+    It grows as the two co-concentrate, which is the whole point of it. What it
+    is NOT is bounded below by 1: with f detached and sum_i f_i = sum_i P_i = 1,
+    a uniform f gives E * (1/E) * sum_i P_i = 1 exactly for ANY P — a flat
+    plateau, not a minimum — and a non-uniform f that is anti-aligned with P
+    gives strictly less than 1. All of the gradient comes through P_i; f_i only
+    says which experts to push away from. Returns (loss, f, P).
     """
     # === YOUR CODE HERE ===
     f = dispatch_fractions(idx, E)
@@ -254,31 +264,50 @@ def numeric_grad_Wr(fn, W_r, eps=1e-5):
 
 def train_moe(x, y, W_r0, W_e0, k, steps, lr, aux_alpha=0.0,
               wrong_aux=False, record_every=50):
-    """Plain SGD on router AND experts. Returns (W_r, W_e, history).
+    """Plain SGD on router AND experts. Returns (W_r, W_e, history, aux_grad_max).
 
-    `wrong_aux=True` swaps in the one-hot version of the balance loss. Its
-    gradient contribution is the zero matrix — f is a histogram of argmax
-    outputs, so d f / d W_r vanishes wherever it exists, and finite differences
-    confirm it to the last bit in the break-it section. The loss is still
-    computed and logged, exactly as it would be in a real training script.
+    `wrong_aux=True` swaps in the one-hot version of the balance loss and
+    actually applies its gradient — MEASURED, by central finite differences at
+    the starting router, rather than assumed. Once, not per step, and on
+    purpose: f is a histogram of argmax outputs, piecewise constant in W_r, so
+    its true derivative is zero wherever it exists, and the only thing a
+    re-measurement along the trajectory can add is noise — whenever eps happens
+    to straddle a top-k flip, the difference quotient reports the cliff height
+    instead of a gradient (the break-it section measures exactly that at
+    eps=1e-4). The measurement comes back the exact zero matrix, so the run is
+    bit-for-bit a run that never had the loss — but that identity is asserted
+    below as a consequence of the measurement, and an implementation of this
+    loss with a real gradient (e.g. one that quietly used probabilities) would
+    fail it. The loss is still computed and logged every step, exactly as a
+    real training script would.
+
+    `aux_grad_max` is the largest |entry| of that measured gradient under
+    `wrong_aux`, and None otherwise (nothing was measured).
     """
     W_r, W_e = W_r0.copy(), W_e0.copy()
     E = W_e.shape[0]
     hist = []
+    aux_grad_max = None
     # === YOUR CODE HERE ===
+    g_aux = None
+    if wrong_aux:
+        g_aux = numeric_grad_Wr(                              # the whole bug, measured
+            lambda W: load_balance_loss_onehot(x @ W, top_k_route(x @ W, k)[0], E)[0],
+            W_r, 1e-6)
+        aux_grad_max = float(np.abs(g_aux).max())
     for s in range(steps):
         task, aux, dW_r, dW_e, f = moe_grads(x, y, W_r, W_e, k,
                                              aux_alpha=0.0 if wrong_aux else aux_alpha)
         if wrong_aux:
             aux = load_balance_loss_onehot(x @ W_r, top_k_route(x @ W_r, k)[0], E)[0]
-            dW_r = dW_r + aux_alpha * np.zeros_like(dW_r)     # the whole bug, in one line
+            dW_r = dW_r + aux_alpha * g_aux
         if s % record_every == 0:
             hist.append((s, task, aux, routing_entropy(f), float(f.max())))
         W_r -= lr * dW_r
         W_e -= lr * dW_e
     task, aux, _, _, f = moe_grads(x, y, W_r, W_e, k)
     hist.append((steps, task, aux, routing_entropy(f), float(f.max())))
-    return W_r, W_e, hist
+    return W_r, W_e, hist, aux_grad_max
 
 
 # ---------------------------------------------------------------------------
@@ -345,7 +374,7 @@ if __name__ == "__main__":
 
     print("\n--- routing collapse, without a balance loss ---")
     steps, lr = 400, 2.5
-    W_r_a, W_e_a, hist_a = train_moe(x, y_target, W_r0, W_e0, k, steps, lr, aux_alpha=0.0)
+    W_r_a, W_e_a, hist_a, _ = train_moe(x, y_target, W_r0, W_e0, k, steps, lr, aux_alpha=0.0)
     print(f"      {'step':>6} {'task loss':>12} {'aux':>8} {'entropy':>9} {'exp(H)':>8} {'max f_i':>9}")
     for s, t, a, H, fm in hist_a:
         print(f"      {s:6d} {t:12.6f} {a:8.4f} {H:9.4f} {np.exp(H):8.3f} {fm:9.3f}")
@@ -356,6 +385,25 @@ if __name__ == "__main__":
     print(f"      final utilization: {np.round(f_a, 3)}")
     starved_a = int((f_a < 0.5 / E).sum())
     print(f"      {starved_a} of {E} experts end below half their uniform share of {1/E:.3f}")
+    # Anchor the entropy scale before reading anything into it. Three values
+    # known in closed form: uniform -> log E, one expert -> 0, and the dyadic
+    # histogram (1/2, 1/4, 1/8, 1/8, 0, 0, 0, 0), whose entropy is
+    # (1/2)ln2 + (1/4)ln4 + 2*(1/8)ln8 = (1/2 + 1/2 + 3/4) ln 2 = 1.75 ln 2.
+    f_dyadic = np.array([0.5, 0.25, 0.125, 0.125] + [0.0] * (E - 4))
+    print(f"      anchors: H(uniform) = {routing_entropy(np.full(E, 1.0 / E)):.6f} = log {E}, "
+          f"H(one expert) = {routing_entropy(np.eye(E)[0]):.6f}, "
+          f"H(1/2,1/4,1/8,1/8) = {routing_entropy(f_dyadic):.6f} = 1.75 ln 2")
+    check("uniform utilization has entropy exactly log E",
+          routing_entropy(np.full(E, 1.0 / E)), H_max, tol=1e-12)
+    check("a one-expert histogram has entropy exactly 0",
+          routing_entropy(np.eye(E)[0]), 0.0, tol=1e-12)
+    check("a hand-computed dyadic histogram has entropy 1.75 * ln 2",
+          routing_entropy(f_dyadic), 1.75 * np.log(2.0), tol=1e-12)
+    check("so exp(H) really is the effective expert count: E at uniform, 1 at collapse",
+          [float(np.exp(routing_entropy(np.full(E, 1.0 / E)))),
+           float(np.exp(routing_entropy(np.eye(E)[0])))], [float(E), 1.0], tol=1e-12)
+    check("and every measured entropy respects the log E ceiling",
+          max(H for _, _, _, H, _ in hist_a) <= H_max + 1e-12)
     check("routing entropy falls during training", H_end < H0)
     check("the most popular expert grows past its uniform share",
           hist_a[-1][4] > 1.0 / E)
@@ -364,7 +412,7 @@ if __name__ == "__main__":
 
     print("\n--- adding the f_i * P_i load-balancing loss ---")
     alpha = 0.05
-    W_r_b, W_e_b, hist_b = train_moe(x, y_target, W_r0, W_e0, k, steps, lr, aux_alpha=alpha)
+    W_r_b, W_e_b, hist_b, _ = train_moe(x, y_target, W_r0, W_e0, k, steps, lr, aux_alpha=alpha)
     for s, t, a, H, fm in hist_b:
         print(f"      {s:6d} {t:12.6f} {a:8.4f} {H:9.4f} {np.exp(H):8.3f} {fm:9.3f}")
     f_b = dispatch_fractions(top_k_route(x @ W_r_b, k)[0], E)
@@ -381,9 +429,24 @@ if __name__ == "__main__":
           f"balanced {hist_b[-1][1]:.3e}")
     check("balancing did not cost task loss here — it improved it",
           hist_b[-1][1] < hist_a[-1][1])
-    check("uniform routing is the aux loss's floor of exactly 1.0",
-          float(E * np.dot(np.full(E, 1.0 / E), np.full(E, 1.0 / E))), 1.0, tol=1e-12)
-    check("balanced run sits at that floor, collapsed run above it",
+    # "The aux loss has a floor of 1.0" is folklore, and false. What IS true —
+    # and both halves are pinned on the actual implementation here: a
+    # round-robin dispatch has f exactly uniform, and then
+    # E * sum_i (1/E) * P_i = sum_i P_i = 1 for ANY router probabilities
+    # whatsoever — a flat plateau, not a minimum. And the balanced run itself
+    # undercuts 1 on its way in, because a mildly non-uniform f that is
+    # anti-aligned with P gives E * f.P < 1.
+    idx_uniform = np.arange(N * k).reshape(N, k) % E     # exactly N*k/E slots each
+    check("uniform f gives aux exactly 1 under the trained router's P",
+          load_balance_loss(x @ W_r_b, idx_uniform, E)[0], 1.0, tol=1e-12)
+    check("...and under a freshly random P too — a plateau, not a floor",
+          load_balance_loss(rng.standard_normal((N, E)), idx_uniform, E)[0],
+          1.0, tol=1e-12)
+    aux_b_min = min(a for _, _, a, _, _ in hist_b)
+    print(f"      balanced run's recorded aux bottoms out at {aux_b_min:.6f} — "
+          f"strictly below the alleged floor of 1.0")
+    check("the balanced run's aux dips strictly below 1.0", aux_b_min < 1.0)
+    check("balanced run ends near 1, collapsed run well above it",
           hist_b[-1][2] < hist_a[-1][2])
 
     print("\n--- capacity factor and token dropping ---")
@@ -404,10 +467,10 @@ if __name__ == "__main__":
           drops_b[0], predicted_drop_rate(f_b, N, k, C1), tol=1e-12)
     check("drop rate falls monotonically as capacity grows",
           all(drops_a[i] >= drops_a[i + 1] for i in range(len(drops_a) - 1)))
-    # The computed floor: a perfectly uniform assignment drops exactly nothing
-    # at cf = 1.0. Anything above zero is the histogram's excess mass, not the
+    # The computed floor: a perfectly uniform assignment (idx_uniform, the
+    # round-robin dispatch from the balance section) drops exactly nothing at
+    # cf = 1.0. Anything above zero is the histogram's excess mass, not the
     # capacity mechanism being lossy in itself.
-    idx_uniform = np.arange(N * k).reshape(N, k) % E
     check("a perfectly uniform assignment drops nothing at cf=1.0",
           1.0 - capacity_mask(idx_uniform, E, C1).mean(), 0.0, tol=0.0)
     # The mechanism, sharply: drops vanish exactly when C >= max_i n_i, i.e. at
@@ -448,10 +511,25 @@ if __name__ == "__main__":
           f"({100*b['flops_moe']/b['flops_all_experts']:.2f}%)")
     print(f"      router overhead {b['flops_router']/1e3:.1f}k FLOPs/token "
           f"({100*b['flops_router']/b['flops_all_experts']:.4f}%)")
-    check("parameter count scales with E", b["params_moe"], E * b["params_one_ffn"])
-    check("FLOP ratio is k/E plus exactly the router overhead",
-          b["flops_moe"] / b["flops_all_experts"],
-          k / E + b["flops_router"] / b["flops_all_experts"], tol=1e-15)
+    # These pin the arithmetic itself, recomputed here from first principles
+    # rather than from the dict's own entries (params_moe == E*params_one_ffn
+    # and (k*pe + r)/(E*pe) == k/E + r/(E*pe) hold for ANY pe and r, so checks
+    # of that shape cannot catch a wrong formula). One (p x q) matmul is p*q
+    # multiply-accumulates = 2*p*q FLOPs; an FFN is the pair d_model x d_ff
+    # then d_ff x d_model; the router is a single d_model x E.
+    check("one FFN is two d_model x d_ff matrices",
+          b["params_one_ffn"], 2 * d_model * d_ff)
+    check("the MoE layer holds E of them", b["params_moe"], E * 2 * d_model * d_ff)
+    check("running all E experts costs 4*d_model*d_ff FLOPs each",
+          b["flops_all_experts"], 4 * d_model * d_ff * E)
+    check("the router is one d_model x E matmul: 2*d_model*E FLOPs",
+          b["flops_router"], 2 * d_model * E)
+    check("top-k runs k experts plus the router",
+          b["flops_moe"], 4 * d_model * d_ff * k + 2 * d_model * E)
+    # 33570816 / 134217728 — both dyadic, so the quotient is exact in float:
+    # 2^-2 + 2^-13 = 0.2501220703125. That IS the headline 25.01%.
+    check("MoE spends exactly 25.0122% of the dense FLOPs",
+          b["flops_moe"] / b["flops_all_experts"], 0.2501220703125, tol=0.0)
 
     if HAVE_TORCH:
         print("\n--- torch cross-check of the hand-written gradients ---")
@@ -541,7 +619,7 @@ if __name__ == "__main__":
         _, _, dWr0, _, _ = moe_grads(x, y_target, W_probe, W_e_probe, k, aux_alpha=0.0)
         fd_vs_analytic.append(float(np.abs((dWr1 - dWr0)
                                            - numeric_grad_Wr(aux_correct_of, W_probe, 1e-6)).max()))
-        W_probe, W_e_probe, _ = train_moe(x, y_target, W_probe, W_e_probe, k,
+        W_probe, W_e_probe, _, _ = train_moe(x, y_target, W_probe, W_e_probe, k,
                                           200, lr, aux_alpha=0.0, record_every=1000)
     print(f"      analytic d aux(f,P) vs finite differences: max diff "
           f"{max(fd_vs_analytic):.2e}  (so the f*P loss really is being differentiated)")
@@ -568,16 +646,23 @@ if __name__ == "__main__":
         check("torch: the f*P aux is not", bool(taux.requires_grad) is True)
     # The consequence: the loss is logged, it even gets steadily WORSE, and the
     # router never feels it. Training with it is bit-identical to no aux at all.
+    # (Unlike E*f.P, the one-hot E*f.f really IS bounded below by 1: by
+    # Cauchy-Schwarz, sum f_i^2 >= (sum f_i)^2 / E = 1/E, equality iff f is
+    # uniform. A genuine floor it cannot descend to, since nothing pulls it.)
     print(f"      logged aux(f,f) at steps 0/200/400: "
           f"{logged_wrong[0]:.4f} -> {logged_wrong[1]:.4f} -> {logged_wrong[2]:.4f} "
           f"(up from its uniform floor of 1.0, and nothing ever pushes back)")
     check("the logged one-hot balance loss drifts away from its uniform floor",
           logged_wrong[-1] > logged_wrong[0])
-    W_r_w, _, hist_w = train_moe(x, y_target, W_r0, W_e0, k, steps, lr,
+    W_r_w, _, hist_w, gmax_w = train_moe(x, y_target, W_r0, W_e0, k, steps, lr,
                                  aux_alpha=alpha, wrong_aux=True, record_every=1000)
+    print(f"      measured d aux(f,f)/d W_r at the starting router: "
+          f"max|entry| = {gmax_w:.3e} — that array is what the run applies")
+    check("the applied one-hot aux gradient was measured to be exactly zero",
+          gmax_w, 0.0, tol=0.0)
     print(f"      final entropy: one-hot aux {hist_w[-1][3]:.6f}, "
           f"no aux {hist_a[-1][3]:.6f}, f*P aux {hist_b[-1][3]:.6f}")
-    check("the one-hot aux leaves the router bit-identical to no aux at all",
+    check("applying that measured gradient is bit-identical to no aux at all",
           W_r_w, W_r_a, tol=0.0)
     check("...so the balance it 'enforces' is exactly no balance",
           hist_w[-1][3], hist_a[-1][3], tol=0.0)

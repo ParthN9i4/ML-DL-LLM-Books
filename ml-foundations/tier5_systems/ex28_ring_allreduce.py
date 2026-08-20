@@ -13,10 +13,12 @@ the tensor into P chunks, and run P-1 reduce-scatter steps in which each rank
 sends one chunk forward and adds one chunk it receives, followed by P-1
 all-gather steps that circulate the finished chunks. Every rank sends exactly
 2 (P-1)/P * N bytes, which is under 2N for every P and converges to 2N: the
-per-rank volume measured here rises by only a factor 1.1384 going from P=8 to
-P=256, while the naive root's rises by 36.43. Their ratio is exactly P/2. That
-is the whole argument, and this file makes it by COUNTING bytes inside the
-transfer loop, never by asserting a big-O.
+per-rank volume counted here rises by only a factor 1.1384 going from P=8 to
+P=256, while the naive root's rises by 36.43, and the ratio of the two
+per-rank VOLUMES is exactly P/2 at every P. That is the whole argument, and
+this file makes it by COUNTING bytes inside the transfer loop — every P in
+the volume tables, 256 included, is actually simulated and counted, never
+extrapolated from a big-O.
 
 What the ring buys in bandwidth it pays for in latency: 2(P-1) strictly
 sequential hops. Under a stated 5 us/hop and 25 GB/s, the message size at
@@ -27,13 +29,16 @@ genuinely faster. That is why DDP buckets gradients (200 small tensors cost
 exist at all (at P=256 a ring pays 510 hops, a binary tree 16).
 
 The one insight the break-it section is built to make undeniable is that an
-off-by-one in the ring index cannot be caught by any of the checks people
-actually run. It moves exactly the same bytes, it leaves every rank holding
-bit-identical data, and — because each (destination, chunk) pair receives at
-most one message per reduce-scatter — it can only DROP contributions, never
-duplicate them, so the gradient NORM moves by 6.6% while the gradient itself
-is 36% wrong per element. Bit-exact agreement between ranks proves consensus,
-not correctness.
+off-by-one in the ring index moves exactly the same bytes and leaves every
+rank holding bit-identical data, so byte counters and cross-rank consistency
+checks pass — and because each (destination, chunk) pair receives at most one
+message per reduce-scatter, it can only DROP contributions, never duplicate
+them. WHERE the off-by-one sits decides how loud it is. In the reduce-scatter
+it drops P-1 of the P contributions per chunk and any gradient-norm dashboard
+catches it instantly (norm ratio 0.360). In the all-gather it drops exactly
+ONE of P, so the NORM moves by only 6.6% while the gradient itself is 36%
+wrong per element — that is the variant no check people actually run can see.
+Bit-exact agreement between ranks proves consensus, not correctness.
 
 To learn: replace each function body with `pass` and reimplement.
 """
@@ -179,7 +184,9 @@ def contribution_multiplicity(P, N, **kw):
 
 def ring_bytes_per_rank(P, nbytes):
     """The textbook formula: 2 (P-1)/P * N bytes sent per rank. It is checked
-    against the counted bytes above; it never stands in for them."""
+    against the counted bytes at every P the volume tables print (256
+    included); in the alpha-beta TIME model further down it is a model input,
+    not a measurement."""
     # === YOUR CODE HERE ===
     return 2.0 * (P - 1) / P * nbytes
 
@@ -283,8 +290,18 @@ if __name__ == "__main__":
               float(s['sent'][0]), formula, tol=0.0)
         check(f"P={P_}: every rank sends the same amount (no hot spot)",
               float(s['sent'].max() - s['sent'].min()), 0.0, tol=0.0)
-        check(f"P={P_}: sent == received (the ring is symmetric)",
-              float(np.abs(s['sent'] - s['recv']).max()), 0.0, tol=0.0)
+        # Rank r's inbound link IS rank r-1's outbound link, so recv must be
+        # sent rolled one position around the ring. (In a healthy ring both
+        # arrays are uniform, so this coincides with plain sent == recv;
+        # crediting a receive to the sender instead of the destination is
+        # invisible to any aggregate per-rank counter here. The attribution
+        # only becomes falsifiable where the traffic is ASYMMETRIC — the
+        # naive scheme below — which is why its recv side gets its own
+        # checks.)
+        check(f"P={P_}: rank r receives exactly what rank r-1 sent",
+              s['recv'], np.roll(s['sent'], 1), tol=0.0)
+        check(f"P={P_}: every byte sent is received (conservation)",
+              int(s['sent'].sum()), int(s['recv'].sum()))
         check(f"P={P_}: 2(P-1) sequential steps", s['steps'], 2 * (P_ - 1))
     # The naive scheme's counted bytes, same instrument, for contrast.
     _, sn = naive_allreduce(rng.standard_normal((8, 2400)))
@@ -294,16 +311,35 @@ if __name__ == "__main__":
           float(sn['sent'][0]), naive_bytes_at_root(8, 2400 * 8), tol=0.0)
     check("the naive root is the hot spot: it moves (P-1)x a leaf",
           float(sn['sent'][0]) / float(sn['sent'][1]), 7.0, tol=1e-12)
+    # The naive traffic is asymmetric, so here the RECEIVE attribution is
+    # actually falsifiable: the root's inbound link carries (P-1) N (the
+    # gather), every leaf's carries exactly N (its broadcast copy).
+    check("naive root receives (P-1) N — its inbound link is the hot spot too",
+          float(sn['recv'][0]), naive_bytes_at_root(8, 2400 * 8), tol=0.0)
+    check("each naive leaf receives exactly N (one broadcast copy)",
+          sn['recv'][1:], np.full(7, 2400 * 8, dtype=np.int64), tol=0.0)
 
     print("\n--- why P barely matters for the ring, and matters entirely for the naive ---")
-    nbytes = 2400 * 8
+    # Every row of this table is COUNTED by running the transfer loops at that
+    # P — including P=256 — and only then checked against the closed forms.
+    # N = 2304 = 2^8 * 3^2 elements so that every P below divides it exactly.
+    N_scale = 2304
+    nbytes = N_scale * 8
+    # Byte counts are data-independent; a local generator keeps the main rng
+    # stream (and every number quoted from the sections below) untouched.
+    rng_scale = np.random.default_rng(32)
     print(f"      {'P':>5} {'ring sent/rank':>16} {'/N':>7} {'naive sent@root':>17} {'/N':>8}")
     ring_tab, naive_tab = {}, {}
     for P_ in (2, 4, 8, 16, 64, 256):
-        rb = ring_bytes_per_rank(P_, nbytes)
-        nb = naive_bytes_at_root(P_, nbytes)
+        _, s_r = ring_allreduce(rng_scale.standard_normal((P_, N_scale)))
+        _, s_n = naive_allreduce(rng_scale.standard_normal((P_, N_scale)))
+        rb, nb = int(s_r['sent'][0]), int(s_n['sent'][0])
+        check(f"P={P_}: counted ring bytes/rank == 2(P-1)/P N exactly",
+              float(rb), ring_bytes_per_rank(P_, nbytes), tol=0.0)
+        check(f"P={P_}: counted naive root bytes == (P-1) N exactly",
+              float(nb), naive_bytes_at_root(P_, nbytes), tol=0.0)
         ring_tab[P_], naive_tab[P_] = rb, nb
-        print(f"      {P_:5d} {rb:16.0f} {rb/nbytes:7.3f} {nb:17.0f} {nb/nbytes:8.1f}")
+        print(f"      {P_:5d} {rb:16d} {rb/nbytes:7.3f} {nb:17d} {nb/nbytes:8.1f}")
     check("ring per-rank volume is bounded by 2N for every P",
           all(v < 2.0 * nbytes for v in ring_tab.values()))
     grow_ring = ring_tab[256] / ring_tab[8]
@@ -445,6 +481,19 @@ if __name__ == "__main__":
               bad, np.repeat(bad[:1], P, axis=0), tol=0.0)
         check(f"{label}: drops contributions", int((M == 0).sum()) > 0)
         check(f"{label}: the answer is wrong by a large relative margin", rel > 0.1)
+        # Ground M in the data, not just in symmetry. Every constant-offset M
+        # is a circulant, so its row sums (printed above) cannot tell a wrong
+        # chunk index inside contribution_multiplicity from a right one.
+        # Rebuilding each chunk from the raw shards M says survived, and
+        # matching it against the broken tensor, can: reading the wrong probe
+        # element or transposing M fails HERE (verified by mutation).
+        recon = np.concatenate([(M[c][:, None] * x[:, c * C:(c + 1) * C]).sum(0)
+                                for c in range(P)])
+        recon_err = float(np.abs(bad[0] - recon).max())
+        print(f"        rebuilt from the shards M says survived: "
+              f"max |bad - rebuild| = {recon_err:.1e}")
+        check(f"{label}: M reconstructs the broken tensor from raw shards",
+              recon_err, 0.0, tol=1e-12)
 
     # The structural fact behind all of it: in a ring, each (destination,
     # chunk) pair receives AT MOST ONE message per reduce-scatter, whatever
@@ -453,6 +502,7 @@ if __name__ == "__main__":
     # single-offset variant and confirm.
     n_variants = worst_missing = 0
     any_double = False
+    worst_recon = 0.0
     for rs_o, ag_o in itertools.product((-1, 0, 1), repeat=2):
         if (rs_o, ag_o) == (0, 0):
             continue
@@ -460,11 +510,19 @@ if __name__ == "__main__":
         n_variants += 1
         any_double |= bool((M > 1).any())
         worst_missing = max(worst_missing, int((M == 0).sum()))
+        # Same data-grounding as above, for every variant in the sweep: the
+        # multiplicity table must reproduce each variant's actual output.
+        bad_v, _ = ring_allreduce(x, rs_offset=rs_o, ag_offset=ag_o)
+        recon = np.concatenate([(M[c][:, None] * x[:, c * C:(c + 1) * C]).sum(0)
+                                for c in range(P)])
+        worst_recon = max(worst_recon, float(np.abs(bad_v[0] - recon).max()))
     print(f"      swept {n_variants} index-offset variants: double-counting seen in "
           f"{'some' if any_double else 'NONE'}; worst case {worst_missing}/{P*P} "
-          f"contributions dropped")
+          f"contributions dropped; worst rebuild error {worst_recon:.1e}")
     check("no index offset can ever double-count a contribution", not any_double)
     check("but they all drop contributions", worst_missing > 0)
+    check("every variant's M reconstructs that variant's output from raw shards",
+          worst_recon, 0.0, tol=1e-12)
 
     # And the plausibility trap: the all-gather off-by-one loses exactly ONE of
     # the P contributions per chunk, so the gradient norm — the thing people

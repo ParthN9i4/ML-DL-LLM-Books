@@ -14,9 +14,13 @@ dW is a CORRELATION of the padded input with the upstream gradient, summed over
 the batch and over every output position. Differentiating by Xpad[n,c,y,x]
 collects every (i,j,a,b) with i*s+a = y, which reverses the sign on a and b:
 dX is a CONVOLUTION of the upstream gradient with the kernel — equivalently a
-correlation with the kernel rotated 180 degrees, zero-dilated by the stride,
-and padded to full width. Nobody remembers those two sentences. Everybody can
-re-derive them from the index expression in a minute, which is the actual skill.
+correlation of the STRIDE-DILATED upstream gradient with the 180-degree-rotated
+kernel, at full padding (kh-1, kw-1). Note where the dilation lands: on dY, not
+on the kernel. Dilating the kernel instead is a different (atrous) operator and
+gives both the wrong shape and the wrong numbers — the exercise below dilates dY
+and leaves the kernel at kh x kw. Nobody remembers those two sentences.
+Everybody can re-derive them from the index expression in a minute, which is
+the actual skill.
 
 The insight this file is built to make undeniable is that dX is not "some
 transpose"; it is a convolution, and it is the ADJOINT of the forward map, so
@@ -26,8 +30,12 @@ is checked here with no reference implementation involved at all.
 Both classic bugs are then committed on purpose. Forgetting to sum dW over the
 batch is wrong by exactly the batch size and utterly invisible at N=1, which is
 the size every unit test uses. Forgetting the 180-degree rotation in dX is
-catastrophic — and vanishes identically for a symmetric kernel, which is the
-kind every sanity check reaches for.
+catastrophic — and for a centro-symmetric kernel it vanishes exactly, not
+approximately: rot180 of such a kernel is the same array bit for bit, so the
+buggy code is not merely untested there, it is CORRECT, and no tolerance can
+catch it. Box, Gaussian, Laplacian and 1x1 are all centro-symmetric, which is
+precisely the set every sanity check reaches for. Sobel is not, and it exposes
+the bug immediately.
 
 To learn: replace each function body with `pass` and reimplement.
 """
@@ -485,48 +493,80 @@ if __name__ == "__main__":
         check("the unrotated version is not, by the same random-kernel yardstick",
               float(np.abs(dx_bad - gx2).max()) > 0.3 * disc_indep)
 
-    # ...and now the reason it survives review. Rotating a centro-symmetric
-    # kernel is the identity, so the bug disappears. The floor to compare
-    # against is not zero: the two paths sum the same terms in a different
-    # memory order, so they can differ by float64 re-association.
-    def rounding_floor(arr, n_terms):
-        """eps * peak * (number of accumulations) — the most two orderings of
-        the same sum can differ by in float64."""
-        return np.finfo(float).eps * float(np.abs(arr).max()) * n_terms
+    # How wrong is 17.4? Not against a guessed threshold: against the MEASURED
+    # float64 disagreement between the two independent correct routes to dX in
+    # this file (this full-convolution one, and the col2im one). That number is
+    # the only "noise" the comparison is entitled to, and it is ~3e-15 here.
+    dx_ref_asym, _, _ = conv2d_backward(G2, c2)
+    noise = max(float(np.abs(dx_ok - dx_ref_asym).max()),
+                np.finfo(float).eps * float(np.abs(dx_ok).max()))   # >= 1 ulp
+    print(f"      the two independent correct routes to dX differ by {noise:.2e} "
+          f"-> the missing rotation is {disc / noise:.1e}x that")
+    check("the missing rotation is >1e10 times the measured float64 noise",
+          disc > 1e10 * noise)
 
-    n_terms = C_out * kh * kw          # accumulations per input-gradient entry
+    # ...and now the reason it survives review. Rotating a centro-symmetric
+    # kernel is not "almost" a no-op, it is a BITWISE no-op: float addition is
+    # commutative, so 0.5*(w + rot180(w)) is equal to its own rot180 to the last
+    # bit, and both branches then hand np.ascontiguousarray the same bytes. The
+    # discrepancy is therefore exactly 0.0 BY CONSTRUCTION — there is no
+    # re-association here and no rounding floor to compare against, so nothing
+    # is asserted against one. What has to be shown instead is the thing that is
+    # not automatic: with such a kernel the unrotated path is not merely
+    # untested, it is CORRECT — and that is checked against the independent
+    # col2im gradient and against the adjoint identity, neither of which knows
+    # how dx_as_full_convolution is written.
     w_sym = 0.5 * (w + w[:, :, ::-1, ::-1])
+    y_sym, cache_sym = conv2d_forward(x, w_sym, None, stride=2, padding=1)
+    dx_sym_ref, _, _ = conv2d_backward(G2, cache_sym)          # col2im route
     dx_s_ok = dx_as_full_convolution(G2, w_sym, x.shape, stride=2, padding=1, rotate=True)
     dx_s_bad = dx_as_full_convolution(G2, w_sym, x.shape, stride=2, padding=1, rotate=False)
     disc_sym = float(np.abs(dx_s_ok - dx_s_bad).max())
-    floor_sym = rounding_floor(dx_s_ok, n_terms)
-    print(f"      with a SYMMETRIC kernel the discrepancy falls to {disc_sym:.2e} "
-          f"(float64 re-association floor {floor_sym:.2e})")
-    check("a centro-symmetric kernel leaves nothing above float64 rounding",
-          disc_sym <= floor_sym)
-    # Comparing to disc_sym itself is useless when it is exactly 0. Compare the
-    # asymmetric damage to the FLOOR that bounds the symmetric case instead —
-    # measured at 17.4 vs 9.1e-14, i.e. 14 orders of magnitude.
-    check("...over 12 orders of magnitude above what a symmetric kernel can reveal",
-          disc > 1e12 * floor_sym)
+    lhs_sym = float(np.sum(y_sym * G2))
+    adj_gap = abs(float(np.sum(x * dx_s_bad)) - lhs_sym)
+    print(f"      with a SYMMETRIC kernel the discrepancy is exactly {disc_sym:.2e} — "
+          f"the two branches are bitwise the same computation")
+    check("0.5*(W + rot180 W) is its own rot180, bit for bit",
+          np.array_equal(w_sym, w_sym[:, :, ::-1, ::-1]))
+    check("with a symmetric kernel the UNROTATED dX still matches the col2im gradient",
+          dx_s_bad, dx_sym_ref, tol=1e-12)
+    check("...and still satisfies <conv(X),G> == <X,dX>, with no reference at all",
+          adj_gap <= 1e-12 * abs(lhs_sym))
+
     # The kernels everyone reaches for when writing a conv test are exactly the
-    # centro-symmetric ones, and a 1x1 conv cannot see the bug at all.
+    # centro-symmetric ones. For those the unrotated code is not hidden, it is
+    # right, so no tolerance anywhere can catch it — asserted below by matching
+    # the buggy branch against the independent col2im gradient. Sobel-x is the
+    # control row: rot180 negates it, and the bug blows straight open.
     box = np.ones((1, 1, 3, 3)) / 9.0
     gauss = np.array([[[[1., 2., 1.], [2., 4., 2.], [1., 2., 1.]]]]) / 16.0
     lap = np.array([[[[0., 1., 0.], [1., -4., 1.], [0., 1., 0.]]]])
     onexone = rng.standard_normal((1, 1, 1, 1))
+    sobel = np.array([[[[1., 0., -1.], [2., 0., -2.], [1., 0., -1.]]]])
     x_t = rng.standard_normal((1, 1, 12, 12))
-    for nm, kk in (("box blur", box), ("Gaussian", gauss),
-                   ("Laplacian", lap), ("1x1 conv", onexone)):
-        y_t, _ = conv2d_forward(x_t, kk, None, stride=2, padding=1)
+    w_ctrl = rng.standard_normal((1, 1, 3, 3))       # unrelated-kernel yardstick
+    for nm, kk, sym_expected in (("box blur", box, True), ("Gaussian", gauss, True),
+                                 ("Laplacian", lap, True), ("1x1 conv", onexone, True),
+                                 ("Sobel-x", sobel, False)):
+        y_t, c_t = conv2d_forward(x_t, kk, None, stride=2, padding=1)
         G_t = rng.standard_normal(y_t.shape)
         a_ = dx_as_full_convolution(G_t, kk, x_t.shape, stride=2, padding=1, rotate=True)
         b_ = dx_as_full_convolution(G_t, kk, x_t.shape, stride=2, padding=1, rotate=False)
         d_ = float(np.abs(a_ - b_).max())
-        floor_ = rounding_floor(a_, 1 * kk.shape[2] * kk.shape[3])
-        print(f"      {nm:>10}: discrepancy {d_:.2e}  (rounding floor {floor_:.2e})")
-        check(f"the classic test kernel '{nm}' cannot detect the missing rotation",
-              d_ <= floor_)
+        is_sym = bool(np.array_equal(kk, kk[:, :, ::-1, ::-1]))
+        ref_, _, _ = conv2d_backward(G_t, c_t)       # independent col2im gradient
+        print(f"      {nm:>10}: rot180-invariant? {str(is_sym):>5}   "
+              f"discrepancy {d_:.2e}")
+        check(f"'{nm}' rot180-invariance is {sym_expected}", is_sym, sym_expected)
+        if sym_expected:
+            check(f"...so even the UNROTATED dX is correct for '{nm}'",
+                  b_, ref_, tol=1e-12)
+        else:
+            d_ctrl = float(np.abs(a_ - dx_as_full_convolution(
+                G_t, w_ctrl, x_t.shape, stride=2, padding=1)).max())
+            check(f"...only the rotated dX is correct for '{nm}'", a_, ref_, tol=1e-12)
+            check(f"...and dropping the rotation for '{nm}' is as bad as a random kernel",
+                  d_ > 0.3 * d_ctrl)
 
     print("\n  (c) the weak test vector: a loss of Y.sum()")
     # dY is then all ones, and in the interior every input pixel collects
@@ -552,12 +592,26 @@ if __name__ == "__main__":
           f"border {float(d_all.max()):.4f}")
     print(f"      dY = random   : interior discrepancy {d_rand_int:.4f} "
           f"(unrelated-kernel yardstick {d_alt_int:.4f})")
-    check("with a constant upstream gradient the interior cannot see the bug",
-          float(interior.max()) <= rounding_floor(a_ones, 1 * 3 * 3))
+    # Unlike the symmetric-kernel case above, THIS interior discrepancy is real
+    # re-association: the two branches add the same nine products in opposite
+    # order, so they can differ in the last bits. The bound is derived, not
+    # guessed. Summing n floats in any order has forward error at most
+    # (n-1)*eps*sum|terms| to first order [Higham, Accuracy and Stability of
+    # Numerical Algorithms, thm 2.5], so two orderings differ by at most twice
+    # that. Here dY == 1 throughout the interior window, so the nine terms are
+    # exactly the nine kernel entries and sum|terms| = sum|W|. Note the bound
+    # scales with sum|terms|, NOT with the result: under cancellation the answer
+    # can be far smaller than its own error bound.
+    n_int = ww.size                                     # 9 accumulated products
+    bound_int = 2.0 * (n_int - 1) * np.finfo(float).eps * float(np.abs(ww).sum())
+    print(f"      re-association bound 2(n-1)*eps*sum|W| = {bound_int:.2e} "
+          f"for n={n_int}, sum|W|={float(np.abs(ww).sum()):.3f}")
+    check("with a constant upstream gradient the interior sees only re-association",
+          float(interior.max()) <= bound_int)
     check("...but a random upstream gradient exposes it throughout the interior",
           d_rand_int > 0.3 * d_alt_int)
     check("the constant-dY test only ever probes the border",
-          float(d_all.max()) > 100 * max(float(interior.max()), np.finfo(float).tiny))
+          float(d_all.max()) > 1e10 * bound_int)
 
     print(f"\n      total runtime {time.perf_counter() - t_start:.2f} s")
     summary()

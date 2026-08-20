@@ -304,6 +304,7 @@ if __name__ == "__main__":
     print("\n--- stage 2: tiled attention == naive attention ---")
     print(f"      {'T':>5} {'d':>4} {'causal':>7} {'Bq':>5} {'Bk':>5} {'max|diff|':>12}")
     worst = 0.0
+    all_finite = True
     for T, d, d_v in ((256, 64, 64), (300, 32, 48)):
         Q = rng.standard_normal((T, d))
         K = rng.standard_normal((T, d))
@@ -312,9 +313,15 @@ if __name__ == "__main__":
             ref = attention_naive(Q, K, V, causal)
             for bq, bk in ((64, 64), (32, 128), (37, 53), (T, T)):
                 got = attention_tiled(Q, K, V, bq, bk, causal)
+                all_finite = all_finite and bool(np.isfinite(got).all())
                 err = float(np.abs(got - ref).max())
-                worst = max(worst, err)
+                # np.maximum, not the builtin max: a causal-mask bug that fully
+                # masks a row makes the kernel emit 0/0 = nan, err becomes nan,
+                # and Python's max(0.0, nan) silently returns 0.0 — the classic
+                # strict-> bug would sail through. np.maximum propagates nan.
+                worst = float(np.maximum(worst, err))
                 print(f"      {T:5d} {d:4d} {str(causal):>7} {bq:5d} {bk:5d} {err:12.3e}")
+    check("every tiled output above is finite (no 0/0 fully-masked rows)", all_finite)
     check("tiled == naive for every (T, d, causal, block) above", worst < 1e-10)
     # Ragged blocks matter: 37 and 53 do not divide 256 or 300, so the last
     # tile of each loop is short. A kernel that assumes even division passes
@@ -372,14 +379,32 @@ if __name__ == "__main__":
     check("doubling the block halves the K/V re-reading term (64 -> 128)",
           (b64 - once) / (b128 - once), 2.0, tol=0.0)
     check("and again (128 -> 256)", (b128 - once) / (b256 - once), 2.0, tol=0.0)
-    # The end-to-end ratio therefore climbs toward its asymptote 4Bq/(d+d_v)
-    # from below as T grows and the once-paid term becomes negligible: at
-    # Bq=128, d=d_v=64 it is 3.78 at T=1024 and 3.94 at T=4096, never 4.00.
+    # How the end-to-end ratio meets its asymptote 4Bq/(d+d_v) depends on the
+    # block size relative to the head dimension. For d_v = d the exact ratio is
+    # 2B(d+T) / (d(B+T)), and comparing it to the asymptote 2B/d gives three
+    # regimes:
+    #   Bq > d : climbs toward the asymptote FROM BELOW as T grows — at Bq=128,
+    #            d=d_v=64 it is 3.78 at T=1024 and 3.94 at T=4096, never 4.00
+    #   Bq = d : sits EXACTLY on the asymptote for every T (the closed form
+    #            collapses to 2 — the B=64,d=64 and B=128,d=128 rows above)
+    #   Bq < d : approaches the asymptote FROM ABOVE instead
+    # "From below" is NOT a universal law of tiling; it holds only when the
+    # block out-sizes the head dimension.
     r_1024 = io_rows[1][3] / io_rows[1][4]
     r_4096 = io_rows[3][3] / io_rows[3][4]
     asymptote = 4 * 128 / (64 + 64)
-    check("the naive/tiled ratio approaches 4Bq/(d+d_v) from below as T grows",
+    check("for Bq > d the naive/tiled ratio approaches 4Bq/(d+d_v) from below",
           r_1024 < r_4096 < asymptote)
+    check("at Bq = d the ratio equals the asymptote exactly (T=1024, d=64)",
+          io_rows[0][3] / io_rows[0][4], 4 * 64 / (64 + 64), tol=0.0)
+    check("at Bq = d the ratio equals the asymptote exactly (T=4096, d=128)",
+          io_rows[4][3] / io_rows[4][4], 4 * 128 / (128 + 128), tol=0.0)
+    Q32 = np.zeros((4096, 64)); K32 = np.zeros((4096, 64)); V32 = np.zeros((4096, 64))
+    r_b32 = hbm_bytes_naive(Q32, K32, V32) / hbm_bytes_tiled(Q32, K32, V32, 32, 32)
+    print(f"      Bq=32 < d=64 at T=4096: ratio {r_b32:.4f} vs asymptote "
+          f"{4 * 32 / (64 + 64):.4f} — from ABOVE, not below")
+    check("for Bq < d the ratio sits above the asymptote instead",
+          r_b32 > 4 * 32 / (64 + 64))
     # Naive traffic is 4T^2 + O(Td) regardless of any block choice.
     check("naive traffic does not depend on the block size at all",
           io_rows[0][3] == io_rows[1][3] == io_rows[2][3])
@@ -421,13 +446,18 @@ if __name__ == "__main__":
     # than ONE copy of the score matrix it refuses to build.
     for T, pt in zip((512, 1024, 2048), peaks_t):
         check(f"tiled peak < one T x T score matrix (T={T})", pt < T * T * 8)
-    # The naive pipeline must hold at least two T x T arrays live at once (the
-    # scores and their exponentials), so its peak cannot come in under 2 T^2
-    # elements no matter how carefully it is written. Measured: 3.0-3.1x.
+    # What the ALGORITHM forces is one full T x T array — the score matrix must
+    # be materialized before any row can be normalized. That single array is
+    # the honest floor. Everything above 1x is an artifact of how the body is
+    # written: this implementation allocates S, S - max, exp(S), and P/sum as
+    # separate temporaries and measures at 3.03-3.13x, but an in-place rewrite
+    # of the same math (np.exp(S, out=S) etc.) gets down to ~1.03-1.13x, so a
+    # 2x floor would flunk a perfectly correct reimplementation. Only the 1x
+    # floor is a property of naive attention itself.
     print("      naive peak / (T x T): " + ", ".join(
         f"{pn/(T*T*8):.2f}" for T, pn in zip((512, 1024, 2048), peaks_n)))
-    check("naive peak holds at least two T x T arrays simultaneously",
-          all(pn > 2 * T * T * 8 for T, pn in zip((512, 1024, 2048), peaks_n)))
+    check("naive peak materializes at least one full T x T score matrix",
+          all(pn > T * T * 8 for T, pn in zip((512, 1024, 2048), peaks_n)))
 
     # -----------------------------------------------------------------------
     # BREAK IT
