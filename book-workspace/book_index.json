@@ -67,8 +67,8 @@
    },
    "part": "Part I",
    "line_span": [
-    807,
-    1271
+    826,
+    1290
    ]
   },
   {
@@ -134,8 +134,8 @@
    },
    "part": "Part I",
    "line_span": [
-    1271,
-    1664
+    1290,
+    1683
    ]
   },
   {
@@ -203,8 +203,8 @@
    },
    "part": "Part I",
    "line_span": [
-    1664,
-    2100
+    1683,
+    2119
    ]
   },
   {
@@ -271,8 +271,8 @@
    },
    "part": "Part I",
    "line_span": [
-    2100,
-    2528
+    2119,
+    2547
    ]
   },
   {
@@ -341,8 +341,8 @@
    },
    "part": "Part I",
    "line_span": [
-    2528,
-    2966
+    2547,
+    2985
    ]
   },
   {
@@ -415,8 +415,8 @@
    },
    "part": "Part II",
    "line_span": [
-    2966,
-    3388
+    2985,
+    3407
    ]
   },
   {
@@ -481,8 +481,8 @@
    },
    "part": "Part II",
    "line_span": [
-    3388,
-    3822
+    3407,
+    3841
    ]
   },
   {
@@ -546,8 +546,8 @@
    },
    "part": "Part II",
    "line_span": [
-    3822,
-    4223
+    3841,
+    4242
    ]
   },
   {
@@ -619,8 +619,8 @@
    },
    "part": "Part II",
    "line_span": [
-    4223,
-    4680
+    4242,
+    4699
    ]
   },
   {
@@ -681,8 +681,8 @@
    },
    "part": "Part III",
    "line_span": [
-    4680,
-    5071
+    4699,
+    5090
    ]
   },
   {
@@ -743,8 +743,8 @@
    },
    "part": "Part III",
    "line_span": [
-    5071,
-    5463
+    5090,
+    5482
    ]
   },
   {
@@ -806,8 +806,8 @@
    },
    "part": "Part III",
    "line_span": [
-    5463,
-    5875
+    5482,
+    5894
    ]
   },
   {
@@ -867,8 +867,8 @@
    },
    "part": "Part III",
    "line_span": [
-    5875,
-    6288
+    5894,
+    6307
    ]
   },
   {
@@ -930,8 +930,8 @@
    },
    "part": "Part III",
    "line_span": [
-    6288,
-    6681
+    6307,
+    6700
    ]
   },
   {
@@ -993,8 +993,8 @@
    },
    "part": "Part III",
    "line_span": [
-    6681,
-    7033
+    6700,
+    7052
    ]
   },
   {
@@ -1054,8 +1054,8 @@
    },
    "part": "Part IV",
    "line_span": [
-    7033,
-    7430
+    7052,
+    7449
    ]
   },
   {
@@ -1117,8 +1117,8 @@
    },
    "part": "Part IV",
    "line_span": [
-    7430,
-    7821
+    7449,
+    7840
    ]
   },
   {
@@ -1179,8 +1179,8 @@
    },
    "part": "Part IV",
    "line_span": [
-    7821,
-    8216
+    7840,
+    8235
    ]
   },
   {
@@ -1238,8 +1238,8 @@
    },
    "part": "Part IV",
    "line_span": [
-    8216,
-    8613
+    8235,
+    8632
    ]
   },
   {
@@ -1302,8 +1302,8 @@
    },
    "part": "Part IV",
    "line_span": [
-    8613,
-    9114
+    8632,
+    9133
    ]
   },
   {
@@ -1363,8 +1363,8 @@
    },
    "part": "Part IV",
    "line_span": [
-    9114,
-    9467
+    9133,
+    9486
    ]
   },
   {
@@ -1423,8 +1423,8 @@
    },
    "part": "Part V",
    "line_span": [
-    9467,
-    9756
+    9486,
+    9775
    ]
   },
   {
@@ -1489,8 +1489,8 @@
    },
    "part": "Part V",
    "line_span": [
-    9756,
-    10126
+    9775,
+    10145
    ]
   },
   {
@@ -1551,8 +1551,8 @@
    },
    "part": "Part V",
    "line_span": [
-    10126,
-    10408
+    10145,
+    10427
    ]
   },
   {
@@ -1612,8 +1612,8 @@
    },
    "part": "Part V",
    "line_span": [
-    10408,
-    10720
+    10427,
+    10739
    ]
   },
   {
@@ -1673,8 +1673,8 @@
    },
    "part": "Part V",
    "line_span": [
-    10720,
-    11018
+    10739,
+    11037
    ]
   },
   {
@@ -1733,8 +1733,8 @@
    },
    "part": "Part V",
    "line_span": [
-    11018,
-    11311
+    11037,
+    11330
    ]
   },
   {
@@ -1794,8 +1794,8 @@
    },
    "part": "Part V",
    "line_span": [
-    11311,
-    11590
+    11330,
+    11609
    ]
   },
   {
@@ -1853,8 +1853,8 @@
    },
    "part": "Part V",
    "line_span": [
-    11590,
-    11915
+    11609,
+    11934
    ]
   },
   {
@@ -1916,8 +1916,8 @@
    },
    "part": "Part VI",
    "line_span": [
-    11915,
-    12221
+    11934,
+    12240
    ]
   },
   {
@@ -1974,8 +1974,8 @@
    },
    "part": "Part VI",
    "line_span": [
-    12221,
-    12523
+    12240,
+    12542
    ]
   },
   {
@@ -2034,8 +2034,8 @@
    },
    "part": "Part VI",
    "line_span": [
-    12523,
-    12800
+    12542,
+    12819
    ]
   },
   {
@@ -2097,8 +2097,8 @@
    },
    "part": "Part VI",
    "line_span": [
-    12800,
-    13096
+    12819,
+    13115
    ]
   },
   {
@@ -2160,8 +2160,8 @@
    },
    "part": "Part VI",
    "line_span": [
-    13096,
-    13416
+    13115,
+    13435
    ]
   },
   {
@@ -2225,8 +2225,8 @@
    },
    "part": "Part VII",
    "line_span": [
-    13416,
-    13772
+    13435,
+    13791
    ]
   },
   {
@@ -2288,8 +2288,8 @@
    },
    "part": "Part VII",
    "line_span": [
-    13772,
-    14032
+    13791,
+    14051
    ]
   },
   {
@@ -2349,8 +2349,8 @@
    },
    "part": "Part VII",
    "line_span": [
-    14032,
-    14324
+    14051,
+    14343
    ]
   },
   {
@@ -2406,8 +2406,8 @@
    },
    "part": "Part VIII",
    "line_span": [
-    14324,
-    14642
+    14343,
+    14661
    ]
   },
   {
@@ -2464,8 +2464,8 @@
    },
    "part": "Part VIII",
    "line_span": [
-    14642,
-    14887
+    14661,
+    14906
    ]
   },
   {
@@ -2519,8 +2519,8 @@
    },
    "part": "Part VIII",
    "line_span": [
-    14887,
-    15214
+    14906,
+    15233
    ]
   },
   {
@@ -2578,8 +2578,8 @@
    },
    "part": "Part VIII",
    "line_span": [
-    15214,
-    15484
+    15233,
+    15503
    ]
   },
   {
@@ -2626,7 +2626,7 @@
     "CKKS's approximate decryption breaks plain IND-CPA (Li–Micciancio, EUROCRYPT 2021); noise flooding is the fix, it costs precision, precision costs polynomial degree, and degree costs depth — so a system silent about IND-CPA$^{\\mathrm{D}}$ is benchmarking a cheaper scheme than it claims. Certain",
     "A selective SSM block has depth $29 + \\lceil\\log_2 T\\rceil$ against an attention-plus-MLP block's flat $44$ under matched assumptions, with zero softmax levels and roughly $10^2\\times$ fewer rotations in the counting model — and the crossover sits at $T = 32{,}768$, beyond any context length currently served under encryption. Likely",
     "Which block wins depends on $T$ and on the achievable softmax degree: a degree-3 exponential moves the crossover down to $T = 512$. The comparison is computable, and the point is that it is computable, not that one side is destined to win. Contested",
-    "Published encrypted state-space work uses public, input-independent decay, and selective Mamba has been done only under MPC; the open contribution is narrower than \"encrypted SSMs\" and correspondingly more defensible — a selective block under non-interactive CKKS, with a ledger and generative quality reported. Verify"
+    "Published encrypted state-space work uses public, input-independent decay, and selective Mamba has been done only under MPC; the open contribution is narrower than \"encrypted SSMs\" and correspondingly more defensible — a selective block under non-interactive CKKS, with a ledger and generative quality reported. No published system does this as of August 2026, but at least one public research prototype is already attempting it on GitHub, so the window is measured in months: re-run the search the week you write the introduction, not the month before. Verify"
    ],
    "tags": {
     "certain": 5,
@@ -2636,8 +2636,8 @@
    },
    "part": "Part VIII",
    "line_span": [
-    15484,
-    15898
+    15503,
+    15900
    ]
   }
  ],
@@ -2815,10 +2815,10 @@
   }
  ],
  "tags": {
-  "certain": 339,
-  "likely": 236,
-  "verify": 259,
-  "contested": 69
+  "certain": 362,
+  "likely": 244,
+  "verify": 332,
+  "contested": 70
  },
  "notation_symbols": [
   "x",
@@ -2827,428 +2827,434 @@
   "k",
   "d",
   "t",
-  "\\theta",
   "B",
+  "\\theta",
   "b",
-  "\\eta",
   "f",
+  "\\eta",
   "T",
   "z",
   "A",
   "w",
   "e",
-  "s",
   "\\lambda",
+  "s",
   "m",
-  "\\alpha",
   "L",
   "y",
-  "O",
+  "\\alpha",
   "N",
+  "O",
   "q",
   "\\sigma",
   "\\mathbb{R}",
   "\\mathcal{L}",
-  "X",
   "W",
-  "x_{i}",
+  "\\beta",
+  "X",
   "h",
   "\\mathbb{E}",
-  "a",
-  "\\beta",
+  "x_{i}",
   "P",
-  "i",
+  "a",
   "I",
-  "C",
   "H",
+  "i",
+  "C",
+  "l",
   "\\delta",
   "g",
   "c",
-  "r",
   "\\mu",
-  "l",
+  "\\pi",
+  "r",
   "\\varepsilon",
-  "v",
   "\\tau",
   "K",
-  "\\pi",
   "S",
-  "M",
+  "v",
   "\\phi",
-  "\\gamma",
-  "u",
-  "\\rho",
+  "M",
   "\\Theta",
+  "u",
+  "\\gamma",
   "V",
-  "j",
   "D",
+  "\\rho",
+  "j",
   "\\kappa",
   "\\Delta",
   "d_{h}",
   "d_{k}",
-  "E",
   "\\ell",
+  "Q",
+  "E",
   "\\nabla",
   "h_{t}",
-  "Q",
   "R",
   "\\epsilon",
   "\\Phi",
   "y_{i}",
-  "x_{t}",
   "\\mathcal{H}",
+  "J",
+  "x_{t}",
   "\\lambda_{i}",
   "\\mathcal{N}",
-  "J",
-  "x_{1}",
-  "d_{\\text{in}}",
-  "w_{t}",
   "m_{t}",
+  "d_{\\text{in}}",
+  "x_{1}",
+  "w_{t}",
   "G",
-  "z_{i}",
   "\\sigma_{i}",
   "\\beta_{2}",
-  "W_{h}",
+  "z_{i}",
   "U",
+  "W_{h}",
+  "Z",
   "\\theta_{t}",
   "x_{0}",
-  "Z",
   "\\Sigma",
-  "o",
+  "D_{\\text{KL}}",
+  "g_{t}",
+  "\\pi_{\\text{ref}}",
+  "\\beta_{1}",
   "d_{\\text{out}}",
+  "\\mathcal{F}",
+  "o",
   "\\alpha_{i}",
   "\\lambda_{1}",
-  "\\pi_{\\text{ref}}",
-  "\\mathcal{F}",
-  "D_{\\text{KL}}",
-  "\\beta_{1}",
-  "g_{t}",
-  "Y",
-  "r_{i}",
-  "\\Lambda",
-  "w_{j}",
-  "a_{t}",
   "\\mathcal{D}",
-  "s_{i}",
-  "B_{\\text{noise}}",
-  "x_{j}",
-  "v_{i}",
+  "Y",
+  "\\Lambda",
+  "r_{i}",
   "v_{t}",
+  "\\Omega",
+  "B_{\\text{noise}}",
+  "w_{j}",
+  "d_{\\text{ff}}",
+  "v_{i}",
+  "a_{t}",
+  "d_{l}",
+  "s_{i}",
   "\\theta_{i}",
   "\\vartheta",
-  "d_{\\text{ff}}",
+  "x_{j}",
+  "b_{t}",
+  "c_{t}",
   "y_{t}",
   "\\alpha_{k}",
-  "\\Omega",
-  "c_{t}",
+  "F",
   "\\mu_{j}",
   "\\mu_{i}",
   "y_{w}",
   "A_{t}",
-  "d_{l}",
+  "\\sigma_{1}",
   "\\varphi",
   "s_{j}",
   "v_{j}",
-  "p_{i}",
-  "F",
-  "H_{j}",
-  "b_{t}",
-  "y_{l}",
-  "\\sigma_{1}",
-  "\\mathcal{X}",
-  "g_{i}",
   "z_{t}",
   "f_{t}",
+  "y_{l}",
+  "p_{i}",
+  "B_{r}",
+  "\\mathcal{X}",
+  "H_{j}",
   "f_{e}",
+  "P_{e}",
+  "n_{2}",
+  "n_{1}",
+  "g_{i}",
+  "u_{i}",
+  "C_{\\text{in}}",
+  "d_{\\text{model}}",
+  "n_{T}",
   "x_{k}",
   "G_{j}",
   "\\Sigma_{j}",
-  "P_{e}",
-  "d_{\\text{model}}",
-  "n_{T}",
   "f_{4}",
-  "B_{r}",
-  "u_{1}",
-  "u_{i}",
-  "C_{\\text{in}}",
-  "p_{t}",
   "\\kappa_{2}",
+  "T_{\\text{train}}",
+  "u_{1}",
+  "C_{\\text{out}}",
+  "B_{t}",
+  "p_{t}",
+  "\\sigma_{t}",
   "x_{2}",
   "\\ell_{1}",
-  "T_{\\text{train}}",
   "\\lambda_{2}",
   "\\pi_{j}",
   "n_{l}",
-  "C_{\\text{out}}",
+  "P_{t}",
   "c_{i}",
-  "B_{t}",
-  "n_{2}",
-  "n_{1}",
   "L_{2}",
+  "B_{\\text{crit}}",
+  "d_{\\text{tok}}",
   "\\xi_{i}",
   "m_{i}",
   "J_{l}",
   "k_{hk}",
   "h_{j}",
-  "\\sigma_{t}",
-  "B_{\\text{crit}}",
-  "\\nu",
-  "w_{i}",
-  "P_{t}",
   "H_{kv}",
   "R_{n}",
   "\\Delta_{t}",
-  "\\beta_{k}",
+  "n_{\\text{kv}}",
   "n_{\\text{in}}",
   "\\alpha_{t}",
+  "\\nu",
+  "w_{i}",
+  "\\sigma_{l}",
+  "j_{l}",
+  "r_{l}",
+  "\\ell_{i}",
+  "\\beta_{k}",
+  "A_{m}",
+  "B_{\\text{blk}}",
   "h_{i}",
   "N_{j}",
+  "\\eta_{\\text{eff}}",
   "q_{j}",
-  "j_{l}",
   "s_{l}",
-  "r_{l}",
   "\\ell_{t}",
   "R_{m}",
   "e_{j}",
-  "A_{m}",
-  "B_{\\text{blk}}",
+  "u_{t}",
+  "w_{0}",
   "p_{k}",
   "F_{m}",
   "W_{1}",
-  "\\sigma_{l}",
-  "\\eta_{\\text{eff}}",
-  "\\ell_{i}",
+  "\\rho_{i}",
+  "k_{l}",
+  "W_{o}",
   "\\lambda_{j}",
   "\\ell_{2}",
-  "w_{0}",
   "u_{j}",
   "z_{j}",
   "f_{i}",
   "\\gamma_{ij}",
-  "\\rho_{i}",
-  "k_{l}",
   "h_{k}",
-  "W_{o}",
+  "W_{q}",
+  "n_{B}",
   "\\nabla_{x}",
   "v_{1}",
-  "Z_{i}",
-  "u_{t}",
-  "d_{\\text{tok}}"
+  "Z_{i}"
  ],
  "notation_symbol_counts": {
-  "x": 684,
-  "n": 523,
-  "p": 434,
-  "k": 403,
-  "d": 387,
-  "t": 335,
-  "\\theta": 281,
-  "B": 271,
-  "b": 271,
-  "\\eta": 266,
-  "f": 259,
-  "T": 248,
-  "z": 236,
-  "A": 233,
-  "w": 232,
-  "e": 225,
-  "s": 225,
-  "\\lambda": 223,
-  "m": 212,
-  "\\alpha": 206,
-  "L": 204,
-  "y": 201,
-  "O": 195,
-  "N": 192,
-  "q": 185,
-  "\\sigma": 171,
-  "\\mathbb{R}": 162,
-  "\\mathcal{L}": 159,
+  "x": 724,
+  "n": 555,
+  "p": 464,
+  "k": 419,
+  "d": 412,
+  "t": 339,
+  "B": 305,
+  "\\theta": 295,
+  "b": 275,
+  "f": 272,
+  "\\eta": 269,
+  "T": 259,
+  "z": 250,
+  "A": 249,
+  "w": 241,
+  "e": 231,
+  "\\lambda": 230,
+  "s": 226,
+  "m": 215,
+  "L": 215,
+  "y": 213,
+  "\\alpha": 212,
+  "N": 206,
+  "O": 204,
+  "q": 199,
+  "\\sigma": 180,
+  "\\mathbb{R}": 180,
+  "\\mathcal{L}": 176,
+  "W": 163,
+  "\\beta": 161,
   "X": 158,
-  "W": 154,
+  "h": 157,
+  "\\mathbb{E}": 154,
   "x_{i}": 150,
-  "h": 150,
-  "\\mathbb{E}": 148,
-  "a": 143,
-  "\\beta": 137,
-  "P": 133,
-  "i": 132,
-  "I": 130,
-  "C": 126,
-  "H": 125,
-  "\\delta": 114,
-  "g": 113,
-  "c": 110,
-  "r": 107,
-  "\\mu": 106,
-  "l": 106,
-  "\\varepsilon": 104,
-  "v": 103,
-  "\\tau": 102,
-  "K": 102,
-  "\\pi": 101,
-  "S": 95,
-  "M": 92,
-  "\\phi": 91,
+  "P": 148,
+  "a": 147,
+  "I": 144,
+  "H": 135,
+  "i": 133,
+  "C": 133,
+  "l": 129,
+  "\\delta": 122,
+  "g": 118,
+  "c": 116,
+  "\\mu": 114,
+  "\\pi": 113,
+  "r": 110,
+  "\\varepsilon": 108,
+  "\\tau": 106,
+  "K": 105,
+  "S": 104,
+  "v": 104,
+  "\\phi": 101,
+  "M": 95,
+  "\\Theta": 93,
+  "u": 90,
   "\\gamma": 89,
-  "u": 87,
-  "\\rho": 85,
-  "\\Theta": 85,
-  "V": 85,
+  "V": 89,
+  "D": 87,
+  "\\rho": 86,
   "j": 84,
-  "D": 82,
-  "\\kappa": 80,
-  "\\Delta": 80,
-  "d_{h}": 76,
-  "d_{k}": 75,
-  "E": 72,
-  "\\ell": 71,
-  "\\nabla": 69,
-  "h_{t}": 67,
-  "Q": 67,
-  "R": 64,
-  "\\epsilon": 63,
-  "\\Phi": 61,
+  "\\kappa": 82,
+  "\\Delta": 82,
+  "d_{h}": 82,
+  "d_{k}": 79,
+  "\\ell": 78,
+  "Q": 77,
+  "E": 75,
+  "\\nabla": 70,
+  "h_{t}": 68,
+  "R": 66,
+  "\\epsilon": 65,
+  "\\Phi": 63,
   "y_{i}": 54,
+  "\\mathcal{H}": 53,
+  "J": 53,
   "x_{t}": 51,
-  "\\mathcal{H}": 51,
-  "\\lambda_{i}": 50,
-  "\\mathcal{N}": 47,
-  "J": 46,
+  "\\lambda_{i}": 51,
+  "\\mathcal{N}": 51,
+  "m_{t}": 46,
+  "d_{\\text{in}}": 46,
   "x_{1}": 44,
-  "d_{\\text{in}}": 44,
-  "w_{t}": 43,
-  "m_{t}": 42,
+  "w_{t}": 44,
   "G": 42,
+  "\\sigma_{i}": 41,
+  "\\beta_{2}": 39,
   "z_{i}": 37,
-  "\\sigma_{i}": 36,
-  "\\beta_{2}": 34,
-  "W_{h}": 34,
-  "U": 34,
-  "\\theta_{t}": 33,
-  "x_{0}": 33,
-  "Z": 33,
-  "\\Sigma": 31,
+  "U": 36,
+  "W_{h}": 35,
+  "Z": 35,
+  "\\theta_{t}": 34,
+  "x_{0}": 34,
+  "\\Sigma": 33,
+  "D_{\\text{KL}}": 33,
+  "g_{t}": 33,
+  "\\pi_{\\text{ref}}": 33,
+  "\\beta_{1}": 32,
+  "d_{\\text{out}}": 32,
+  "\\mathcal{F}": 31,
   "o": 31,
-  "d_{\\text{out}}": 30,
   "\\alpha_{i}": 29,
   "\\lambda_{1}": 29,
-  "\\pi_{\\text{ref}}": 29,
-  "\\mathcal{F}": 29,
-  "D_{\\text{KL}}": 28,
-  "\\beta_{1}": 28,
-  "g_{t}": 27,
+  "\\mathcal{D}": 27,
   "Y": 27,
+  "\\Lambda": 26,
   "r_{i}": 26,
-  "\\Lambda": 25,
+  "v_{t}": 26,
+  "\\Omega": 25,
+  "B_{\\text{noise}}": 25,
   "w_{j}": 25,
+  "d_{\\text{ff}}": 25,
+  "v_{i}": 25,
   "a_{t}": 25,
-  "\\mathcal{D}": 25,
+  "d_{l}": 25,
   "s_{i}": 24,
-  "B_{\\text{noise}}": 23,
+  "\\theta_{i}": 24,
+  "\\vartheta": 23,
   "x_{j}": 23,
-  "v_{i}": 23,
-  "v_{t}": 23,
-  "\\theta_{i}": 23,
-  "\\vartheta": 22,
-  "d_{\\text{ff}}": 21,
+  "b_{t}": 22,
+  "c_{t}": 21,
   "y_{t}": 21,
   "\\alpha_{k}": 21,
-  "\\Omega": 20,
-  "c_{t}": 20,
-  "\\mu_{j}": 19,
-  "\\mu_{i}": 19,
-  "y_{w}": 19,
-  "A_{t}": 19,
-  "d_{l}": 19,
+  "F": 21,
+  "\\mu_{j}": 20,
+  "\\mu_{i}": 20,
+  "y_{w}": 20,
+  "A_{t}": 20,
+  "\\sigma_{1}": 19,
   "\\varphi": 18,
   "s_{j}": 18,
   "v_{j}": 18,
+  "z_{t}": 18,
+  "f_{t}": 18,
+  "y_{l}": 18,
   "p_{i}": 18,
-  "F": 18,
+  "B_{r}": 18,
+  "\\mathcal{X}": 18,
   "H_{j}": 17,
-  "b_{t}": 17,
-  "y_{l}": 17,
-  "\\sigma_{1}": 17,
-  "\\mathcal{X}": 17,
+  "f_{e}": 17,
+  "P_{e}": 17,
+  "n_{2}": 17,
+  "n_{1}": 17,
   "g_{i}": 16,
-  "z_{t}": 16,
-  "f_{t}": 16,
-  "f_{e}": 16,
+  "u_{i}": 16,
+  "C_{\\text{in}}": 16,
+  "d_{\\text{model}}": 16,
+  "n_{T}": 16,
   "x_{k}": 16,
   "G_{j}": 15,
   "\\Sigma_{j}": 15,
-  "P_{e}": 15,
-  "d_{\\text{model}}": 15,
-  "n_{T}": 15,
   "f_{4}": 15,
-  "B_{r}": 15,
+  "\\kappa_{2}": 15,
+  "T_{\\text{train}}": 15,
   "u_{1}": 14,
-  "u_{i}": 14,
-  "C_{\\text{in}}": 14,
+  "C_{\\text{out}}": 14,
+  "B_{t}": 14,
   "p_{t}": 14,
-  "\\kappa_{2}": 14,
+  "\\sigma_{t}": 14,
   "x_{2}": 14,
   "\\ell_{1}": 14,
-  "T_{\\text{train}}": 14,
   "\\lambda_{2}": 13,
   "\\pi_{j}": 13,
   "n_{l}": 13,
-  "C_{\\text{out}}": 13,
+  "P_{t}": 13,
   "c_{i}": 13,
-  "B_{t}": 13,
-  "n_{2}": 13,
-  "n_{1}": 13,
   "L_{2}": 13,
+  "B_{\\text{crit}}": 13,
+  "d_{\\text{tok}}": 13,
   "\\xi_{i}": 12,
   "m_{i}": 12,
   "J_{l}": 12,
   "k_{hk}": 12,
   "h_{j}": 12,
-  "\\sigma_{t}": 12,
-  "B_{\\text{crit}}": 12,
+  "H_{kv}": 12,
+  "R_{n}": 12,
+  "\\Delta_{t}": 12,
+  "n_{\\text{kv}}": 12,
+  "n_{\\text{in}}": 12,
+  "\\alpha_{t}": 12,
   "\\nu": 11,
   "w_{i}": 11,
-  "P_{t}": 11,
-  "H_{kv}": 11,
-  "R_{n}": 11,
-  "\\Delta_{t}": 11,
+  "\\sigma_{l}": 11,
+  "j_{l}": 11,
+  "r_{l}": 11,
+  "\\ell_{i}": 11,
   "\\beta_{k}": 11,
-  "n_{\\text{in}}": 11,
-  "\\alpha_{t}": 11,
+  "A_{m}": 11,
+  "B_{\\text{blk}}": 11,
   "h_{i}": 10,
   "N_{j}": 10,
+  "\\eta_{\\text{eff}}": 10,
   "q_{j}": 10,
-  "j_{l}": 10,
   "s_{l}": 10,
-  "r_{l}": 10,
   "\\ell_{t}": 10,
   "R_{m}": 10,
   "e_{j}": 10,
-  "A_{m}": 10,
-  "B_{\\text{blk}}": 10,
+  "u_{t}": 10,
+  "w_{0}": 9,
   "p_{k}": 9,
   "F_{m}": 9,
   "W_{1}": 9,
-  "\\sigma_{l}": 9,
-  "\\eta_{\\text{eff}}": 9,
-  "\\ell_{i}": 9,
+  "\\rho_{i}": 9,
+  "k_{l}": 9,
+  "W_{o}": 9,
   "\\lambda_{j}": 9,
   "\\ell_{2}": 9,
-  "w_{0}": 8,
   "u_{j}": 8,
   "z_{j}": 8,
   "f_{i}": 8,
   "\\gamma_{ij}": 8,
-  "\\rho_{i}": 8,
-  "k_{l}": 8,
   "h_{k}": 8,
-  "W_{o}": 8,
+  "W_{q}": 8,
+  "n_{B}": 8,
   "\\nabla_{x}": 8,
   "v_{1}": 8,
-  "Z_{i}": 8,
-  "u_{t}": 8,
-  "d_{\\text{tok}}": 8
+  "Z_{i}": 8
  },
  "toc_promised": {
   "parts": [
@@ -3388,7 +3394,7 @@
   "artifacts_promised_by_toc": 42,
   "parts_rendered": 8,
   "parts_promised_by_toc": 8,
-  "appendices_rendered": 0,
+  "appendices_rendered": 6,
   "appendices_promised_by_toc": 6,
   "definitions": 103,
   "theorems": 107,
@@ -3396,16 +3402,9 @@
   "warning_boxes": 52,
   "encrypted_notes": 23,
   "read_alongside_boxes": 42,
-  "notation_symbols": 213
+  "notation_symbols": 216
  },
  "anomalies": [
-  "Chapters with zero theorems: [40]",
-  "Placeholder region <!-- APPENDICES_START/END --> is EMPTY (no content emitted)",
-  "TOC links #appendix-a ('Notation and Mathematical Prerequisites') but no element with that id exists",
-  "TOC links #appendix-b ('Environment Setup') but no element with that id exists",
-  "TOC links #appendix-c ('Complete Code for All Artifacts') but no element with that id exists",
-  "TOC links #appendix-d ('Sources and Further Reading') but no element with that id exists",
-  "TOC links #appendix-e ('Reading Crosswalk') but no element with that id exists",
-  "TOC links #appendix-f ('Reference Numbers (dated)') but no element with that id exists"
+  "Chapters with zero theorems: [40]"
  ]
 }

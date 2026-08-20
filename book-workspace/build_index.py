@@ -56,8 +56,14 @@ chapters = []
 box_registry = collections.Counter()
 
 for idx, (n, start) in enumerate(ch_starts):
-    end = ch_starts[idx + 1][1] if idx + 1 < len(ch_starts) else len(raw)
-    # don't run past a part boundary marker
+    if idx + 1 < len(ch_starts):
+        end = ch_starts[idx + 1][1]
+    else:
+        # The last chapter must not swallow the appendices: cap its body at the
+        # APPENDICES marker. Without this, every appendix h4 reported as a
+        # "Ch42 unnumbered h4" anomaly once the appendices were assembled.
+        cap = raw.find("<!-- APPENDICES_START -->", start)
+        end = cap if cap != -1 else len(raw)
     body = raw[start:end]
 
     hm = re.search(r'<div class="ch-label">Chapter (\d+)</div><h3>(.*?)</h3>', body, re.S)
