@@ -2399,8 +2399,8 @@
     "Whether pure-FHE or interactive HE+MPC hybrids are the right road is unsettled: hybrids report better latency on LAN benchmarks, pure FHE needs no client liveness or per-query bandwidth; published latencies are not cross-comparable, and this book bets on non-interactivity for serving. Contested"
    ],
    "tags": {
-    "certain": 7,
-    "likely": 4,
+    "certain": 8,
+    "likely": 3,
     "verify": 4,
     "contested": 2
    },
@@ -2815,8 +2815,8 @@
   }
  ],
  "tags": {
-  "certain": 362,
-  "likely": 244,
+  "certain": 363,
+  "likely": 243,
   "verify": 332,
   "contested": 70
  },

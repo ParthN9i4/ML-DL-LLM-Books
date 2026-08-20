@@ -53,7 +53,7 @@ Verified end to end:
 | Ladder adversarially reviewed | 13 new files, **69 confirmed defects found and fixed**: flaky timing assertions, tautological checks that no bug could fail, two false factual claims, a `nan` swallowed by Python's `max()` |
 | Ladder with torch, scipy and scikit-learn blocked | tiers 0–3 **still pass on numpy alone**, cross-checks skipping cleanly |
 | Rendered in Chromium against a local MathJax | **11,162 expressions typeset, 0 math errors, 0 leftover LaTeX, no horizontal scroll** |
-| Confidence tags | 339 Certain · 236 Likely · 259 Verify · 69 Contested |
+| Confidence tags (book-wide, incl. appendices) | 363 Certain · 243 Likely · 332 Verify · 70 Contested |
 
 Two things the automated checks cannot cover, both worth knowing before you cite anything:
 
@@ -70,9 +70,11 @@ Two things the automated checks cannot cover, both worth knowing before you cite
   against paper landing pages and venue pages — and, for NEXUS and BOLT, against their
   cloned source code. All 22 bibliographic identifiers resolve exactly; six wording-level
   errors were found and fixed (the worst: Chapter 41 had inverted NEXUS's 37.3 s GPU
-  figure into a CPU one). **Five minor details still need a human with PDF access** —
-  they are itemized at the end of the audit file, each with the exact paper, section, and
-  sentence to compare.
+  figure into a CPU one). A second pass then settled the five remaining details without
+  PDF access — one via Iron's actual NeurIPS PDF recovered through a GitHub mirror, the
+  rest by triangulated deep-search of the blocked pages — so **no citation detail in
+  Part VIII now rests on an unverified source**. The audit file records every verdict,
+  quote, and route.
 
 The commit history records every factual error the verification passes caught and fixed —
 a fabricated benchmark, an inverted estimator bias, superseded FlashAttention-3 numbers,

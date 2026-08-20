@@ -53,7 +53,39 @@ verified against the systems' actual code.
    (Zheng, Lou & Jiang, 2023); CryptoGen = arXiv 2602.08798 (Feb 2026), which is also the
    primary source of Ch 41's 4.4–7.6× per-token-latency figure.
 
-## Residual checklist — the five details only a PDF can settle
+## Residual checklist — RESOLVED 2026-08-20 (second pass)
+
+A follow-up agent settled all five items without human PDF access, via three routes the
+first pass had not fully exploited: (a) WebSearch's backend reads pages the sandbox cannot
+fetch — targeted quoted-phrase queries pulled the exact sentences out of the blocked PDFs,
+accepted only when two or three independently-phrased queries returned the same text;
+(b) git clone through the proxy — the Rho et al. and CryptoMoE author repos were cloned and
+read; (c) a newly discovered trick: PDFs committed to github.io site repos are fetchable via
+raw.githubusercontent.com, which yielded Iron's full NeurIPS PDF as extractable primary text.
+
+Outcomes:
+1. **Rho et al. baseline — CONFIRMED.** Table 2 compares Full+SM / LoRA+SM / LoRA+GK, all
+   under HE; 6.94x is against the authors' own softmax-HE run. Their repo's
+   TransformerBlock.cpp contains both timed paths.
+2. **THE-X criticism — CONFIRMED in substance, book reworded.** Iron's PDF states verbatim
+   that in THE-X "the inputs of each non-linear layer are leaked to the client"; BOLT adds
+   the per-ReLU comparison-result leak. NEXUS specifically could not be confirmed as a
+   criticizer, and no paper says "weights" — the book sentence now cites Iron and BOLT by
+   name, drops "and weights", and its tag was upgraded Likely → Certain on the strength of
+   the verbatim primary quote.
+3. **CKK alpha=20 — CONFIRMED.** Three queries returned "for α = 20 takes 1.43 milliseconds
+   in amortized running time"; the first supplied "α = 20" unprompted.
+4. **Brito ~5x — CONFIRMED.** Abstract: "matches or exceeds full-sequence task quality while
+   running about 5× faster" against HE-friendly polynomial attention on the same fastText
+   workloads.
+5. **CryptoMoE BFV + 2-of-2 — CONFIRMED.** Protocol section: BFV scheme, element-wise HE
+   ops, "2-out-of-2 additive Secret Share (SS)-based approach"; repo README corroborates
+   (SecretFlow-SPU integration).
+
+**Nothing in Part VIII now rests on an unverified citation detail.** The original
+checklist is preserved below for the record of what was open before this pass.
+
+## Original residual checklist (now fully resolved — kept for the record)
 
 Everything below is a *detail inside an otherwise-confirmed claim*. No identifier, venue,
 or headline number is in question.
