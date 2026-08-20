@@ -40,7 +40,7 @@ chapter's central claim is backed by a runnable artifact that verifies itself.
 
 ## Status
 
-**Complete.** 42 chapters, 6 appendices, ~201,400 words, 1.98 MB.
+**Complete.** 42 chapters, 6 appendices, ~202,400 words, 1.98 MB.
 
 Verified end to end:
 
