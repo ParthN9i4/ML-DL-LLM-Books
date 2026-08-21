@@ -3,6 +3,15 @@
 One file per paper, `weekNN-shortname.md`, drafted by a weekly automation and then
 corrected by hand. The queue and the nine-point template live in `../study-plan.html`.
 
+**How drafts arrive:** sessions started by the scheduled Routine run with read-only git
+credentials (verified 2026-08-20 by diagnostic), so drafts usually arrive in Parth's chat
+rather than as direct commits — the session attempts the push, checks whether the remote
+ref actually moved, and on the expected failure delivers the files in chat with the full
+text in its final message. Landing them here is then one request to any interactive
+Claude session ("commit this week's analysis"), or a manual commit. If a `weekNN` file is
+missing for a past Saturday, check that week's Routine session output — the draft exists
+even when the commit does not.
+
 The contract for every file here:
 
 - Extractions follow the nine-point template **in order**. A paper that does not report

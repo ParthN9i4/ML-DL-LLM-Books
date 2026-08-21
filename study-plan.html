@@ -441,7 +441,9 @@ pre code { background: none; padding: 0; color: inherit; }
 
 <h2>The weekly automation</h2>
 
-<p>A recurring Routine fires once a week, takes the next paper off the queue, fetches it, drafts the nine-point analysis, and diffs it against the previous week's entry on depth, packing, and threat model. The output is a growing comparison table rather than forty isolated summaries.</p>
+<p>A recurring Routine fires once a week (Saturday 09:00 IST), takes the next paper off the queue, fetches it, drafts the nine-point analysis, and diffs it against the previous week's entry on depth, packing, and threat model. The output is a growing comparison table rather than forty isolated summaries.</p>
+
+<p><strong>How the draft reaches the repository.</strong> Sessions started by scheduled Routines run with read-only git credentials (verified 2026-08-20 by diagnostic — the push silently fails to move the remote ref), so the Routine cannot land its own commits. It therefore attempts the push, verifies the result honestly, and on the expected failure delivers the week's files to you in chat &mdash; both as attachments and as full text in its final message. To get them into <code>analyses/</code>, forward the file to any interactive Claude session and ask it to commit (interactive sessions hold GitHub API access that scheduled ones lack), or commit it yourself. The analysis itself is never lost either way.</p>
 
 <div class="callout">
 <div class="box-title">What the draft is for, and what it is not</div>
